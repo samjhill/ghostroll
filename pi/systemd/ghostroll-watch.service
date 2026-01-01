@@ -1,0 +1,19 @@
+[Unit]
+Description=GhostRoll watch (SD ingest pipeline)
+After=network-online.target ghostroll-firstboot.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi
+EnvironmentFile=-/etc/ghostroll.env
+ExecStart=/usr/local/bin/ghostroll watch --sd-label ${GHOSTROLL_SD_LABEL:-auto-import}
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+
+

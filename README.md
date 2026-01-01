@@ -180,6 +180,12 @@ GhostRoll continuously writes:
 
 You can run a small display daemon that periodically refreshes your e-ink panel from `status.png`.
 
+### Build a complete Raspberry Pi OS image (auto-start + text-file config)
+
+If you want a “flash once, boot, and it runs” setup (GhostRoll installed, `ghostroll watch` running via systemd, configured via a boot-partition text file), use:
+
+- `pi/README.md`
+
 ## Legacy shell prototype
 
 The original prototype is still in `ingest.sh` (uses `rsync` + `magick` + `rclone` + `aws s3 presign`).

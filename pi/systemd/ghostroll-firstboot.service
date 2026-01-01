@@ -1,0 +1,14 @@
+[Unit]
+Description=GhostRoll firstboot config import (from boot partition)
+After=local-fs.target
+ConditionPathExistsGlob=/boot*/ghostroll.env
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ghostroll-firstboot.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+
+
