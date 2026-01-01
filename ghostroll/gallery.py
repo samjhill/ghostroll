@@ -43,7 +43,7 @@ def _write_gallery_html(
             ".tile{position:relative;display:block;border-radius:var(--radius);overflow:hidden;background:var(--card);"
             "border:1px solid var(--border);box-shadow:var(--shadow);transform:translateZ(0)}"
             ".tile:focus{outline:2px solid #3b82f6;outline-offset:2px}"
-            ".tile img{display:block;width:100%;height:170px;object-fit:cover;background:#0a0a0a}"
+            ".tile img{display:block;width:100%;aspect-ratio:1/1;object-fit:cover;background:#0a0a0a}"
             ".cap{position:absolute;left:8px;right:8px;bottom:8px;padding:6px 8px;border-radius:10px;"
             "background:rgba(0,0,0,.55);color:#fff;font-size:12px;line-height:1.2;"
             "white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
@@ -158,7 +158,7 @@ def build_index_html(*, session_id: str, thumbs_dir: Path, out_path: Path) -> No
         rel = t.relative_to(thumbs_dir)
         thumb_href = _posix(Path("thumbs") / rel)
         share_href = _posix(Path("share") / rel.with_suffix(".jpg"))
-        caption = rel.name
+        caption = rel.as_posix()
         items.append((thumb_href, share_href, caption))
 
     _write_gallery_html(session_id=session_id, items=items, out_path=out_path)
@@ -167,15 +167,15 @@ def build_index_html(*, session_id: str, thumbs_dir: Path, out_path: Path) -> No
 def build_index_html_presigned(
     *,
     session_id: str,
-    items: list[tuple[str, str]],
+    items: list[tuple[str, str, str]],
     out_path: Path,
 ) -> None:
     """
-    items: list of (thumb_url, share_url) — both should be fully-qualified URLs.
+    items: list of (thumb_url, share_url, caption) — URLs should be fully-qualified.
     """
     ui_items: list[tuple[str, str, str]] = []
-    for i, (thumb_url, share_url) in enumerate(items):
-        ui_items.append((thumb_url, share_url, f"Image {i+1}"))
+    for thumb_url, share_url, caption in items:
+        ui_items.append((thumb_url, share_url, caption))
     _write_gallery_html(session_id=session_id, items=ui_items, out_path=out_path)
 
 

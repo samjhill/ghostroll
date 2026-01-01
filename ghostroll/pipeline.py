@@ -261,8 +261,10 @@ def run_pipeline(
 
         # Build an S3-shareable gallery that embeds presigned URLs for assets (bucket remains private).
         # We keep the local index.html (relative paths) for offline/local browsing.
-        presigned_items: list[tuple[str, str]] = []
-        for t in sorted([p for p in derived_thumbs_dir.rglob("*") if p.is_file()]):
+        presigned_items: list[tuple[str, str, str]] = []
+        thumb_files = sorted([p for p in derived_thumbs_dir.rglob("*") if p.is_file()])
+        logger.info(f"Generating presigned asset URLs for {len(thumb_files)} images...")
+        for t in thumb_files:
             rel = t.relative_to(derived_thumbs_dir)
             thumb_key = f"{prefix}/thumbs/{rel.as_posix()}"
             share_key = f"{prefix}/share/{rel.with_suffix('.jpg').as_posix()}"
@@ -276,7 +278,7 @@ def run_pipeline(
                 key=share_key,
                 expires_in_seconds=cfg.presign_expiry_seconds,
             )
-            presigned_items.append((thumb_url, share_url))
+            presigned_items.append((thumb_url, share_url, rel.as_posix()))
 
         index_for_s3 = session_dir / "index.s3.html"
         build_index_html_presigned(session_id=session_id, items=presigned_items, out_path=index_for_s3)

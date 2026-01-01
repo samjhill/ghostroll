@@ -68,6 +68,8 @@ Each session contains:
 
 Note: the uploaded gallery page is generated to work with a **private** S3 bucket. It embeds **presigned URLs for each image**, so you can share a single presigned link to the gallery page and the images still load.
 
+Gallery UI includes a responsive grid and a built-in lightbox (click to open, Esc to close, ←/→ to navigate).
+
 ## Configuration
 
 Configure via env vars (CLI flags override env):
