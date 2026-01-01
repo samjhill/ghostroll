@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ghostroll"
+version = "0.1.0"
+description = "GhostRoll — SD Card → Processing Pipeline → S3 Share Link"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "Pillow>=10.0.0",
+]
+
+[project.scripts]
+ghostroll = "ghostroll.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ghostroll*"]
+
+
