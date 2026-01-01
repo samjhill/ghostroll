@@ -15,6 +15,7 @@ from .gallery import build_index_html, build_index_html_presigned
 from .hashing import sha256_file
 from .image_processing import render_jpeg_derivative
 from .logging_utils import attach_session_logfile
+from .qr import QrError, render_qr_ascii, write_qr_png
 
 
 class PipelineError(RuntimeError):
@@ -290,6 +291,15 @@ def run_pipeline(
         )
         share_txt.write_text(url + os.linesep, encoding="utf-8")
         logger.info(f"Presigned URL (expires in {cfg.presign_expiry_seconds}s): {url}")
+
+        # QR code (nice-to-have): write a PNG into the session folder and print an ASCII QR in logs.
+        try:
+            qr_png = session_dir / "share-qr.png"
+            write_qr_png(data=url, out_path=qr_png)
+            logger.info(f"QR code written: {qr_png}")
+            logger.info("\n" + render_qr_ascii(url))
+        except QrError as e:
+            logger.warning(str(e))
 
         return sp, url
     finally:

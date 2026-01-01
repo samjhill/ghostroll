@@ -63,6 +63,7 @@ Each session contains:
 - `derived/thumbs/` (max 512px long edge, quality ~85, auto-oriented, metadata stripped)
 - `index.html` (simple static gallery)
 - `share.txt` (presigned URL)
+- `share-qr.png` (QR code for the presigned URL)
 - `ghostroll.log` (session log)
 
 Note: the uploaded gallery page is generated to work with a **private** S3 bucket. It embeds **presigned URLs for each image**, so you can share a single presigned link to the gallery page and the images still load.
