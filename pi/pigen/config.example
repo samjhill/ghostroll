@@ -1,0 +1,43 @@
+# pi-gen config example for GhostRoll
+#
+# Usage:
+# - Copy this file to the root of your pi-gen checkout as: config
+# - Ensure our stage exists at: pi-gen/stage-ghostroll/
+#
+# pi-gen docs: https://github.com/RPi-Distro/pi-gen
+
+# Image naming
+IMG_NAME='ghostroll-pi'
+
+# Base OS (Bookworm is current for Raspberry Pi OS)
+RELEASE='bookworm'
+
+# 64-bit Raspberry Pi OS (recommended for Pi 4)
+ARCH='arm64'
+
+# Build type: lite (no desktop)
+DEPLOY_ZIP=1
+
+# Locale / keyboard / timezone
+LOCALE_DEFAULT='en_US.UTF-8'
+KEYBOARD_KEYMAP='us'
+TIMEZONE_DEFAULT='UTC'
+
+# Default user
+FIRST_USER_NAME='pi'
+# You should override this with your own hash:
+#   openssl passwd -6
+FIRST_USER_PASS='CHANGE_ME'
+
+# Enable SSH on first boot (recommended for headless)
+ENABLE_SSH=1
+
+# Wi-Fi (optional) — if you prefer, use Raspberry Pi Imager advanced options instead.
+#WPA_COUNTRY='US'
+#WPA_SSID='YOUR_WIFI_SSID'
+#WPA_PASSWORD='YOUR_WIFI_PASSWORD'
+
+# Stages to run. We include our custom stage at the end.
+STAGE_LIST='stage0 stage1 stage2 stage-ghostroll'
+
+
