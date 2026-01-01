@@ -85,6 +85,10 @@ Configure via env vars (CLI flags override env):
 - `GHOSTROLL_THUMB_MAX_LONG_EDGE` (default `512`)
 - `GHOSTROLL_THUMB_QUALITY` (default `85`)
 - `GHOSTROLL_POLL_SECONDS` (default `2`)
+- `GHOSTROLL_MOUNT_ROOTS` (comma-separated; default includes `/Volumes,/media,/run/media,/mnt`)
+- `GHOSTROLL_STATUS_PATH` (default `~/ghostroll/status.json`)
+- `GHOSTROLL_STATUS_IMAGE_PATH` (default `~/ghostroll/status.png`)
+- `GHOSTROLL_STATUS_IMAGE_SIZE` (default `800x480`)
 
 ## Dedupe / incremental behavior
 
@@ -112,10 +116,28 @@ The pipeline core is OS-agnostic; only **device detection** changes.
 
 On Linux/Raspberry Pi you’d likely:
 
-- Replace `/Volumes` polling with:
-  - a systemd unit + udev rule, or
-  - polling `/media/<user>/...` or `/run/media/...`
-- Keep the `ghostroll run --volume ...` core intact.
+- Use `ghostroll watch` scanning Linux mount roots like:
+  - `/media/<user>/<label>`
+  - `/run/media/<user>/<label>`
+- Or replace polling entirely with a systemd unit + udev rule (recommended long-term).
+
+### Raspberry Pi “watch mode” quick start
+
+Most setups mount removable media under `/media/pi/<volume-label>`. If your SD card is labeled `auto-import`:
+
+```bash
+export GHOSTROLL_MOUNT_ROOTS="/media,/run/media,/mnt"
+ghostroll watch --sd-label auto-import
+```
+
+### Status output layer (for e-ink displays)
+
+GhostRoll continuously writes:
+
+- `~/ghostroll/status.json` (machine-readable status/progress)
+- `~/ghostroll/status.png` (simple monochrome image suitable for e-ink)
+
+You can run a small display daemon that periodically refreshes your e-ink panel from `status.png`.
 
 ## Legacy shell prototype
 

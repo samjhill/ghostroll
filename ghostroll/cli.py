@@ -8,7 +8,8 @@ from pathlib import Path
 from .config import load_config
 from .logging_utils import setup_logging
 from .pipeline import PipelineError, run_pipeline
-from .volume_watch import find_candidate_volumes, pick_volume_with_dcim
+from .status import Status, StatusWriter
+from .volume_watch import find_candidate_mounts, pick_mount_with_dcim
 
 
 def _add_common_args(p: argparse.ArgumentParser) -> None:
@@ -18,6 +19,26 @@ def _add_common_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--s3-bucket", default=None, help="S3 bucket name (default: photo-ingest-project)")
     p.add_argument("--s3-prefix-root", default=None, help="S3 prefix root (default: sessions/)")
     p.add_argument("--presign-expiry-seconds", type=int, default=None, help="Presign expiry seconds (default: 604800)")
+    p.add_argument(
+        "--mount-roots",
+        default=None,
+        help="Comma-separated mount roots to scan (Linux examples: /media,/run/media,/mnt). If unset, uses defaults.",
+    )
+    p.add_argument(
+        "--status-path",
+        default=None,
+        help="Where to write status JSON (default: ~/ghostroll/status.json)",
+    )
+    p.add_argument(
+        "--status-image-path",
+        default=None,
+        help="Where to write status PNG for e-ink (default: ~/ghostroll/status.png)",
+    )
+    p.add_argument(
+        "--status-image-size",
+        default=None,
+        help="Status PNG size like 800x480 (default: 800x480)",
+    )
     p.add_argument("--verbose", action="store_true", help="Verbose logs")
 
 
@@ -29,23 +50,34 @@ def cmd_run(args: argparse.Namespace) -> int:
         s3_bucket=args.s3_bucket,
         s3_prefix_root=args.s3_prefix_root,
         presign_expiry_seconds=args.presign_expiry_seconds,
+        mount_roots=args.mount_roots,
+        status_path=args.status_path,
+        status_image_path=args.status_image_path,
+        status_image_size=args.status_image_size,
     )
 
     # Accept either an explicit mounted path (recommended) or a volume label like "auto-import".
     vol_arg = str(args.volume)
     if "/" not in vol_arg and "\\" not in vol_arg:
-        # Interpret as label under /Volumes (macOS), including "auto-import 1" suffixes.
-        guessed = pick_volume_with_dcim(Path("/Volumes"), label=vol_arg)
+        # Interpret as label under common mount roots (macOS/Linux), including "auto-import 1" suffixes.
+        guessed = pick_mount_with_dcim(cfg.mount_roots, label=vol_arg)
         volume = guessed if guessed is not None else Path(vol_arg).resolve()
     else:
         volume = Path(vol_arg).resolve()
     logger = setup_logging(session_dir=None, verbose=args.verbose)
+    status = StatusWriter(
+        json_path=cfg.status_path,
+        image_path=cfg.status_image_path,
+        image_size=cfg.status_image_size,
+    )
+    status.write(Status(state="running", step="start", message="Starting run…", volume=str(volume)))
     logger.info(f"Volume: {volume}")
     try:
         sp, url = run_pipeline(
             cfg=cfg,
             volume_path=volume,
             logger=logger,
+            status=status,
             always_create_session=args.always_create_session,
             session_id=args.session_id,
         )
@@ -59,8 +91,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 0
     except (PipelineError, Exception) as e:
         logger.error(str(e))
-        if isinstance(e, PipelineError) and "no DCIM directory" in str(e) and ("/Volumes" not in str(volume)):
-            logger.error("Tip: on macOS, your SD card is usually mounted under /Volumes/<label>. Example: --volume /Volumes/auto-import")
+        if isinstance(e, PipelineError) and "no DCIM directory" in str(e):
+            logger.error("Tip: pass the mounted volume path (example: /Volumes/auto-import on macOS, /media/pi/auto-import on Linux).")
+        status.write(Status(state="error", step="error", message=str(e), volume=str(volume)))
         return 2
 
 
@@ -73,22 +106,35 @@ def cmd_watch(args: argparse.Namespace) -> int:
         s3_prefix_root=args.s3_prefix_root,
         presign_expiry_seconds=args.presign_expiry_seconds,
         poll_seconds=args.poll_seconds,
+        mount_roots=args.mount_roots,
+        status_path=args.status_path,
+        status_image_path=args.status_image_path,
+        status_image_size=args.status_image_size,
     )
     logger = setup_logging(session_dir=None, verbose=args.verbose)
+    status = StatusWriter(
+        json_path=cfg.status_path,
+        image_path=cfg.status_image_path,
+        image_size=cfg.status_image_size,
+    )
 
-    logger.info(f"GhostRoll watching for SD volume '{cfg.sd_label}' under {cfg.volumes_root} ...")
+    logger.info(
+        f"GhostRoll watching for SD volume '{cfg.sd_label}' under: {', '.join([str(p) for p in cfg.mount_roots])}"
+    )
     logger.info("Insert the SD card to begin.")
+    status.write(Status(state="idle", step="watch", message="Waiting for SD card…"))
 
     while True:
-        vol = pick_volume_with_dcim(cfg.volumes_root, label=cfg.sd_label)
+        vol = pick_mount_with_dcim(cfg.mount_roots, label=cfg.sd_label)
         if vol is None:
-            cands = find_candidate_volumes(cfg.volumes_root, label=cfg.sd_label)
+            cands = find_candidate_mounts(cfg.mount_roots, label=cfg.sd_label)
             if cands:
                 logger.warning(f"Volume detected ({', '.join([c.name for c in cands])}) but no DCIM directory. Waiting...")
             time.sleep(cfg.poll_seconds)
             continue
 
         logger.info(f"Detected camera volume: {vol}")
+        status.write(Status(state="running", step="detected", message="SD card detected.", volume=str(vol)))
         rc = cmd_run(
             argparse.Namespace(
                 sd_label=cfg.sd_label,
@@ -107,9 +153,10 @@ def cmd_watch(args: argparse.Namespace) -> int:
             logger.error(f"Run failed with exit code {rc}. Waiting for card removal before retrying.")
 
         logger.info("Remove SD card to run again.")
-        while pick_volume_with_dcim(cfg.volumes_root, label=cfg.sd_label) is not None:
+        while pick_mount_with_dcim(cfg.mount_roots, label=cfg.sd_label) is not None:
             time.sleep(cfg.poll_seconds)
         logger.info(f"Waiting for next '{cfg.sd_label}' card...")
+        status.write(Status(state="idle", step="watch", message="Waiting for SD card…"))
 
 
 def build_parser() -> argparse.ArgumentParser:

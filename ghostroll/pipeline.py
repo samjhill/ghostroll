@@ -16,6 +16,7 @@ from .hashing import sha256_file
 from .image_processing import render_jpeg_derivative
 from .logging_utils import attach_session_logfile
 from .qr import QrError, render_qr_ascii, write_qr_png
+from .status import Status, StatusWriter
 
 
 class PipelineError(RuntimeError):
@@ -123,6 +124,7 @@ def run_pipeline(
     cfg: Config,
     volume_path: Path,
     logger,
+    status: StatusWriter | None = None,
     always_create_session: bool = False,
     session_id: str | None = None,
 ) -> tuple[SessionPaths | None, str | None]:
@@ -132,6 +134,17 @@ def run_pipeline(
     dcim_dir = volume_path / "DCIM"
     if not dcim_dir.is_dir():
         raise PipelineError(f"Volume has no DCIM directory: {dcim_dir}")
+
+    if status is not None:
+        status.write(
+            Status(
+                state="running",
+                step="scan",
+                message="Scanning DCIM for media…",
+                session_id=session_id,
+                volume=str(volume_path),
+            )
+        )
 
     conn = connect(cfg.db_path)
     try:
@@ -151,6 +164,16 @@ def run_pipeline(
 
         logger.info(f"New files: {len(new_files)}; skipped already-seen: {skipped}")
         if not new_files and not always_create_session:
+            if status is not None:
+                status.write(
+                    Status(
+                        state="idle",
+                        step="noop",
+                        message="No new files detected.",
+                        volume=str(volume_path),
+                        counts={"discovered": len(all_media), "new": 0, "skipped": skipped},
+                    )
+                )
             return None, None
 
         session_id = session_id or _session_id_now()
@@ -178,6 +201,17 @@ def run_pipeline(
         derived_thumbs_dir.mkdir(parents=True, exist_ok=True)
 
         # Ingest: copy only new files, preserving DCIM structure under originals/DCIM/
+        if status is not None:
+            status.write(
+                Status(
+                    state="running",
+                    step="ingest",
+                    message="Copying originals…",
+                    session_id=session_id,
+                    volume=str(volume_path),
+                    counts={"discovered": len(all_media), "new": len(new_files), "skipped": skipped},
+                )
+            )
         copied = 0
         for src, sha, size in new_files:
             rel = _safe_rel_under(dcim_dir, src)
@@ -189,6 +223,17 @@ def run_pipeline(
         logger.info(f"Ingested originals copied: {copied} -> {originals_dir}")
 
         # Process: only JPEGs that are newly ingested this run (fast + matches "new since last time" UX).
+        if status is not None:
+            status.write(
+                Status(
+                    state="running",
+                    step="process",
+                    message="Generating share images + thumbnails…",
+                    session_id=session_id,
+                    volume=str(volume_path),
+                    counts={"new": len(new_files), "skipped": skipped},
+                )
+            )
         new_sha_set = {sha for (_p, sha, _s) in new_files}
 
         # Map from DCIM source path to sha for quick membership
@@ -225,10 +270,22 @@ def run_pipeline(
         logger.info(f"Generated gallery: {index_html}")
 
         # Upload (retry-tolerant) with per-key upload dedupe (idempotent if re-run)
+        if status is not None:
+            status.write(
+                Status(
+                    state="running",
+                    step="upload",
+                    message="Uploading to S3…",
+                    session_id=session_id,
+                    volume=str(volume_path),
+                )
+            )
         prefix = f"{cfg.s3_prefix_root}{session_id}".rstrip("/")
         upload_failures: list[str] = []
+        uploaded_ok = 0
 
         def upload_one(local: Path, key: str) -> None:
+            nonlocal uploaded_ok
             sha, size = sha256_file(local)
             prev_sha = _db_uploaded_sha(conn, s3_key=key)
             if prev_sha == sha:
@@ -237,6 +294,7 @@ def run_pipeline(
                 s3_cp(local, bucket=cfg.s3_bucket, key=key, retries=3)
                 _db_mark_uploaded(conn, s3_key=key, local_sha256=sha, size_bytes=size)
                 conn.commit()
+                uploaded_ok += 1
             except AwsCliError as e:
                 upload_failures.append(f"{local} -> s3://{cfg.s3_bucket}/{key}: {e}")
 
@@ -257,6 +315,17 @@ def run_pipeline(
 
         if upload_failures:
             logger.error("Upload failures:\n" + "\n".join(upload_failures))
+            if status is not None:
+                status.write(
+                    Status(
+                        state="error",
+                        step="upload",
+                        message=f"Upload failed for {len(upload_failures)} objects.",
+                        session_id=session_id,
+                        volume=str(volume_path),
+                        counts={"uploaded": uploaded_ok},
+                    )
+                )
             raise PipelineError(f"Upload failed for {len(upload_failures)} objects. See log for details.")
 
         # Build an S3-shareable gallery that embeds presigned URLs for assets (bucket remains private).
@@ -285,6 +354,17 @@ def run_pipeline(
         upload_one(index_for_s3, f"{prefix}/index.html")
 
         # Presign
+        if status is not None:
+            status.write(
+                Status(
+                    state="running",
+                    step="presign",
+                    message="Generating share link…",
+                    session_id=session_id,
+                    volume=str(volume_path),
+                    counts={"uploaded": uploaded_ok},
+                )
+            )
         index_key = f"{prefix}/index.html"
         url = s3_presign(
             bucket=cfg.s3_bucket,
@@ -302,6 +382,25 @@ def run_pipeline(
             logger.info("\n" + render_qr_ascii(url))
         except QrError as e:
             logger.warning(str(e))
+
+        if status is not None:
+            status.write(
+                Status(
+                    state="done",
+                    step="done",
+                    message="Complete.",
+                    session_id=session_id,
+                    volume=str(volume_path),
+                    counts={
+                        "discovered": len(all_media),
+                        "new": len(new_files),
+                        "skipped": skipped,
+                        "processed": processed,
+                        "uploaded": uploaded_ok,
+                    },
+                    url=url,
+                )
+            )
 
         return sp, url
     finally:

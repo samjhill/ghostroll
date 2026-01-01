@@ -9,6 +9,19 @@ def _expand(p: str) -> Path:
     return Path(os.path.expanduser(p)).resolve()
 
 
+def _split_paths(s: str) -> list[Path]:
+    parts = [p.strip() for p in s.split(",") if p.strip()]
+    return [Path(p).resolve() for p in parts]
+
+
+def _parse_size(s: str) -> tuple[int, int]:
+    # "800x480"
+    if "x" not in s:
+        raise ValueError(f"Invalid size '{s}' (expected like 800x480)")
+    w, h = s.lower().split("x", 1)
+    return int(w), int(h)
+
+
 @dataclass(frozen=True)
 class Config:
     sd_label: str
@@ -26,12 +39,19 @@ class Config:
 
     poll_seconds: float
 
+    mount_roots: list[Path]
+
+    status_path: Path
+    status_image_path: Path
+    status_image_size: tuple[int, int]
+
     @property
     def sessions_dir(self) -> Path:
         return self.base_output_dir
 
     @property
     def volumes_root(self) -> Path:
+        # Back-compat: macOS default
         return Path("/Volumes")
 
 
@@ -48,6 +68,10 @@ def load_config(
     thumb_max_long_edge: int | None = None,
     thumb_quality: int | None = None,
     poll_seconds: float | None = None,
+    mount_roots: str | None = None,
+    status_path: str | None = None,
+    status_image_path: str | None = None,
+    status_image_size: str | None = None,
 ) -> Config:
     env = os.environ
 
@@ -84,6 +108,19 @@ def load_config(
         poll_seconds if poll_seconds is not None else env.get("GHOSTROLL_POLL_SECONDS", "2")
     )
 
+    mount_roots = mount_roots or env.get("GHOSTROLL_MOUNT_ROOTS", "")
+    if mount_roots.strip():
+        mount_roots_list = _split_paths(mount_roots)
+    else:
+        # Reasonable defaults for macOS + Linux.
+        mount_roots_list = [Path("/Volumes"), Path("/media"), Path("/run/media"), Path("/mnt")]
+
+    status_path = status_path or env.get("GHOSTROLL_STATUS_PATH", str(_expand("~/ghostroll/status.json")))
+    status_image_path = status_image_path or env.get(
+        "GHOSTROLL_STATUS_IMAGE_PATH", str(_expand("~/ghostroll/status.png"))
+    )
+    status_image_size = status_image_size or env.get("GHOSTROLL_STATUS_IMAGE_SIZE", "800x480")
+
     cfg = Config(
         sd_label=sd_label,
         base_output_dir=_expand(base_output_dir),
@@ -96,10 +133,16 @@ def load_config(
         thumb_max_long_edge=thumb_max_long_edge,
         thumb_quality=thumb_quality,
         poll_seconds=poll_seconds,
+        mount_roots=mount_roots_list,
+        status_path=_expand(status_path),
+        status_image_path=_expand(status_image_path),
+        status_image_size=_parse_size(status_image_size),
     )
 
     cfg.base_output_dir.mkdir(parents=True, exist_ok=True)
     cfg.db_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg.status_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg.status_image_path.parent.mkdir(parents=True, exist_ok=True)
     return cfg
 
 
