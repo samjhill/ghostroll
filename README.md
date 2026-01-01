@@ -26,6 +26,47 @@ pip install -U pip
 pip install -e .
 ```
 
+## AWS credentials (AWS CLI)
+
+GhostRoll uses the **AWS CLI** (`aws s3 cp` + `aws s3 presign`) so you must configure credentials on the machine running GhostRoll (Mac or Pi).
+
+### Option A: `aws configure` (recommended)
+
+```bash
+aws configure
+aws sts get-caller-identity
+```
+
+This creates:
+
+- `~/.aws/credentials`
+- `~/.aws/config`
+
+### Option B: create `~/.aws/credentials` manually
+
+Use the templates in:
+
+- `docs/aws/credentials.example`
+- `docs/aws/config.example`
+
+Then:
+
+```bash
+mkdir -p ~/.aws
+cp docs/aws/credentials.example ~/.aws/credentials
+cp docs/aws/config.example ~/.aws/config
+chmod 600 ~/.aws/credentials
+aws sts get-caller-identity
+```
+
+### IAM permissions (least-privilege)
+
+Your AWS identity needs to be able to upload objects and generate presigned URLs. A starting policy is in:
+
+- `docs/aws/iam-policy-ghostroll-s3.json`
+
+Update the bucket name / region as needed before attaching it to the IAM user/role used on the device.
+
 ## SD card naming
 
 Rename your SD card volume label to:

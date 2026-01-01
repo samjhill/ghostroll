@@ -1,0 +1,22 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "GhostRollUploadAndPresign",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:AbortMultipartUpload",
+        "s3:ListBucketMultipartUploads",
+        "s3:ListMultipartUploadParts",
+        "s3:GetObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::photo-ingest-project",
+        "arn:aws:s3:::photo-ingest-project/*"
+      ]
+    }
+  ]
+}
+
+
