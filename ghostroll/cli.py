@@ -21,8 +21,8 @@ def _add_common_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--presign-expiry-seconds", type=int, default=None, help="Presign expiry seconds (default: 604800)")
     p.add_argument(
         "--mount-roots",
-        default=None,
-        help="Comma-separated mount roots to scan (Linux examples: /media,/run/media,/mnt). If unset, uses defaults.",
+        default="/Volumes,/media,/run/media,/mnt",
+        help="Comma-separated mount roots to scan (default: /Volumes,/media,/run/media,/mnt).",
     )
     p.add_argument(
         "--status-path",
@@ -143,6 +143,10 @@ def cmd_watch(args: argparse.Namespace) -> int:
                 s3_bucket=cfg.s3_bucket,
                 s3_prefix_root=cfg.s3_prefix_root,
                 presign_expiry_seconds=cfg.presign_expiry_seconds,
+                mount_roots=args.mount_roots,
+                status_path=args.status_path,
+                status_image_path=args.status_image_path,
+                status_image_size=args.status_image_size,
                 verbose=args.verbose,
                 volume=str(vol),
                 always_create_session=args.always_create_session,
