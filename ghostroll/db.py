@@ -21,6 +21,12 @@ CREATE TABLE IF NOT EXISTS uploads (
   size_bytes INTEGER NOT NULL,
   uploaded_utc TEXT NOT NULL
 );
+
+-- Indexes for query performance
+CREATE INDEX IF NOT EXISTS idx_ingested_files_size_bytes ON ingested_files(size_bytes);
+CREATE INDEX IF NOT EXISTS idx_ingested_files_first_seen_utc ON ingested_files(first_seen_utc);
+CREATE INDEX IF NOT EXISTS idx_uploads_local_sha256 ON uploads(local_sha256);
+CREATE INDEX IF NOT EXISTS idx_uploads_uploaded_utc ON uploads(uploaded_utc);
 """
 
 

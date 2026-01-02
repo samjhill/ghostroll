@@ -53,3 +53,27 @@ def test_db_row_factory(tmp_path: Path):
 
     conn.close()
 
+
+def test_db_indexes_created(tmp_path: Path):
+    """Verify that performance indexes are created."""
+    db_path = tmp_path / "test.db"
+    conn = connect(db_path)
+
+    cursor = conn.cursor()
+    # Check that indexes exist
+    cursor.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'"
+    )
+    indexes = {row[0] for row in cursor.fetchall()}
+
+    # Verify expected indexes exist
+    expected_indexes = {
+        "idx_ingested_files_size_bytes",
+        "idx_ingested_files_first_seen_utc",
+        "idx_uploads_local_sha256",
+        "idx_uploads_uploaded_utc",
+    }
+    assert expected_indexes.issubset(indexes), f"Missing indexes. Found: {indexes}"
+
+    conn.close()
+
