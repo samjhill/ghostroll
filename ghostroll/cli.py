@@ -195,15 +195,45 @@ def cmd_watch(args: argparse.Namespace) -> int:
         # the mountpoint and instead check:
         # - /dev/disk/by-label/<label> (udev symlink; disappears when the partition is gone)
         # - mount table (/proc/mounts) for the last-detected mountpoint path
+        # - Try to find the volume again (if it's gone, pick_mount_with_dcim will return None)
         by_label_root = Path("/dev/disk/by-label")
         by_label = by_label_root / cfg.sd_label
         last_mountpoint = Path(vol)
-        while True:
-            label_present = by_label.exists() if by_label_root.is_dir() else False
+        removal_detected = False
+        consecutive_removals = 0
+        required_removals = 2  # Require 2 consecutive checks to confirm removal (debounce)
+        
+        while not removal_detected:
+            # Check multiple indicators of removal
+            label_present = by_label.exists() if by_label_root.is_dir() else None
             mounted = _is_mounted(last_mountpoint)
-            if (by_label_root.is_dir() and not label_present) or not mounted:
-                break
-            time.sleep(cfg.poll_seconds)
+            still_found = pick_mount_with_dcim(cfg.mount_roots, label=cfg.sd_label)
+            
+            # Card is removed if:
+            # 1. Mount is gone AND volume can't be found, OR
+            # 2. On Linux: label symlink is gone AND mount is gone
+            is_removed = False
+            if not mounted and still_found is None:
+                # Mount is gone and we can't find the volume - likely removed
+                is_removed = True
+            elif by_label_root.is_dir() and label_present is False and not mounted:
+                # On Linux: label symlink gone and mount gone - definitely removed
+                is_removed = True
+            elif still_found is None and not mounted:
+                # Can't find volume and mount is gone - removed
+                is_removed = True
+            
+            if is_removed:
+                consecutive_removals += 1
+                if consecutive_removals >= required_removals:
+                    removal_detected = True
+            else:
+                # Reset counter if card is still present
+                consecutive_removals = 0
+            
+            if not removal_detected:
+                time.sleep(cfg.poll_seconds)
+        
         logger.info(f"Waiting for next '{cfg.sd_label}' card...")
         status.write(
             Status(
