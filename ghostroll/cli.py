@@ -8,7 +8,7 @@ from pathlib import Path
 from .config import load_config
 from .logging_utils import setup_logging
 from .pipeline import PipelineError, run_pipeline
-from .status import Status, StatusWriter
+from .status import Status, StatusWriter, get_hostname, get_ip_address
 from .volume_watch import find_candidate_mounts, pick_mount_with_dcim
 
 
@@ -122,7 +122,15 @@ def cmd_watch(args: argparse.Namespace) -> int:
         f"GhostRoll watching for SD volume '{cfg.sd_label}' under: {', '.join([str(p) for p in cfg.mount_roots])}"
     )
     logger.info("Insert the SD card to begin.")
-    status.write(Status(state="idle", step="watch", message="Waiting for SD card…"))
+    status.write(
+        Status(
+            state="idle",
+            step="watch",
+            message="Waiting for SD card…",
+            hostname=get_hostname(),
+            ip=get_ip_address(),
+        )
+    )
 
     while True:
         vol = pick_mount_with_dcim(cfg.mount_roots, label=cfg.sd_label)
@@ -160,7 +168,15 @@ def cmd_watch(args: argparse.Namespace) -> int:
         while pick_mount_with_dcim(cfg.mount_roots, label=cfg.sd_label) is not None:
             time.sleep(cfg.poll_seconds)
         logger.info(f"Waiting for next '{cfg.sd_label}' card...")
-        status.write(Status(state="idle", step="watch", message="Waiting for SD card…"))
+        status.write(
+            Status(
+                state="idle",
+                step="watch",
+                message="Waiting for SD card…",
+                hostname=get_hostname(),
+                ip=get_ip_address(),
+            )
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:

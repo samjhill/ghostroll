@@ -2,9 +2,55 @@ from __future__ import annotations
 
 import json
 import os
+import socket
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+
+def get_hostname() -> str:
+    try:
+        return socket.gethostname()
+    except Exception:
+        return "unknown"
+
+
+def get_ip_address() -> str | None:
+    """
+    Best-effort "what IP should I SSH to?" helper.
+    - On Linux, prefer `hostname -I` (common on Raspberry Pi OS)
+    - Fallback: UDP socket trick (doesn't send packets)
+    """
+    # Linux / Raspberry Pi OS
+    try:
+        res = subprocess.run(["hostname", "-I"], capture_output=True, text=True)
+        if res.returncode == 0:
+            ips = [p.strip() for p in res.stdout.strip().split() if p.strip()]
+            # Skip loopback and link-local if possible
+            for ip in ips:
+                if ip.startswith("127.") or ip.startswith("169.254."):
+                    continue
+                return ip
+            if ips:
+                return ips[0]
+    except Exception:
+        pass
+
+    # Generic fallback
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            if ip and not ip.startswith("127."):
+                return ip
+        finally:
+            s.close()
+    except Exception:
+        pass
+
+    return None
 
 
 @dataclass
@@ -16,6 +62,8 @@ class Status:
     volume: str | None = None
     counts: dict[str, int] | None = None
     url: str | None = None
+    hostname: str | None = None
+    ip: str | None = None
     updated_unix: float | None = None
 
 
@@ -41,6 +89,8 @@ class StatusWriter:
             "volume": status.volume,
             "counts": status.counts or {},
             "url": status.url,
+            "hostname": status.hostname,
+            "ip": status.ip,
             "updated_unix": status.updated_unix,
         }
         self._atomic_write_json(self.json_path, payload)
@@ -68,6 +118,10 @@ class StatusWriter:
 
         lines: list[str] = []
         lines.append(f"GhostRoll — {payload.get('state', '')}".strip())
+        if payload.get("hostname") or payload.get("ip"):
+            hn = payload.get("hostname") or "unknown"
+            ip = payload.get("ip") or "no IP yet"
+            lines.append(f"SSH: pi@{ip}  ({hn})")
         if payload.get("session_id"):
             lines.append(f"Session: {payload['session_id']}")
         if payload.get("step"):

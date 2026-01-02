@@ -135,6 +135,10 @@ Status outputs (for e‑ink):
 
 Your e‑ink daemon can just refresh from `status.png` on a timer.
 
+On boot (once networking is up), the status display also shows the current **SSH target**:
+
+- `SSH: pi@<ip> (<hostname>)`
+
 ## Troubleshooting (the common ones)
 
 ### “RELEASE does not match the intended option for this branch”
