@@ -1,16 +1,35 @@
 ## GhostRoll
 
-![GhostRoll device](images/header.png)
-
 GhostRoll is a “drop the SD card in and it just works” ingest pipeline:
 
 **SD card → local session → share-friendly JPEGs + thumbnails + gallery → private S3 → one share link**
 
-It’s designed to be:
+It's designed to be:
 
 - **Low-friction** (watch mode + one URL)
 - **Incremental** (dedupe so re-inserting the same card is fast)
 - **Privacy-friendly** (derived images strip metadata; S3 stays private)
+
+## How it works
+
+```mermaid
+flowchart TD
+    A[Insert SD Card] --> B[Watch detects mount]
+    B --> C[Scan DCIM directory]
+    C --> D{New files?}
+    D -->|No| E[Skip - already processed]
+    D -->|Yes| F[Copy originals to session]
+    F --> G[Generate share images & thumbnails]
+    G --> H[Build HTML gallery]
+    H --> I[Upload to private S3 bucket]
+    I --> J[Generate presigned URLs]
+    J --> K[Create share link + QR code]
+    K --> L[Share URL with others]
+    E --> M[Wait for next card]
+    L --> M
+```
+
+![GhostRoll device](images/header.png)
 
 ## Quick start (macOS)
 
