@@ -33,7 +33,22 @@ flowchart TD
 
 ## Quick start (macOS)
 
-### 1) Install
+### Option 1: Automated setup (recommended)
+
+```bash
+./setup.sh
+source .venv/bin/activate
+ghostroll setup
+```
+
+The setup script will:
+- Create a virtual environment
+- Install GhostRoll and dependencies
+- Guide you through configuration checks
+
+### Option 2: Manual setup
+
+#### 1) Install
 
 ```bash
 python3 -m venv .venv
@@ -42,7 +57,7 @@ pip install -U pip
 pip install -e .
 ```
 
-### 2) Configure AWS (once)
+#### 2) Configure AWS (once)
 
 GhostRoll uses the AWS CLI (`aws s3 cp` + `aws s3 presign`), so make sure this works:
 
@@ -57,7 +72,17 @@ If you prefer to edit files directly, use the templates in:
 - `docs/aws/config.example`
 - `docs/aws/iam-policy-ghostroll-s3.json` (starter least-privilege policy)
 
-### 3) Name your SD card
+#### 3) Verify setup
+
+Run the interactive setup guide to check everything is configured correctly:
+
+```bash
+ghostroll setup
+```
+
+This will check AWS credentials, disk space, mount points, and provide guidance for any issues.
+
+#### 4) Name your SD card
 
 Set the SD card volume label to:
 
@@ -65,15 +90,25 @@ Set the SD card volume label to:
 
 macOS sometimes mounts as `auto-import 1`, etc — GhostRoll handles that.
 
-### 4) Run watch mode
+#### 5) Run watch mode
 
 ```bash
 ghostroll watch
 ```
 
-When it finishes, you’ll get a session directory under `~/ghostroll/` with a `share.txt` presigned URL.
+When it finishes, you'll get a session directory under `~/ghostroll/` with a `share.txt` presigned URL.
 
-## Troubleshooting: doctor
+## Troubleshooting
+
+### Interactive setup guide
+
+For a guided setup experience with helpful error messages:
+
+```bash
+ghostroll setup
+```
+
+### Doctor command
 
 If something feels misconfigured (AWS creds, bucket perms, mount roots, disk space), run:
 

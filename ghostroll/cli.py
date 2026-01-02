@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import platform
 import subprocess
 import sys
 import time
@@ -392,9 +393,119 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return rc
 
 
+def _get_aws_cli_install_instructions() -> str:
+    """Get platform-specific AWS CLI installation instructions."""
+    system = platform.system().lower()
+    if system == "darwin":
+        return """Install AWS CLI v2 on macOS:
+
+Option 1: Using Homebrew (recommended):
+  brew install awscli
+
+Option 2: Using the official installer:
+  1. Download: https://awscli.amazonaws.com/AWSCLIV2.pkg
+  2. Run the installer
+  3. Verify: aws --version"""
+    elif system == "linux":
+        return """Install AWS CLI v2 on Linux:
+
+Option 1: Using package manager (if available):
+  # Debian/Ubuntu
+  sudo apt-get update
+  sudo apt-get install awscli
+
+Option 2: Using the official installer:
+  1. Download: curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+  2. unzip awscliv2.zip
+  3. sudo ./aws/install
+  4. Verify: aws --version"""
+    else:
+        return """Install AWS CLI v2:
+  1. Visit: https://aws.amazon.com/cli/
+  2. Download the installer for your platform
+  3. Follow the installation instructions
+  4. Verify: aws --version"""
+
+
+def cmd_setup(args: argparse.Namespace) -> int:
+    """Interactive setup command that guides users through initial configuration."""
+    print("GhostRoll Setup")
+    print("=" * 60)
+    print()
+    
+    # Run doctor checks
+    print("Running system checks...")
+    print()
+    rc, results = run_doctor(
+        base_dir=args.base_dir,
+        sd_label=args.sd_label,
+        mount_roots=args.mount_roots,
+        db_path=args.db_path,
+        s3_bucket=args.s3_bucket,
+        min_free_gb=args.min_free_gb,
+        skip_aws=False,
+    )
+    
+    print(format_results(results))
+    print()
+    
+    # Analyze results and provide guidance
+    fatal_issues = [r for r in results if not r.ok and r.is_fatal]
+    warnings = [r for r in results if not r.ok and not r.is_fatal]
+    
+    if not fatal_issues and not warnings:
+        print("✅ All checks passed! Your GhostRoll setup looks good.")
+        print()
+        print("Next steps:")
+        print("  1. Name your SD card volume label to 'auto-import'")
+        print("  2. Run: ghostroll watch")
+        return 0
+    
+    if fatal_issues:
+        print("❌ Setup incomplete - please fix the following issues:")
+        print()
+        for issue in fatal_issues:
+            print(f"  • {issue.name}: {issue.message}")
+            
+            # Provide specific guidance for common issues
+            if issue.name == "aws_cli":
+                print()
+                print(_get_aws_cli_install_instructions())
+                print()
+            elif issue.name == "aws_identity":
+                print()
+                print("Configure AWS credentials:")
+                print("  aws configure")
+                print("  aws sts get-caller-identity  # Verify it works")
+                print()
+                print("Or manually edit files:")
+                print("  ~/.aws/credentials  (copy from docs/aws/credentials.example)")
+                print("  ~/.aws/config       (copy from docs/aws/config.example)")
+                print()
+        print()
+    
+    if warnings:
+        print("⚠️  Warnings (non-fatal):")
+        for warning in warnings:
+            print(f"  • {warning.name}: {warning.message}")
+        print()
+    
+    if fatal_issues:
+        print("After fixing the issues above, run 'ghostroll setup' again to verify.")
+        return 2
+    else:
+        print("You can proceed with GhostRoll, but consider addressing the warnings above.")
+        return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="ghostroll", description="GhostRoll ingest pipeline")
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    p_setup = sub.add_parser("setup", help="Interactive setup guide and system checks")
+    _add_common_args(p_setup)
+    p_setup.add_argument("--min-free-gb", type=float, default=2.0, help="Minimum free disk space required")
+    p_setup.set_defaults(func=cmd_setup)
 
     p_doc = sub.add_parser("doctor", help="Run environment checks (AWS, mounts, disk, config)")
     _add_common_args(p_doc)
