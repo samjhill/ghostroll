@@ -180,7 +180,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
                 status_path=args.status_path,
                 status_image_path=args.status_image_path,
                 status_image_size=args.status_image_size,
-                verbose=not args.quiet,
+                quiet=args.quiet,
                 volume=str(vol),
                 always_create_session=args.always_create_session,
                 session_id=None,
