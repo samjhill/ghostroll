@@ -133,25 +133,57 @@ def _db_with_retry(db_path: Path, fn, *, retries: int = 10, backoff: float = 0.0
 def _iter_media_files(dcim_dir: Path) -> list[Path]:
     """
     Recursively find all media files in the DCIM directory.
-    Uses os.walk instead of Path.rglob to avoid potential directory caching issues.
+    Uses subprocess find command to bypass any Python filesystem caching.
     """
+    import subprocess
+    
     out: list[Path] = []
     try:
-        # Use os.walk instead of Path.rglob to avoid potential caching issues
-        # os.walk always reads the directory from disk
-        for root, dirs, files in os.walk(str(dcim_dir)):
-            root_path = Path(root)
-            for filename in files:
-                file_path = root_path / filename
+        # Use subprocess find to bypass any Python filesystem caching
+        # This should give us a fresh view of the filesystem
+        result = subprocess.run(
+            ["find", str(dcim_dir), "-type", "f"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode != 0:
+            # Fallback to os.walk if find fails
+            for root, dirs, files in os.walk(str(dcim_dir)):
+                root_path = Path(root)
+                for filename in files:
+                    file_path = root_path / filename
+                    try:
+                        if media.is_media(file_path):
+                            out.append(file_path)
+                    except (OSError, IOError):
+                        continue
+        else:
+            # Process find output
+            for line in result.stdout.splitlines():
+                if not line.strip():
+                    continue
+                file_path = Path(line.strip())
                 try:
-                    if media.is_media(file_path):
+                    if file_path.is_file() and media.is_media(file_path):
                         out.append(file_path)
                 except (OSError, IOError):
                     # File became inaccessible, skip it
                     continue
-    except (OSError, IOError):
-        # Volume became inaccessible during directory traversal, return what we have
-        pass
+    except (OSError, IOError, subprocess.TimeoutExpired):
+        # Fallback to os.walk if find fails or times out
+        try:
+            for root, dirs, files in os.walk(str(dcim_dir)):
+                root_path = Path(root)
+                for filename in files:
+                    file_path = root_path / filename
+                    try:
+                        if media.is_media(file_path):
+                            out.append(file_path)
+                    except (OSError, IOError):
+                        continue
+        except (OSError, IOError):
+            pass
     return sorted(out)
 
 
