@@ -166,8 +166,17 @@ def cmd_watch(args: argparse.Namespace) -> int:
             logger.error(f"Run failed with exit code {rc}. Waiting for card removal before retrying.")
 
         logger.info("Remove SD card to run again.")
-        while pick_mount_with_dcim(cfg.mount_roots, label=cfg.sd_label) is not None:
-            time.sleep(cfg.poll_seconds)
+        # On Raspberry Pi OS Lite, we often rely on systemd automount for /mnt/auto-import.
+        # Continuously probing the mountpoint can keep the automount "busy" and prevent it from unmounting,
+        # so detect removal using the udev-created by-label symlink when available.
+        by_label_root = Path("/dev/disk/by-label")
+        by_label = by_label_root / cfg.sd_label
+        if by_label_root.is_dir():
+            while by_label.exists():
+                time.sleep(cfg.poll_seconds)
+        else:
+            while pick_mount_with_dcim(cfg.mount_roots, label=cfg.sd_label) is not None:
+                time.sleep(cfg.poll_seconds)
         logger.info(f"Waiting for next '{cfg.sd_label}' card...")
         status.write(
             Status(
