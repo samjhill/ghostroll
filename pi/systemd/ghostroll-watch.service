@@ -9,7 +9,9 @@ User=pi
 Group=pi
 WorkingDirectory=/home/pi
 EnvironmentFile=-/etc/ghostroll.env
-ExecStart=/usr/local/bin/ghostroll watch --sd-label ${GHOSTROLL_SD_LABEL:-auto-import}
+# Do NOT use bash-style default expansion (":-") here; systemd does not evaluate it.
+# GhostRoll already reads GHOSTROLL_SD_LABEL with a default of "auto-import".
+ExecStart=/usr/local/bin/ghostroll watch
 Restart=on-failure
 RestartSec=3
 
