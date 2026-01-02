@@ -6,4 +6,7 @@ __pycache__/
 .aws/
 *.img
 incoming/
+.coverage
+.pytest_cache/
+htmlcov/
 
