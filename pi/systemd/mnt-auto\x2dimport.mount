@@ -1,0 +1,14 @@
+[Unit]
+Description=Mount SD card labeled auto-import at /mnt/auto-import
+
+[Mount]
+What=/dev/disk/by-label/auto-import
+Where=/mnt/auto-import
+Type=exfat
+# exFAT doesn't store UNIX ownership/permissions; set them at mount time.
+Options=uid=pi,gid=pi,umask=022,iocharset=utf8
+
+[Install]
+WantedBy=multi-user.target
+
+

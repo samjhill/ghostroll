@@ -164,6 +164,28 @@ sudo systemctl status ghostroll-eink.service --no-pager
 
 It will refresh the panel when `status.png` changes (default poll interval: 5s).
 
+## Auto-mount SD card on Lite (recommended)
+
+On Raspberry Pi OS Lite, USB storage devices often **do not auto-mount**.
+GhostRoll watch mode only detects **mounted** volumes (it looks for `DCIM/` under mount roots like `/mnt`).
+
+This repo includes a systemd automount for an SD card labeled `auto-import`:
+
+- mounts to: `/mnt/auto-import`
+- device path: `/dev/disk/by-label/auto-import`
+
+If you installed manually (not via pi-gen image), enable it:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y exfatprogs
+sudo mkdir -p /mnt/auto-import
+sudo cp '/home/pi/ghostroll/pi/systemd/mnt-auto\x2dimport.mount' /etc/systemd/system/
+sudo cp '/home/pi/ghostroll/pi/systemd/mnt-auto\x2dimport.automount' /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now 'mnt-auto\x2dimport.automount'
+```
+
 ## Troubleshooting (the common ones)
 
 ### “RELEASE does not match the intended option for this branch”

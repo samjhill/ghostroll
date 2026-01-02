@@ -23,6 +23,7 @@ apt-get install -y --no-install-recommends \
   git \
   python3 python3-venv python3-pip \
   python3-rpi.gpio python3-spidev \
+  exfatprogs \
   awscli \
   ca-certificates
 
@@ -40,6 +41,8 @@ install -m 0644 /usr/local/src/ghostroll/pi/systemd/ghostroll-watch.service /etc
 install -m 0644 /usr/local/src/ghostroll/pi/systemd/ghostroll-update.service /etc/systemd/system/ghostroll-update.service
 install -m 0644 /usr/local/src/ghostroll/pi/systemd/ghostroll-update.timer /etc/systemd/system/ghostroll-update.timer
 install -m 0644 /usr/local/src/ghostroll/pi/systemd/ghostroll-eink.service /etc/systemd/system/ghostroll-eink.service
+install -m 0644 /usr/local/src/ghostroll/pi/systemd/mnt-auto\\x2dimport.mount /etc/systemd/system/mnt-auto\\x2dimport.mount
+install -m 0644 /usr/local/src/ghostroll/pi/systemd/mnt-auto\\x2dimport.automount /etc/systemd/system/mnt-auto\\x2dimport.automount
 
 # Default env baked into the image (can be overridden by boot-partition ghostroll.env)
 install -m 0644 /usr/local/src/ghostroll/pi/ghostroll.env.default /etc/ghostroll.env
@@ -48,5 +51,6 @@ systemctl enable ghostroll-firstboot.service
 systemctl enable ghostroll-watch.service
 systemctl enable ghostroll-update.timer
 systemctl enable ghostroll-eink.service
+systemctl enable mnt-auto\\x2dimport.automount
 
 
