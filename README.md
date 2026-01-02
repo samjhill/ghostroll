@@ -1,5 +1,7 @@
 ## GhostRoll
 
+![GhostRoll device](images/header.png)
+
 GhostRoll is a “drop the SD card in and it just works” ingest pipeline:
 
 **SD card → local session → share-friendly JPEGs + thumbnails + gallery → private S3 → one share link**
