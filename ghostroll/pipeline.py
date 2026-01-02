@@ -81,6 +81,12 @@ def _db_has_ingested(conn: sqlite3.Connection, sha256: str) -> bool:
     return row is not None
 
 
+def _db_get_known_sizes(conn: sqlite3.Connection) -> set[int]:
+    """Get all known file sizes from database for fast pre-filtering."""
+    rows = conn.execute("SELECT DISTINCT size_bytes FROM ingested_files").fetchall()
+    return {row["size_bytes"] for row in rows}
+
+
 def _db_mark_ingested(
     conn: sqlite3.Connection, *, sha256: str, size_bytes: int, source_hint: str
 ) -> None:
@@ -185,40 +191,74 @@ def run_pipeline(
         jpeg_sources, raw_sources = _pair_prefer_jpeg(all_media)
         logger.info(f"Discovered media files: {len(all_media)} (JPEG candidates: {len(jpeg_sources)}, RAW: {len(raw_sources)})")
 
-        # Determine what's new by hashing (parallelized for performance).
-        logger.info(f"Hashing {len(all_media)} files to check for duplicates...")
+        # Fast pre-filter: check file sizes first (much faster than hashing)
+        # Files with sizes not in the database are definitely new and don't need duplicate checking
+        logger.info(f"Pre-filtering {len(all_media)} files by size...")
+        known_sizes = _db_get_known_sizes(conn)
+        logger.debug(f"Database contains {len(known_sizes)} unique file sizes")
         
-        def _hash_one(p: Path) -> tuple[Path, str, int]:
-            sha, size = sha256_file(p)
+        # Get file sizes quickly (stat is very fast, no I/O)
+        files_with_sizes: list[tuple[Path, int]] = []
+        for p in all_media:
+            try:
+                size = p.stat().st_size
+                files_with_sizes.append((p, size))
+            except OSError:
+                # File might have been deleted, skip it
+                logger.debug(f"  Skipped (cannot stat): {p.name}")
+                continue
+        
+        # Split files into two groups:
+        # 1. Files with new sizes - definitely new, but still need to hash for DB
+        # 2. Files with known sizes - might be duplicates, need to hash to check
+        files_to_check: list[tuple[Path, int]] = []  # Potential duplicates (known size)
+        files_new_size: list[tuple[Path, int]] = []  # Definitely new (new size)
+        
+        for p, size in files_with_sizes:
+            if size not in known_sizes:
+                # Size not in DB - definitely a new file
+                files_new_size.append((p, size))
+            else:
+                # Size matches - might be duplicate, need to hash to confirm
+                files_to_check.append((p, size))
+        
+        logger.info(f"Pre-filter results: {len(files_new_size)} new by size, {len(files_to_check)} potential duplicates")
+        
+        # Hash files that might be duplicates (parallelized)
+        def _hash_one(item: tuple[Path, int]) -> tuple[Path, str, int]:
+            p, size = item
+            sha, _ = sha256_file(p)
             return (p, sha, size)
         
-        # Parallelize hashing (I/O bound operation)
-        hash_workers = min(4, max(1, cfg.process_workers))  # Use fewer workers for hashing
+        # Hash potential duplicates first (these need duplicate checking)
         hashed_files: list[tuple[Path, str, int]] = []
-        with ThreadPoolExecutor(max_workers=hash_workers) as ex:
-            futures = {ex.submit(_hash_one, p): p for p in all_media}
-            for i, fut in enumerate(as_completed(futures), 1):
-                p, sha, size = fut.result()
-                logger.debug(f"Hashing [{i}/{len(all_media)}]: {p.name}")
-                hashed_files.append((p, sha, size))
+        if files_to_check:
+            logger.info(f"Hashing {len(files_to_check)} files to check for duplicates...")
+            hash_workers = min(4, max(1, cfg.process_workers))
+            with ThreadPoolExecutor(max_workers=hash_workers) as ex:
+                futures = {ex.submit(_hash_one, item): item for item in files_to_check}
+                for i, fut in enumerate(as_completed(futures), 1):
+                    p, sha, size = fut.result()
+                    logger.debug(f"Hashing [{i}/{len(files_to_check)}]: {p.name}")
+                    hashed_files.append((p, sha, size))
         
         # Batch check database for duplicates (more efficient than one-by-one)
-        logger.debug("Checking database for duplicates...")
         all_shas = {sha for (_, sha, _) in hashed_files}
+        existing_shas: set[str] = set()
         if all_shas:
-            # Query all at once
+            logger.debug("Checking database for duplicate hashes...")
             placeholders = ",".join("?" * len(all_shas))
             existing_rows = conn.execute(
                 f"SELECT sha256 FROM ingested_files WHERE sha256 IN ({placeholders})",
                 tuple(all_shas)
             ).fetchall()
             existing_shas = {row["sha256"] for row in existing_rows}
-        else:
-            existing_shas = set()
         
-        # Filter to new files
+        # Hash definitely-new files (parallelized, but we know they're new so no DB check needed)
         new_files: list[tuple[Path, str, int]] = []
         skipped = 0
+        
+        # Check hashed files for duplicates
         for p, sha, size in hashed_files:
             if sha in existing_shas:
                 skipped += 1
@@ -226,6 +266,18 @@ def run_pipeline(
                 continue
             new_files.append((p, sha, size))
             logger.debug(f"  New file: {p.name} ({size:,} bytes, SHA256: {sha[:16]}...)")
+        
+        # Hash definitely-new files (no duplicate check needed, but need hash for DB)
+        if files_new_size:
+            logger.info(f"Hashing {len(files_new_size)} new files (new sizes, no duplicate check needed)...")
+            hash_workers = min(4, max(1, cfg.process_workers))
+            with ThreadPoolExecutor(max_workers=hash_workers) as ex:
+                futures = {ex.submit(_hash_one, item): item for item in files_new_size}
+                for i, fut in enumerate(as_completed(futures), 1):
+                    p, sha, size = fut.result()
+                    logger.debug(f"Hashing [{i}/{len(files_new_size)}]: {p.name}")
+                    new_files.append((p, sha, size))
+                    logger.debug(f"  New file: {p.name} ({size:,} bytes, SHA256: {sha[:16]}...)")
 
         logger.info(f"New files: {len(new_files)}; skipped already-seen: {skipped}")
         if not new_files and not always_create_session:
