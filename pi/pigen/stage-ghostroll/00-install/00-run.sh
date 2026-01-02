@@ -41,6 +41,9 @@ install -m 0644 /usr/local/src/ghostroll/pi/systemd/ghostroll-update.service /et
 install -m 0644 /usr/local/src/ghostroll/pi/systemd/ghostroll-update.timer /etc/systemd/system/ghostroll-update.timer
 install -m 0644 /usr/local/src/ghostroll/pi/systemd/ghostroll-eink.service /etc/systemd/system/ghostroll-eink.service
 
+# Default env baked into the image (can be overridden by boot-partition ghostroll.env)
+install -m 0644 /usr/local/src/ghostroll/pi/ghostroll.env.default /etc/ghostroll.env
+
 systemctl enable ghostroll-firstboot.service
 systemctl enable ghostroll-watch.service
 systemctl enable ghostroll-update.timer

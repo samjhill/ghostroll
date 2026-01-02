@@ -83,6 +83,12 @@ After you flash the resulting image to a microSD card, mount the **boot** partit
 
 On first boot, it is copied to `/etc/ghostroll.env` and used by the service.
 
+### Defaults (no config file required)
+
+The image also ships with a baked-in `/etc/ghostroll.env` (`pi/ghostroll.env.default` in this repo), so the device boots and runs even if you don’t copy a config file onto the boot partition.
+
+If you *do* place `ghostroll.env` on the boot partition, it will override the baked-in defaults.
+
 ## AWS credentials on the Pi
 
 GhostRoll uses the AWS CLI (`aws s3 cp` + `aws s3 presign`). You have two options:
