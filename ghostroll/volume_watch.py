@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
@@ -8,14 +9,43 @@ def _candidate_names_match(name: str, *, label: str) -> bool:
     return name == label or name.startswith(label + " ")
 
 
+def _get_mount_device(mount_point: Path) -> str | None:
+    """
+    Get the device path (e.g., /dev/sdb1) for a given mount point by reading /proc/mounts.
+    Returns None if not found or not on Linux.
+    """
+    try:
+        with open("/proc/mounts", "r") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2:
+                    device, mount_path = parts[0], parts[1]
+                    # Unescape mount paths (spaces are \040)
+                    mount_path = mount_path.replace("\\040", " ")
+                    if mount_path == str(mount_point):
+                        return device
+    except (OSError, IOError, FileNotFoundError):
+        # /proc/mounts doesn't exist (not Linux) or can't read it
+        return None
+    return None
+
+
 def _is_mount_accessible(where: Path) -> bool:
     """
     Check if a mountpoint is actually accessible (not just in mount table).
     This catches cases where the mount is "lazy unmounted" - still exists as a directory
     but the device is actually gone.
     
+    On Linux, checks /proc/mounts to verify the device exists.
     Uses a lightweight check that will fail if the underlying device is removed.
     """
+    # On Linux, check /proc/mounts to verify device exists
+    device = _get_mount_device(where)
+    if device:
+        # Verify the device file actually exists
+        if not Path(device).exists():
+            return False
+    
     try:
         # Try to stat the mountpoint itself (not its contents, to avoid triggering automount)
         # If the mount is stale, this will fail with ENODEV or EIO
