@@ -132,9 +132,17 @@ def _db_with_retry(db_path: Path, fn, *, retries: int = 10, backoff: float = 0.0
 
 def _iter_media_files(dcim_dir: Path) -> list[Path]:
     out: list[Path] = []
-    for p in sorted(dcim_dir.rglob("*")):
-        if p.is_file() and media.is_media(p):
-            out.append(p)
+    try:
+        for p in sorted(dcim_dir.rglob("*")):
+            try:
+                if p.is_file() and media.is_media(p):
+                    out.append(p)
+            except (OSError, IOError):
+                # File/directory became inaccessible during iteration, skip it
+                continue
+    except (OSError, IOError):
+        # Volume became inaccessible during directory traversal, return what we have
+        pass
     return out
 
 
@@ -171,8 +179,11 @@ def run_pipeline(
     Returns (session_paths or None if no-op, presigned_url or None).
     """
     dcim_dir = volume_path / "DCIM"
-    if not dcim_dir.is_dir():
-        raise PipelineError(f"Volume has no DCIM directory: {dcim_dir}")
+    try:
+        if not dcim_dir.is_dir():
+            raise PipelineError(f"Volume has no DCIM directory: {dcim_dir}")
+    except (OSError, IOError) as e:
+        raise PipelineError(f"Volume is not accessible (may be stale mount): {dcim_dir}: {e}")
 
     if status is not None:
         status.write(
@@ -209,26 +220,31 @@ def run_pipeline(
                 continue
         
         # Split files into two groups:
-        # 1. Files with new sizes - definitely new, but still need to hash for DB
+        # 1. Files with new sizes - definitely new, skip hashing (will hash during copy)
         # 2. Files with known sizes - might be duplicates, need to hash to check
         files_to_check: list[tuple[Path, int]] = []  # Potential duplicates (known size)
         files_new_size: list[tuple[Path, int]] = []  # Definitely new (new size)
         
         for p, size in files_with_sizes:
             if size not in known_sizes:
-                # Size not in DB - definitely a new file
+                # Size not in DB - definitely a new file, skip hashing (will hash during copy)
                 files_new_size.append((p, size))
             else:
                 # Size matches - might be duplicate, need to hash to confirm
                 files_to_check.append((p, size))
         
-        logger.info(f"Pre-filter results: {len(files_new_size)} new by size, {len(files_to_check)} potential duplicates")
+        logger.info(f"Pre-filter results: {len(files_new_size)} new by size (skipping hash), {len(files_to_check)} potential duplicates")
         
         # Hash files that might be duplicates (parallelized)
-        def _hash_one(item: tuple[Path, int]) -> tuple[Path, str, int]:
+        def _hash_one(item: tuple[Path, int]) -> tuple[Path, str, int] | None:
             p, size = item
-            sha, _ = sha256_file(p)
-            return (p, sha, size)
+            try:
+                sha, _ = sha256_file(p)
+                return (p, sha, size)
+            except (OSError, IOError) as e:
+                # File/volume became inaccessible (e.g., SD card removed)
+                logger.debug(f"  Skipped (cannot hash, volume may be inaccessible): {p.name}: {e}")
+                return None
         
         # Hash potential duplicates first (these need duplicate checking)
         hashed_files: list[tuple[Path, str, int]] = []
@@ -238,9 +254,19 @@ def run_pipeline(
             with ThreadPoolExecutor(max_workers=hash_workers) as ex:
                 futures = {ex.submit(_hash_one, item): item for item in files_to_check}
                 for i, fut in enumerate(as_completed(futures), 1):
-                    p, sha, size = fut.result()
-                    logger.debug(f"Hashing [{i}/{len(files_to_check)}]: {p.name}")
-                    hashed_files.append((p, sha, size))
+                    try:
+                        result = fut.result()
+                        if result is None:
+                            # File became inaccessible, skip it
+                            continue
+                        p, sha, size = result
+                        logger.debug(f"Hashing [{i}/{len(files_to_check)}]: {p.name}")
+                        hashed_files.append((p, sha, size))
+                    except Exception as e:
+                        # Handle any unexpected errors from the future
+                        item = futures[fut]
+                        logger.debug(f"  Skipped (error hashing): {item[0].name}: {e}")
+                        continue
         
         # Batch check database for duplicates (more efficient than one-by-one)
         all_shas = {sha for (_, sha, _) in hashed_files}
@@ -254,8 +280,8 @@ def run_pipeline(
             ).fetchall()
             existing_shas = {row["sha256"] for row in existing_rows}
         
-        # Hash definitely-new files (parallelized, but we know they're new so no DB check needed)
-        new_files: list[tuple[Path, str, int]] = []
+        # Collect new files: files with known sizes that aren't duplicates, and files with new sizes (hash deferred)
+        new_files: list[tuple[Path, str | None, int]] = []  # sha can be None for files_new_size (will hash during copy)
         skipped = 0
         
         # Check hashed files for duplicates
@@ -267,17 +293,10 @@ def run_pipeline(
             new_files.append((p, sha, size))
             logger.debug(f"  New file: {p.name} ({size:,} bytes, SHA256: {sha[:16]}...)")
         
-        # Hash definitely-new files (no duplicate check needed, but need hash for DB)
-        if files_new_size:
-            logger.info(f"Hashing {len(files_new_size)} new files (new sizes, no duplicate check needed)...")
-            hash_workers = min(4, max(1, cfg.process_workers))
-            with ThreadPoolExecutor(max_workers=hash_workers) as ex:
-                futures = {ex.submit(_hash_one, item): item for item in files_new_size}
-                for i, fut in enumerate(as_completed(futures), 1):
-                    p, sha, size = fut.result()
-                    logger.debug(f"Hashing [{i}/{len(files_new_size)}]: {p.name}")
-                    new_files.append((p, sha, size))
-                    logger.debug(f"  New file: {p.name} ({size:,} bytes, SHA256: {sha[:16]}...)")
+        # Add files with new sizes (hash will be computed during copy, not upfront)
+        for p, size in files_new_size:
+            new_files.append((p, None, size))  # None means hash will be computed during copy
+            logger.debug(f"  New file (by size, hash deferred): {p.name} ({size:,} bytes)")
 
         logger.info(f"New files: {len(new_files)}; skipped already-seen: {skipped}")
         if not new_files and not always_create_session:
@@ -336,21 +355,30 @@ def run_pipeline(
         logger.info(f"Copying {len(new_files)} files ({total_size:,} bytes total) to {originals_dir}...")
         
         # Parallelize file copying (I/O bound operation)
-        def _copy_one(item: tuple[Path, str, int]) -> tuple[bool, int, Path, str]:
+        def _copy_one(item: tuple[Path, str | None, int]) -> tuple[bool, int, Path, str]:
             src, sha, size = item
             rel = _safe_rel_under(dcim_dir, src)
             dst = originals_dir / "DCIM" / rel
+            
+            # If hash is None (file with new size), compute it now (before copy for efficiency)
+            if sha is None:
+                sha, _ = sha256_file(src)
+            
             copied_file = _copy2_ignore_existing(src, dst)
             return (copied_file, size if copied_file else 0, src, sha)
         
         copy_workers = min(4, max(1, cfg.process_workers))  # Use fewer workers for copying
         db_inserts: list[tuple[str, int, str]] = []  # (sha, size, source_hint)
+        # Map to collect hashes computed during copy (for files with new sizes)
+        computed_hashes: dict[Path, str] = {}
         
         with ThreadPoolExecutor(max_workers=copy_workers) as ex:
             futures = {ex.submit(_copy_one, item): item for item in new_files}
             for i, fut in enumerate(as_completed(futures), 1):
                 item = futures[fut]
                 was_copied, file_size, src, sha = fut.result()
+                # Store computed hash (for files with new sizes that had None hash)
+                computed_hashes[src] = sha
                 if was_copied:
                     copied += 1
                     copied_size += file_size
@@ -359,6 +387,11 @@ def run_pipeline(
                     logger.debug(f"  Skipped (already exists): {src.name}")
                 # Collect DB inserts for batch operation
                 db_inserts.append((sha, item[2], str(src)))
+        
+        # Update new_files with computed hashes (all hashes are now in computed_hashes)
+        new_files_with_hashes: list[tuple[Path, str, int]] = [
+            (p, computed_hashes[p], size) for (p, sha, size) in new_files
+        ]
         
         # Batch insert into database (more efficient than one-by-one)
         logger.debug(f"Marking {len(db_inserts)} files as ingested in database...")
@@ -376,13 +409,13 @@ def run_pipeline(
                     message="Generating share images + thumbnails…",
                     session_id=session_id,
                     volume=str(volume_path),
-                    counts={"new": len(new_files), "skipped": skipped, "processed_done": 0, "processed_total": 0},
+                    counts={"new": len(new_files_with_hashes), "skipped": skipped, "processed_done": 0, "processed_total": 0},
                 )
             )
-        new_sha_set = {sha for (_p, sha, _s) in new_files}
+        new_sha_set = {sha for (_p, sha, _s) in new_files_with_hashes}
 
         # Map from DCIM source path to sha for quick membership
-        src_sha: dict[Path, str] = {p: sha for (p, sha, _s) in new_files}
+        src_sha: dict[Path, str] = {p: sha for (p, sha, _s) in new_files_with_hashes}
 
         # Derived outputs mirror DCIM relpath and normalize to .jpg
         processed = 0
@@ -436,7 +469,7 @@ def run_pipeline(
                         message="Generating share images + thumbnails…",
                         session_id=session_id,
                         volume=str(volume_path),
-                        counts={"new": len(new_files), "skipped": skipped, "processed_done": 0, "processed_total": len(proc_tasks)},
+                        counts={"new": len(new_files_with_hashes), "skipped": skipped, "processed_done": 0, "processed_total": len(proc_tasks)},
                     )
                 )
             with ThreadPoolExecutor(max_workers=max(1, cfg.process_workers)) as ex:
@@ -459,7 +492,7 @@ def run_pipeline(
                                 session_id=session_id,
                                 volume=str(volume_path),
                                 counts={
-                                    "new": len(new_files),
+                                    "new": len(new_files_with_hashes),
                                     "skipped": skipped,
                                     "processed_done": processed,
                                     "processed_total": len(proc_tasks),
@@ -935,7 +968,7 @@ def run_pipeline(
                     volume=str(volume_path),
                     counts={
                         "discovered": len(all_media),
-                        "new": len(new_files),
+                        "new": len(new_files_with_hashes),
                         "skipped": skipped,
                         "processed": processed,
                         "uploaded": uploaded_ok,
