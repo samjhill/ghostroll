@@ -33,6 +33,49 @@ def _is_mounted(where: Path) -> bool:
     return False
 
 
+def _can_write_to_volume(vol: Path) -> bool:
+    """
+    Check if a volume is actually accessible by attempting to write and read a temporary file.
+    This is more definitive than checking directory listings - if we can't write, the device is gone.
+    Returns True if the volume is accessible and writable, False otherwise.
+    """
+    test_file = None
+    try:
+        # Try to create a temporary file in the volume root
+        # Use a name that's unlikely to conflict
+        test_file = vol / ".ghostroll_test_write.tmp"
+        
+        # Write test data
+        test_data = b"test"
+        test_file.write_bytes(test_data)
+        
+        # Try to read it back
+        read_data = test_file.read_bytes()
+        if read_data != test_data:
+            return False
+        
+        # Clean up
+        test_file.unlink()
+        return True
+    except (OSError, IOError, PermissionError):
+        # Any error means the volume is not accessible
+        # Clean up if file was created
+        if test_file and test_file.exists():
+            try:
+                test_file.unlink()
+            except Exception:
+                pass
+        return False
+    except Exception:
+        # Unexpected error - assume not accessible
+        if test_file and test_file.exists():
+            try:
+                test_file.unlink()
+            except Exception:
+                pass
+        return False
+
+
 def _try_unmount(where: Path, logger) -> bool:
     """
     Try to unmount a mount point. Returns True if successful or already unmounted,
@@ -299,22 +342,19 @@ def cmd_watch(args: argparse.Namespace) -> int:
         logger.debug(f"Last detected volume: {vol}")
         
         while True:
-            # Re-check if the card is still present using the same detection logic
-            # This is more reliable than checking a cached mount point which might be stale
-            current_vol = pick_mount_with_dcim(cfg.mount_roots, label=cfg.sd_label)
-            
-            if current_vol is None:
-                # Card is no longer detected - it's been removed
-                logger.debug("Removal detected: card no longer found by pick_mount_with_dcim")
+            # Check if we can still write to the volume - this is the definitive test
+            # If we can't write, the card is definitely gone (even if mount point exists)
+            if not _can_write_to_volume(vol):
+                logger.debug(f"Removal detected: cannot write to {vol} (card removed)")
                 break
             
-            # If we find a volume, check if it's the same one we just processed
-            # If it's a different path, the old one was removed and a new card was inserted
-            if str(current_vol) != str(vol):
+            # Also check if a different card was inserted
+            current_vol = pick_mount_with_dcim(cfg.mount_roots, label=cfg.sd_label)
+            if current_vol is not None and str(current_vol) != str(vol):
                 logger.debug(f"Removal detected: different volume found ({current_vol} vs {vol})")
                 break
             
-            # Card is still present - wait and check again
+            # Card is still present and accessible - wait and check again
             time.sleep(cfg.poll_seconds)
         
         logger.info(f"Waiting for next '{cfg.sd_label}' card...")
