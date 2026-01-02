@@ -40,6 +40,9 @@ def _write_gallery_html(
             ".top{display:flex;align-items:baseline;gap:12px;justify-content:space-between;margin-bottom:14px}"
             ".title{font-size:18px;font-weight:700;letter-spacing:.2px;margin:0}"
             ".meta{color:var(--muted);font-size:13px}"
+            ".btn{display:inline-flex;align-items:center;gap:6px;padding:8px 10px;border-radius:999px;"
+            "border:1px solid var(--border);background:var(--card);text-decoration:none;color:inherit}"
+            ".btn:hover{filter:brightness(1.05)}"
             ".grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}"
             ".tile{position:relative;display:block;border-radius:var(--radius);overflow:hidden;background:var(--card);"
             "border:1px solid var(--border);box-shadow:var(--shadow);transform:translateZ(0)}"
@@ -70,7 +73,7 @@ def _write_gallery_html(
         f.write(f"{count} image{'s' if count != 1 else ''}")
         if download_href:
             f.write(
-                f" · <a href=\"{html.escape(download_href)}\" style=\"color:inherit\">Download all</a>"
+                f" · <a class=\"btn\" href=\"{html.escape(download_href)}\">Download all</a>"
             )
         f.write("</div>")
         f.write("</div>\n")

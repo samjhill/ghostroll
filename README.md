@@ -62,6 +62,13 @@ If something feels misconfigured (AWS creds, bucket perms, mount roots, disk spa
 ghostroll doctor
 ```
 
+## Continuous reliability
+
+This repo includes:
+
+- `ghostroll doctor` for quick environment checks
+- a small CI smoke test (`tests/test_pipeline_smoke.py`) that runs on every push via GitHub Actions
+
 ## What you get (per session)
 
 Default location:

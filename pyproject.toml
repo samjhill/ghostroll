@@ -13,6 +13,11 @@ dependencies = [
   "qrcode>=7.4.2",
 ]
 
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+]
+
 [project.scripts]
 ghostroll = "ghostroll.cli:main"
 

@@ -129,6 +129,22 @@ class StatusWriter:
         if payload.get("message"):
             lines.append(payload["message"])
 
+        # Progress (best-effort): show a single progress line for the active step.
+        counts = payload.get("counts") or {}
+        step = (payload.get("step") or "").lower()
+        prog_pairs = [
+            ("process", "processed_done", "processed_total"),
+            ("upload", "uploaded_done", "uploaded_total"),
+            ("presign", "presigned_done", "presigned_total"),
+        ]
+        for step_name, done_k, total_k in prog_pairs:
+            if step_name in step and total_k in counts and done_k in counts and counts[total_k] > 0:
+                done = int(counts[done_k])
+                total = int(counts[total_k])
+                pct = int((done / total) * 100)
+                lines.append(f"Progress: {done}/{total} ({pct}%)")
+                break
+
         counts = payload.get("counts") or {}
         if counts:
             # Keep stable ordering for readability

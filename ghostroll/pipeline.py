@@ -264,7 +264,7 @@ def run_pipeline(
                     message="Generating share images + thumbnails…",
                     session_id=session_id,
                     volume=str(volume_path),
-                    counts={"new": len(new_files), "skipped": skipped},
+                    counts={"new": len(new_files), "skipped": skipped, "processed_done": 0, "processed_total": 0},
                 )
             )
         new_sha_set = {sha for (_p, sha, _s) in new_files}
@@ -308,14 +308,43 @@ def run_pipeline(
         gallery_items_local: list[tuple[str, str, str, str, float]] = []
         if proc_tasks:
             logger.info(f"Processing {len(proc_tasks)} new JPEGs with {cfg.process_workers} workers...")
+            if status is not None:
+                status.write(
+                    Status(
+                        state="running",
+                        step="process",
+                        message="Generating share images + thumbnails…",
+                        session_id=session_id,
+                        volume=str(volume_path),
+                        counts={"new": len(new_files), "skipped": skipped, "processed_done": 0, "processed_total": len(proc_tasks)},
+                    )
+                )
             with ThreadPoolExecutor(max_workers=max(1, cfg.process_workers)) as ex:
                 futures = [ex.submit(_process_one, t) for t in proc_tasks]
+                last_ui = time.time()
                 for fut in as_completed(futures):
                     rel_posix, sort_ts, title, subtitle = fut.result()
                     thumb_href = f"derived/thumbs/{rel_posix}"
                     share_href = f"derived/share/{rel_posix}"
                     gallery_items_local.append((thumb_href, share_href, title, subtitle, sort_ts))
                     processed += 1
+                    if status is not None and (time.time() - last_ui) > 0.75:
+                        last_ui = time.time()
+                        status.write(
+                            Status(
+                                state="running",
+                                step="process",
+                                message="Generating share images + thumbnails…",
+                                session_id=session_id,
+                                volume=str(volume_path),
+                                counts={
+                                    "new": len(new_files),
+                                    "skipped": skipped,
+                                    "processed_done": processed,
+                                    "processed_total": len(proc_tasks),
+                                },
+                            )
+                        )
         logger.info(f"Processed JPEGs (share+thumb): {processed}")
 
         # Build a downloadable zip of share images (for local + S3 download-all).
@@ -341,6 +370,7 @@ def run_pipeline(
                     message="Uploading to S3…",
                     session_id=session_id,
                     volume=str(volume_path),
+                    counts={"uploaded_done": 0, "uploaded_total": 0},
                 )
             )
         prefix = f"{cfg.s3_prefix_root}{session_id}".rstrip("/")
@@ -381,14 +411,38 @@ def run_pipeline(
 
         if upload_tasks:
             logger.info(f"Uploading {len(upload_tasks)} objects with {cfg.upload_workers} workers...")
+            if status is not None:
+                status.write(
+                    Status(
+                        state="running",
+                        step="upload",
+                        message="Uploading to S3…",
+                        session_id=session_id,
+                        volume=str(volume_path),
+                        counts={"uploaded_done": 0, "uploaded_total": len(upload_tasks)},
+                    )
+                )
             with ThreadPoolExecutor(max_workers=max(1, cfg.upload_workers)) as ex:
                 futures = {ex.submit(_upload_one, t): t for t in upload_tasks}
+                last_ui = time.time()
                 for fut in as_completed(futures):
                     uploaded, err = fut.result()
                     if uploaded:
                         uploaded_ok += 1
                     if err:
                         upload_failures.append(err)
+                    if status is not None and (time.time() - last_ui) > 0.75:
+                        last_ui = time.time()
+                        status.write(
+                            Status(
+                                state="running",
+                                step="upload",
+                                message="Uploading to S3…",
+                                session_id=session_id,
+                                volume=str(volume_path),
+                                counts={"uploaded_done": uploaded_ok, "uploaded_total": len(upload_tasks)},
+                            )
+                        )
 
         if upload_failures:
             logger.error("Upload failures:\n" + "\n".join(upload_failures))
@@ -410,6 +464,17 @@ def run_pipeline(
         presigned_items: list[tuple[str, str, str, str]] = []
         thumb_files = sorted([p for p in derived_thumbs_dir.rglob("*") if p.is_file()])
         logger.info(f"Generating presigned asset URLs for {len(thumb_files)} images with {cfg.presign_workers} workers...")
+        if status is not None:
+            status.write(
+                Status(
+                    state="running",
+                    step="presign",
+                    message="Generating share link…",
+                    session_id=session_id,
+                    volume=str(volume_path),
+                    counts={"presigned_done": 0, "presigned_total": len(thumb_files) + 1},  # +1 for share.zip
+                )
+            )
 
         def _presign_one(t: Path) -> tuple[str, str, str, str, float]:
             rel = t.relative_to(derived_thumbs_dir)
@@ -431,8 +496,23 @@ def run_pipeline(
         if thumb_files:
             with ThreadPoolExecutor(max_workers=max(1, cfg.presign_workers)) as ex:
                 futures = [ex.submit(_presign_one, t) for t in thumb_files]
+                done = 0
+                last_ui = time.time()
                 for fut in as_completed(futures):
                     presigned_items.append(fut.result())
+                    done += 1
+                    if status is not None and (time.time() - last_ui) > 0.75:
+                        last_ui = time.time()
+                        status.write(
+                            Status(
+                                state="running",
+                                step="presign",
+                                message="Generating share link…",
+                                session_id=session_id,
+                                volume=str(volume_path),
+                                counts={"presigned_done": done, "presigned_total": len(thumb_files) + 1},
+                            )
+                        )
 
         # Presign the download zip
         download_zip_url = s3_presign(
@@ -440,6 +520,17 @@ def run_pipeline(
             key=f"{prefix}/share.zip",
             expires_in_seconds=cfg.presign_expiry_seconds,
         )
+        if status is not None:
+            status.write(
+                Status(
+                    state="running",
+                    step="presign",
+                    message="Generating share link…",
+                    session_id=session_id,
+                    volume=str(volume_path),
+                    counts={"presigned_done": len(thumb_files) + 1, "presigned_total": len(thumb_files) + 1},
+                )
+            )
 
         presigned_items.sort(key=lambda x: (x[4], x[2]))
         presigned_ui = [(a, b, c, d) for (a, b, c, d, _ts) in presigned_items]
