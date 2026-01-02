@@ -32,6 +32,44 @@ def _is_mounted(where: Path) -> bool:
     return False
 
 
+def _is_mount_accessible(where: Path) -> bool:
+    """
+    Check if a mountpoint is actually accessible (not just in mount table).
+    This catches cases where the mount is "lazy unmounted" - still in /proc/mounts
+    but the device is actually gone.
+    
+    Uses a lightweight check that will fail if the underlying device is removed.
+    """
+    try:
+        # Try to stat the mountpoint itself (not its contents, to avoid triggering automount)
+        # If the mount is stale, this will fail with ENODEV or EIO
+        stat_result = where.stat()
+        # Check if it's actually a directory (mountpoints should be directories)
+        import stat
+        if not stat.S_ISDIR(stat_result.st_mode):
+            return False
+        
+        # Try to access the directory in a way that will fail if device is gone
+        # We use a very lightweight check: try to get one directory entry
+        # This will raise OSError with ENODEV/EIO if the device is gone
+        try:
+            # Use next() on iterator - very lightweight, doesn't read all entries
+            next(where.iterdir(), None)
+        except (OSError, PermissionError):
+            # OSError with ENODEV/EIO means device is gone
+            # PermissionError might be fine, but let's be conservative and assume it's gone
+            return False
+        except StopIteration:
+            # Empty directory is fine
+            pass
+        
+        return True
+    except (OSError, PermissionError) as e:
+        # Can't stat or access - mount is likely gone
+        # Common errors: ENODEV (No such device), EIO (Input/output error)
+        return False
+
+
 def _add_common_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--sd-label", default=None, help="SD card volume label to watch (default: auto-import)")
     p.add_argument("--base-dir", default=None, help="Base output directory (default: ~/ghostroll)")
@@ -205,39 +243,47 @@ def cmd_watch(args: argparse.Namespace) -> int:
             # Primary check: is the mountpoint still mounted?
             mounted = _is_mounted(last_mountpoint)
             
+            # Check if mount is actually accessible (catches lazy unmounts)
+            accessible = _is_mount_accessible(last_mountpoint) if mounted else False
+            
             # Secondary check (Linux only): is the label symlink still present?
             label_present = None
             if by_label_root.is_dir():
                 label_present = by_label.exists()
-                logger.debug(f"Mount status: {mounted}, Label symlink: {label_present}")
+                logger.debug(f"Mount status: {mounted}, Accessible: {accessible}, Label symlink: {label_present}")
             else:
-                logger.debug(f"Mount status: {mounted} (label symlink check not available on this system)")
+                logger.debug(f"Mount status: {mounted}, Accessible: {accessible} (label symlink check not available on this system)")
             
             # Card is removed if:
-            # 1. Mount is gone (primary indicator)
-            # 2. On Linux: label symlink is also gone (confirms removal)
+            # 1. Mount is not accessible (even if still in mount table - lazy unmount)
+            # 2. Mount is gone from mount table
+            # 3. On Linux: label symlink is also gone (confirms removal)
             is_removed = False
             
-            if not mounted:
-                # Mount is gone - card is likely removed
+            if not accessible or not mounted:
+                # Mount is gone or not accessible - card is likely removed
                 if by_label_root.is_dir():
                     # On Linux, also check label symlink for confirmation
                     if label_present is False:
                         # Both mount and label are gone - definitely removed
                         is_removed = True
-                        logger.debug("Removal detected: mount and label symlink both gone")
+                        logger.debug("Removal detected: mount inaccessible/gone and label symlink gone")
+                    elif not accessible:
+                        # Mount not accessible (lazy unmount) - removed even if label still present
+                        is_removed = True
+                        logger.debug("Removal detected: mount not accessible (lazy unmount)")
                     else:
                         # Mount gone but label still present - might be transient, wait a bit
                         logger.debug("Mount gone but label still present, waiting...")
                         time.sleep(cfg.poll_seconds)
                         # Re-check
-                        if not _is_mounted(last_mountpoint):
+                        if not _is_mounted(last_mountpoint) or not _is_mount_accessible(last_mountpoint):
                             is_removed = True
                             logger.debug("Removal confirmed after re-check")
                 else:
-                    # On macOS/other systems, just check mount
+                    # On macOS/other systems, check mount and accessibility
                     is_removed = True
-                    logger.debug("Removal detected: mount gone")
+                    logger.debug("Removal detected: mount gone or not accessible")
             
             if is_removed:
                 break
