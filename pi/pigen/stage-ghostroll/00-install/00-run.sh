@@ -28,7 +28,9 @@ apt-get install -y --no-install-recommends \
   ca-certificates
 
 python3 -m pip install -U pip
-python3 -m pip install -e /usr/local/src/ghostroll
+# Raspberry Pi OS Bookworm uses an "externally managed" system Python (PEP 668).
+# For the appliance image, allow pip to install system-wide.
+python3 -m pip install --break-system-packages -e /usr/local/src/ghostroll
 # Waveshare e-ink Python driver (used by optional ghostroll-eink service)
 python3 -m pip install waveshare-epd || true
 

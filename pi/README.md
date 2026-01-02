@@ -124,6 +124,34 @@ sudo systemctl enable --now ghostroll-update.timer
 sudo systemctl list-timers | grep ghostroll-update || true
 ```
 
+### Manual install note (Raspberry Pi OS Bookworm / venv)
+
+If you installed GhostRoll into a venv (common on Bookworm due to PEP 668), the updater will automatically use:
+
+- `${GHOSTROLL_REPO_DIR}/.venv/bin/python` (if it exists)
+
+Otherwise it falls back to system `python3 -m pip ... --break-system-packages` (used by the appliance image).
+
+If you did a manual install and `ghostroll-update.timer` is “not found”, you probably haven’t installed the unit files yet:
+
+```bash
+cd /home/pi/ghostroll
+sudo cp pi/systemd/ghostroll-update.service pi/systemd/ghostroll-update.timer /etc/systemd/system/
+sudo cp pi/scripts/ghostroll-update.sh /usr/local/sbin/ghostroll-update.sh
+sudo chmod +x /usr/local/sbin/ghostroll-update.sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now ghostroll-update.timer
+```
+
+Check it:
+
+```bash
+systemctl is-enabled ghostroll-update.timer
+systemctl is-active ghostroll-update.timer
+journalctl -u ghostroll-update.service -n 200 --no-pager
+grep -E '^GHOSTROLL_AUTO_UPDATE=' /etc/ghostroll.env || true
+```
+
 Private repos:
 
 - easiest is to keep the repo public, or publish releases

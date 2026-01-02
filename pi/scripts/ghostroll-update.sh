@@ -58,8 +58,19 @@ git reset -q --hard "origin/${BRANCH}"
 git clean -q -fdx
 
 # Ensure dependencies/entrypoints are up to date.
-python3 -m pip install -U pip >/dev/null
-python3 -m pip install -e "$REPO_DIR" >/dev/null
+# Raspberry Pi OS Bookworm uses an "externally managed" system Python (PEP 668).
+# Prefer a repo-local venv if present; otherwise fall back to system pip with
+# --break-system-packages (acceptable for appliance images).
+PY_BIN="python3"
+PIP_ARGS=()
+if [[ -x "${REPO_DIR}/.venv/bin/python" ]]; then
+  PY_BIN="${REPO_DIR}/.venv/bin/python"
+else
+  PIP_ARGS+=(--break-system-packages)
+fi
+
+"${PY_BIN}" -m pip install -U pip "${PIP_ARGS[@]}" >/dev/null
+"${PY_BIN}" -m pip install -e "$REPO_DIR" "${PIP_ARGS[@]}" >/dev/null
 
 systemctl restart ghostroll-watch.service
 
