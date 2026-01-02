@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import sqlite3
+import subprocess
 import time
 import zipfile
 from dataclasses import dataclass
@@ -135,8 +136,6 @@ def _iter_media_files(dcim_dir: Path) -> list[Path]:
     Recursively find all media files in the DCIM directory.
     Uses subprocess find command to bypass any Python filesystem caching.
     """
-    import subprocess
-    
     out: list[Path] = []
     try:
         # Use subprocess find to bypass any Python filesystem caching
