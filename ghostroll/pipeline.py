@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sqlite3
@@ -15,7 +16,7 @@ from .aws_cli import AwsCliError, s3_cp, s3_presign
 from .config import Config
 from .db import connect
 from .exif_utils import extract_basic_exif
-from .gallery import build_index_html_from_items, build_index_html_presigned
+from .gallery import build_index_html_from_items, build_index_html_loading, build_index_html_presigned
 from .hashing import sha256_file
 from .image_processing import render_jpeg_derivative
 from .logging_utils import attach_session_logfile
@@ -376,18 +377,6 @@ def run_pipeline(
         prefix = f"{cfg.s3_prefix_root}{session_id}".rstrip("/")
         uploaded_ok = 0
 
-        upload_tasks: list[tuple[Path, str]] = []
-        for p in sorted(derived_share_dir.rglob("*")):
-            if p.is_file():
-                rel = p.relative_to(derived_share_dir)
-                upload_tasks.append((p, f"{prefix}/share/{rel.as_posix()}"))
-        for p in sorted(derived_thumbs_dir.rglob("*")):
-            if p.is_file():
-                rel = p.relative_to(derived_thumbs_dir)
-                upload_tasks.append((p, f"{prefix}/thumbs/{rel.as_posix()}"))
-        # Also upload the "download all" zip
-        upload_tasks.append((share_zip, f"{prefix}/share.zip"))
-
         upload_failures: list[str] = []
 
         def _upload_one(task: tuple[Path, str]) -> tuple[bool, str | None]:
@@ -409,6 +398,192 @@ def run_pipeline(
             except Exception as e:
                 return (False, f"{local} -> s3://{cfg.s3_bucket}/{key}: {e}")
 
+        # Snappy UX: publish the gallery link first (loading page), then upload photos.
+        # We upload a small status.json + a lightweight loading index.html to the FINAL S3 key
+        # (prefix/index.html), presign it, and show the QR immediately. Later we overwrite that
+        # same key with the final presigned gallery page.
+        status_key = f"{prefix}/status.json"
+        s3_index_key = f"{prefix}/index.html"
+
+        s3_status_local = session_dir / "status.s3.json"
+        s3_status_local.write_text(
+            json.dumps(
+                {
+                    "uploading": True,
+                    "message": "Upload in progress…",
+                    "session_id": session_id,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        uploaded, err = _upload_one((s3_status_local, status_key))
+        if uploaded:
+            uploaded_ok += 1
+        if err:
+            upload_failures.append(err)
+
+        status_url = s3_presign(
+            bucket=cfg.s3_bucket,
+            key=status_key,
+            expires_in_seconds=cfg.presign_expiry_seconds,
+        )
+
+        index_loading = session_dir / "index.loading.s3.html"
+        build_index_html_loading(
+            session_id=session_id,
+            status_json_url=status_url,
+            poll_seconds=cfg.poll_seconds,
+            out_path=index_loading,
+        )
+        uploaded, err = _upload_one((index_loading, s3_index_key))
+        if uploaded:
+            uploaded_ok += 1
+        if err:
+            upload_failures.append(err)
+
+        if upload_failures:
+            logger.error("Upload failures:\n" + "\n".join(upload_failures))
+            if status is not None:
+                status.write(
+                    Status(
+                        state="error",
+                        step="upload",
+                        message="Failed to publish gallery link.",
+                        session_id=session_id,
+                        volume=str(volume_path),
+                        counts={"uploaded": uploaded_ok},
+                    )
+                )
+            raise PipelineError("Failed to publish gallery link. See log for details.")
+
+        # Presign the (loading) index now so we can share immediately.
+        url = s3_presign(
+            bucket=cfg.s3_bucket,
+            key=s3_index_key,
+            expires_in_seconds=cfg.presign_expiry_seconds,
+        )
+        share_txt.write_text(url + os.linesep, encoding="utf-8")
+        logger.info(f"Share URL (available immediately; expires in {cfg.presign_expiry_seconds}s): {url}")
+
+        # QR code (nice-to-have): write a PNG into the session folder and print an ASCII QR in logs.
+        try:
+            qr_png = session_dir / "share-qr.png"
+            write_qr_png(data=url, out_path=qr_png)
+            logger.info(f"QR code written: {qr_png}")
+            logger.info("\n" + render_qr_ascii(url))
+        except QrError as e:
+            logger.warning(str(e))
+
+        if status is not None:
+            status.write(
+                Status(
+                    state="running",
+                    step="upload",
+                    message="Gallery link ready. Uploading photos…",
+                    session_id=session_id,
+                    volume=str(volume_path),
+                    counts={"uploaded_done": uploaded_ok, "uploaded_total": 0},
+                    url=url,
+                )
+            )
+
+        upload_tasks: list[tuple[Path, str]] = []
+        for p in sorted(derived_share_dir.rglob("*")):
+            if p.is_file():
+                rel = p.relative_to(derived_share_dir)
+                upload_tasks.append((p, f"{prefix}/share/{rel.as_posix()}"))
+        for p in sorted(derived_thumbs_dir.rglob("*")):
+            if p.is_file():
+                rel = p.relative_to(derived_thumbs_dir)
+                upload_tasks.append((p, f"{prefix}/thumbs/{rel.as_posix()}"))
+        # Also upload the "download all" zip
+        upload_tasks.append((share_zip, f"{prefix}/share.zip"))
+
+        # Map gallery items to their S3 keys for progressive updates.
+        # gallery_items_local has (thumb_href, share_href, title, subtitle, sort_ts)
+        # where hrefs are like "derived/thumbs/100CANON/IMG_0001.jpg"
+        gallery_to_s3_keys: dict[tuple[str, str, str, str, float], tuple[str, str]] = {}
+        for thumb_href, share_href, title, subtitle, sort_ts in gallery_items_local:
+            # Convert "derived/thumbs/100CANON/IMG_0001.jpg" -> "100CANON/IMG_0001.jpg"
+            thumb_rel = thumb_href.replace("derived/thumbs/", "")
+            share_rel = share_href.replace("derived/share/", "")
+            gallery_to_s3_keys[(thumb_href, share_href, title, subtitle, sort_ts)] = (
+                f"{prefix}/thumbs/{thumb_rel}",
+                f"{prefix}/share/{share_rel}",
+            )
+
+        def _refresh_gallery_progressively(uploaded_keys: set[str]) -> None:
+            """Build and upload a partial gallery with only images that have both thumb and share uploaded."""
+            ready_items: list[tuple[str, str, str, str, float]] = []
+            for item, (thumb_key, share_key) in gallery_to_s3_keys.items():
+                if thumb_key in uploaded_keys and share_key in uploaded_keys:
+                    ready_items.append(item)
+
+            if not ready_items:
+                return  # Nothing ready yet
+
+            # Sort by capture time (same as final gallery)
+            ready_items.sort(key=lambda x: (x[4], x[2]))
+            # Extract relative paths from hrefs: "derived/thumbs/100CANON/IMG_0001.jpg" -> "100CANON/IMG_0001.jpg"
+            ready_rel_paths: list[tuple[str, str, str, str]] = []
+            for item in ready_items:
+                thumb_href, share_href, title, subtitle = item[0], item[1], item[2], item[3]
+                thumb_rel = thumb_href.replace("derived/thumbs/", "")
+                share_rel = share_href.replace("derived/share/", "")
+                ready_rel_paths.append((thumb_rel, share_rel, title, subtitle))
+
+            # Presign URLs for ready images
+            presigned_ready: list[tuple[str, str, str, str]] = []
+            for thumb_rel, share_rel, title, subtitle in ready_rel_paths:
+                thumb_key = f"{prefix}/thumbs/{thumb_rel}"
+                share_key = f"{prefix}/share/{share_rel}"
+                try:
+                    thumb_url = s3_presign(
+                        bucket=cfg.s3_bucket,
+                        key=thumb_key,
+                        expires_in_seconds=cfg.presign_expiry_seconds,
+                    )
+                    share_url = s3_presign(
+                        bucket=cfg.s3_bucket,
+                        key=share_key,
+                        expires_in_seconds=cfg.presign_expiry_seconds,
+                    )
+                    presigned_ready.append((thumb_url, share_url, title, subtitle))
+                except Exception as e:
+                    logger.warning(f"Failed to presign {thumb_key}: {e}")
+                    continue
+
+            if not presigned_ready:
+                return
+
+            # Build partial gallery (no download zip yet if not uploaded)
+            download_href = None
+            if f"{prefix}/share.zip" in uploaded_keys:
+                try:
+                    download_href = s3_presign(
+                        bucket=cfg.s3_bucket,
+                        key=f"{prefix}/share.zip",
+                        expires_in_seconds=cfg.presign_expiry_seconds,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to presign share.zip: {e}")
+
+            index_partial = session_dir / "index.partial.s3.html"
+            build_index_html_presigned(
+                session_id=session_id,
+                items=presigned_ready,
+                download_href=download_href,
+                out_path=index_partial,
+            )
+
+            # Upload the partial gallery (overwrites the loading page or previous partial)
+            uploaded, err = _upload_one((index_partial, s3_index_key))
+            if uploaded:
+                logger.info(f"Refreshed gallery with {len(presigned_ready)}/{len(gallery_items_local)} images")
+            elif err:
+                logger.warning(f"Failed to upload partial gallery: {err}")
+
         if upload_tasks:
             logger.info(f"Uploading {len(upload_tasks)} objects with {cfg.upload_workers} workers...")
             if status is not None:
@@ -422,15 +597,32 @@ def run_pipeline(
                         counts={"uploaded_done": 0, "uploaded_total": len(upload_tasks)},
                     )
                 )
+            uploaded_keys: set[str] = set()
+            last_gallery_refresh = time.time()
+            GALLERY_REFRESH_INTERVAL = 30.0  # seconds
+
             with ThreadPoolExecutor(max_workers=max(1, cfg.upload_workers)) as ex:
                 futures = {ex.submit(_upload_one, t): t for t in upload_tasks}
                 last_ui = time.time()
                 for fut in as_completed(futures):
                     uploaded, err = fut.result()
+                    task = futures[fut]
                     if uploaded:
                         uploaded_ok += 1
+                        # Track which key was uploaded (task is (Path, s3_key))
+                        uploaded_keys.add(task[1])
                     if err:
                         upload_failures.append(err)
+
+                    # Periodic gallery refresh (every 30 seconds)
+                    now = time.time()
+                    if now - last_gallery_refresh >= GALLERY_REFRESH_INTERVAL:
+                        last_gallery_refresh = now
+                        try:
+                            _refresh_gallery_progressively(uploaded_keys)
+                        except Exception as e:
+                            logger.warning(f"Failed to refresh gallery progressively: {e}")
+
                     if status is not None and (time.time() - last_ui) > 0.75:
                         last_ui = time.time()
                         status.write(
@@ -443,6 +635,12 @@ def run_pipeline(
                                 counts={"uploaded_done": uploaded_ok, "uploaded_total": len(upload_tasks)},
                             )
                         )
+
+            # Final progressive refresh after all uploads complete (in case some finished in last 30s)
+            try:
+                _refresh_gallery_progressively(uploaded_keys)
+            except Exception as e:
+                logger.warning(f"Failed to do final progressive gallery refresh: {e}")
 
         if upload_failures:
             logger.error("Upload failures:\n" + "\n".join(upload_failures))
@@ -543,7 +741,7 @@ def run_pipeline(
             out_path=index_for_s3,
         )
         # Upload the final index.html (force content-based dedupe)
-        uploaded, err = _upload_one((index_for_s3, f"{prefix}/index.html"))
+        uploaded, err = _upload_one((index_for_s3, s3_index_key))
         if uploaded:
             uploaded_ok += 1
         if err:
@@ -562,35 +760,23 @@ def run_pipeline(
                 )
             raise PipelineError("Upload failed for index.html. See log for details.")
 
-        # Presign
-        if status is not None:
-            status.write(
-                Status(
-                    state="running",
-                    step="presign",
-                    message="Generating share link…",
-                    session_id=session_id,
-                    volume=str(volume_path),
-                    counts={"uploaded": uploaded_ok},
-                )
+        # Mark S3 status as complete so the early "loading" page auto-refreshes into the final gallery.
+        s3_status_local.write_text(
+            json.dumps(
+                {
+                    "uploading": False,
+                    "message": "Upload complete.",
+                    "session_id": session_id,
+                }
             )
-        index_key = f"{prefix}/index.html"
-        url = s3_presign(
-            bucket=cfg.s3_bucket,
-            key=index_key,
-            expires_in_seconds=cfg.presign_expiry_seconds,
+            + "\n",
+            encoding="utf-8",
         )
-        share_txt.write_text(url + os.linesep, encoding="utf-8")
-        logger.info(f"Presigned URL (expires in {cfg.presign_expiry_seconds}s): {url}")
-
-        # QR code (nice-to-have): write a PNG into the session folder and print an ASCII QR in logs.
-        try:
-            qr_png = session_dir / "share-qr.png"
-            write_qr_png(data=url, out_path=qr_png)
-            logger.info(f"QR code written: {qr_png}")
-            logger.info("\n" + render_qr_ascii(url))
-        except QrError as e:
-            logger.warning(str(e))
+        uploaded, err = _upload_one((s3_status_local, status_key))
+        if uploaded:
+            uploaded_ok += 1
+        if err:
+            logger.warning(f"Failed to update S3 status.json to complete: {err}")
 
         if status is not None:
             status.write(

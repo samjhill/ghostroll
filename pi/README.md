@@ -100,7 +100,28 @@ GhostRoll uses the AWS CLI (`aws s3 cp` + `aws s3 presign`). You have two option
   - `aws-credentials` → `/home/pi/.aws/credentials`
   - `aws-config` → `/home/pi/.aws/config`
 
-## Automatic updates from GitHub (optional)
+## Updating GhostRoll from GitHub
+
+### Manual update (pull and restart)
+
+To manually pull the latest code and restart all GhostRoll services:
+
+```bash
+sudo /usr/local/sbin/ghostroll-pull-and-restart.sh
+```
+
+Or if you're running from the repo directory:
+
+```bash
+sudo ./pi/scripts/ghostroll-pull-and-restart.sh
+```
+
+This script will:
+- Pull the latest code from GitHub (uses `GHOSTROLL_GIT_REMOTE` and `GHOSTROLL_GIT_BRANCH` from `/etc/ghostroll.env`)
+- Update Python dependencies
+- Restart all active GhostRoll services (`ghostroll-watch.service`, `ghostroll-eink.service`)
+
+### Automatic updates (optional)
 
 You can have the Pi periodically pull the latest code from your Git remote and restart GhostRoll.
 
@@ -138,7 +159,9 @@ If you did a manual install and `ghostroll-update.timer` is “not found”, you
 cd /home/pi/ghostroll
 sudo cp pi/systemd/ghostroll-update.service pi/systemd/ghostroll-update.timer /etc/systemd/system/
 sudo cp pi/scripts/ghostroll-update.sh /usr/local/sbin/ghostroll-update.sh
+sudo cp pi/scripts/ghostroll-pull-and-restart.sh /usr/local/sbin/ghostroll-pull-and-restart.sh
 sudo chmod +x /usr/local/sbin/ghostroll-update.sh
+sudo chmod +x /usr/local/sbin/ghostroll-pull-and-restart.sh
 sudo systemctl daemon-reload
 sudo systemctl enable --now ghostroll-update.timer
 ```

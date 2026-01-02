@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 from pathlib import Path
 
 
@@ -198,5 +199,94 @@ def build_index_html_presigned(
     items: list of (thumb_url, share_url, title, subtitle) — URLs should be fully-qualified.
     """
     _write_gallery_html(session_id=session_id, items=items, download_href=download_href, out_path=out_path)
+
+
+def build_index_html_loading(
+    *,
+    session_id: str,
+    status_json_url: str,
+    out_path: Path,
+    poll_seconds: float = 2.0,
+) -> None:
+    """
+    Writes a minimal gallery page that shows an "upload in progress..." message and polls a
+    presigned status JSON URL. When uploading is complete, it reloads the page (so if the
+    backing S3 key was overwritten with the final gallery, the user sees it automatically).
+
+    Expected status JSON shape (extra fields ignored):
+      {"uploading": true|false, "message": "...optional..."}
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    poll_ms = max(500, int(poll_seconds * 1000))
+    with out_path.open("w", encoding="utf-8") as f:
+        f.write("<!doctype html>\n")
+        f.write(
+            "<html><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            "<link rel=\"icon\" href=\"data:,\">"
+            f"<title>{html.escape(session_id)}</title>\n"
+        )
+        f.write(
+            "<style>"
+            ":root{color-scheme:light dark;"
+            "--bg:#0b0f14;--fg:#e7edf5;--muted:#9aa7b5;--card:#101826;--border:#1a2a3d;"
+            "--shadow:0 10px 30px rgba(0,0,0,.35);--radius:14px}"
+            "@media (prefers-color-scheme:light){"
+            ":root{--bg:#f6f8fb;--fg:#111827;--muted:#5b6472;--card:#ffffff;--border:#e6e9ef;"
+            "--shadow:0 10px 30px rgba(17,24,39,.08)}}"
+            "html,body{height:100%}"
+            "body{margin:0;background:var(--bg);color:var(--fg);font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}"
+            ".wrap{max-width:900px;margin:0 auto;padding:18px}"
+            ".top{display:flex;align-items:baseline;gap:12px;justify-content:space-between;margin-bottom:14px}"
+            ".title{font-size:18px;font-weight:700;letter-spacing:.2px;margin:0}"
+            ".meta{color:var(--muted);font-size:13px}"
+            ".card{padding:18px;border-radius:var(--radius);border:1px solid var(--border);background:var(--card);box-shadow:var(--shadow)}"
+            ".msg{font-size:15px;font-weight:650;margin:0 0 8px 0}"
+            ".sub{color:var(--muted);font-size:13px;margin:0}"
+            ".dot{display:inline-block;width:8px;height:8px;border-radius:999px;background:#f59e0b;margin-right:8px;vertical-align:baseline;box-shadow:0 0 0 3px rgba(245,158,11,.18)}"
+            "</style>\n"
+        )
+        f.write("</head><body>\n")
+        f.write("<div class=\"wrap\">\n")
+        f.write("<div class=\"top\">")
+        f.write(f"<h1 class=\"title\">{html.escape(session_id)}</h1>")
+        f.write("<div class=\"meta\">Gallery</div>")
+        f.write("</div>\n")
+        f.write("<div class=\"card\" id=\"card\">")
+        f.write("<p class=\"msg\" id=\"msg\"><span class=\"dot\"></span>Upload in progress…</p>")
+        f.write("<p class=\"sub\" id=\"sub\">This page will auto-refresh when the gallery is ready.</p>")
+        f.write("</div>\n")
+        f.write("</div>\n")
+
+        # Poll status JSON; reload when uploading is complete.
+        f.write("<script>\n")
+        f.write(f"const STATUS_URL = {json.dumps(status_json_url)};\n")
+        f.write(f"const POLL_MS = {poll_ms};\n")
+        f.write(
+            "const msgEl=document.getElementById('msg');\n"
+            "const subEl=document.getElementById('sub');\n"
+            "let stopped=false;\n"
+            "async function tick(){\n"
+            "  if(stopped) return;\n"
+            "  try{\n"
+            "    const res=await fetch(STATUS_URL,{cache:'no-store'});\n"
+            "    if(!res.ok) throw new Error('status fetch failed: '+res.status);\n"
+            "    const j=await res.json();\n"
+            "    const uploading=(j && typeof j.uploading==='boolean') ? j.uploading : true;\n"
+            "    if(j && j.message && subEl) subEl.textContent=j.message;\n"
+            "    if(!uploading){\n"
+            "      stopped=true;\n"
+            "      if(msgEl) msgEl.textContent='Upload complete. Loading gallery…';\n"
+            "      setTimeout(()=>{ try{ window.location.reload(); }catch(e){} }, 250);\n"
+            "    }\n"
+            "  }catch(e){\n"
+            "    // Keep the optimistic default; transient errors shouldn't blank the UI.\n"
+            "  }\n"
+            "}\n"
+            "tick();\n"
+            "setInterval(tick, POLL_MS);\n"
+        )
+        f.write("</script>\n")
+        f.write("</body></html>\n")
 
 
