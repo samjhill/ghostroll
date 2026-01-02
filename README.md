@@ -10,6 +10,17 @@ It's designed to be:
 - **Incremental** (dedupe so re-inserting the same card is fast)
 - **Privacy-friendly** (derived images strip metadata; S3 stays private)
 
+```mermaid
+flowchart LR
+    A[📷 Insert SD Card] --> B[⏳ Automatic Processing]
+    B --> C[🔗 Get Share Link]
+    C --> D[📤 Share with Others]
+    style A fill:#e1f5ff
+    style B fill:#fff4e1
+    style C fill:#e8f5e9
+    style D fill:#f3e5f5
+```
+
 ## How it works
 
 ```mermaid
