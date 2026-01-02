@@ -274,6 +274,24 @@ cat /home/pi/ghostroll/status.json
 ls -lh /home/pi/ghostroll/status.png
 ```
 
+### Performance + stability tuning (Pi 4)
+
+If you see systemd logs like `Main process exited ... status=9/KILL` during processing, it's typically the **OOM killer**
+(too many concurrent Pillow decodes/encodes).
+
+Start conservative and tune up:
+
+- `GHOSTROLL_PROCESS_WORKERS=2` (or `3`)
+- `GHOSTROLL_UPLOAD_WORKERS=4`
+- `GHOSTROLL_PRESIGN_WORKERS=8`
+
+Then restart:
+
+```bash
+sudo systemctl restart ghostroll-watch.service
+sudo journalctl -u ghostroll-watch.service -n 200 --no-pager
+```
+
 ## Troubleshooting (the common ones)
 
 ### “RELEASE does not match the intended option for this branch”
