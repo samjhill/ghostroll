@@ -246,36 +246,47 @@ def cmd_watch(args: argparse.Namespace) -> int:
             # Check if mount is actually accessible (catches lazy unmounts)
             accessible = _is_mount_accessible(last_mountpoint) if mounted else False
             
-            # Most important check: can we actually access DCIM? (this is what we need)
+            # Most important check: can we actually access DCIM and does it have content?
+            # An empty DCIM directory from a stale mount doesn't count
             dcim_accessible = False
+            dcim_has_content = False
             dcim_path = last_mountpoint / "DCIM"
             try:
                 if dcim_path.is_dir():
                     # Try to actually list the directory - this will fail if device is gone
                     try:
-                        next(dcim_path.iterdir(), None)
+                        # Check if DCIM has any content (files or subdirectories)
+                        # Empty DCIM from stale mount doesn't count as "card present"
+                        entries = list(dcim_path.iterdir())
                         dcim_accessible = True
+                        dcim_has_content = len(entries) > 0
                     except (OSError, PermissionError):
                         dcim_accessible = False
+                        dcim_has_content = False
             except (OSError, PermissionError):
                 dcim_accessible = False
+                dcim_has_content = False
             
             # Secondary check (Linux only): is the label symlink still present?
             label_present = None
             if by_label_root.is_dir():
                 label_present = by_label.exists()
-                logger.debug(f"Mount: {mounted}, Accessible: {accessible}, DCIM accessible: {dcim_accessible}, Label: {label_present}")
+                logger.debug(f"Mount: {mounted}, Accessible: {accessible}, DCIM accessible: {dcim_accessible}, DCIM has content: {dcim_has_content}, Label: {label_present}")
             else:
-                logger.debug(f"Mount: {mounted}, Accessible: {accessible}, DCIM accessible: {dcim_accessible}")
+                logger.debug(f"Mount: {mounted}, Accessible: {accessible}, DCIM accessible: {dcim_accessible}, DCIM has content: {dcim_has_content}")
             
-            # Card is removed if DCIM is not accessible (most reliable check)
-            # This catches cases where mount appears present but device is gone
+            # Card is removed if DCIM is not accessible OR has no content (most reliable check)
+            # Empty DCIM from stale mount doesn't count as "card present"
+            # This catches cases where mount appears present but device/filesystem is gone
             is_removed = False
             
-            if not dcim_accessible:
-                # DCIM is not accessible - card is effectively removed
+            if not dcim_accessible or not dcim_has_content:
+                # DCIM is not accessible or empty - card is effectively removed
                 is_removed = True
-                logger.debug("Removal detected: DCIM directory not accessible")
+                if not dcim_accessible:
+                    logger.debug("Removal detected: DCIM directory not accessible")
+                else:
+                    logger.debug("Removal detected: DCIM directory is empty (stale mount)")
             elif not accessible or not mounted:
                 # Mount is gone or not accessible - card is likely removed
                 if by_label_root.is_dir():
