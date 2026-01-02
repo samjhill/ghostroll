@@ -157,6 +157,10 @@ def _try_unmount(where: Path, logger) -> bool:
     """
     Try to unmount a mount point. Returns True if successful or already unmounted,
     False if unmount failed for other reasons.
+    
+    Uses platform-appropriate unmount command:
+    - macOS: diskutil unmount (or umount as fallback)
+    - Linux: umount
     """
     try:
         # Check if it's actually mounted first
@@ -164,21 +168,46 @@ def _try_unmount(where: Path, logger) -> bool:
             logger.debug(f"Mount point {where} is not mounted, skipping unmount")
             return True
         
-        # Try to unmount it
+        # Try to unmount it using platform-appropriate command
         logger.debug(f"Attempting to unmount {where}")
-        result = subprocess.run(
-            ["umount", str(where)],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
+        system = platform.system().lower()
+        
+        if system == "darwin":
+            # On macOS, prefer diskutil unmount for volumes
+            # diskutil unmount doesn't require sudo for user-mounted volumes
+            result = subprocess.run(
+                ["diskutil", "unmount", str(where)],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                logger.debug(f"Successfully unmounted {where} using diskutil")
+                return True
+            # Fallback to umount if diskutil fails
+            logger.debug(f"diskutil unmount failed, trying umount: {result.stderr}")
+            result = subprocess.run(
+                ["umount", str(where)],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        else:
+            # Linux and other Unix-like systems
+            result = subprocess.run(
+                ["umount", str(where)],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        
         if result.returncode == 0:
             logger.debug(f"Successfully unmounted {where}")
             return True
         else:
             # Check if error is "not mounted" (already unmounted)
             error_msg = (result.stderr or "").lower()
-            if "not mounted" in error_msg or "no such file or directory" in error_msg:
+            if "not mounted" in error_msg or "no such file or directory" in error_msg or "not currently mounted" in error_msg:
                 logger.debug(f"Mount point {where} was already unmounted")
                 return True
             logger.debug(f"Unmount failed for {where}: {result.stderr}")

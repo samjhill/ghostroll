@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -78,7 +79,9 @@ class MountEventHandler(FileSystemEventHandler):
         # Verify it's actually a mount (not just a directory or automount) before calling callback
         # This prevents false positives from existing directories and automount placeholders
         import platform
-        if platform.system().lower() == "linux":
+        system = platform.system().lower()
+        
+        if system == "linux":
             try:
                 with open("/proc/mounts", "r") as f:
                     mounts_text = f.read()
@@ -121,6 +124,21 @@ class MountEventHandler(FileSystemEventHandler):
             except Exception as e:
                 logger.debug(f"Error checking /proc/mounts: {e}")
                 # If we can't check, proceed anyway (better to have false positive than miss real mount)
+        elif system == "darwin":
+            # On macOS, /Volumes is always mounts, so we can trust it
+            # For other paths, check using mount command
+            vol_str = str(event_path)
+            if not vol_str.startswith("/Volumes/"):
+                try:
+                    result = subprocess.run(
+                        ["mount"], capture_output=True, text=True, timeout=2
+                    )
+                    if result.returncode == 0 and vol_str not in result.stdout:
+                        logger.warning(f"Watchdog: {event_path} created but not in mount output - ignoring (not a real mount)")
+                        return
+                except Exception:
+                    # If we can't check, proceed anyway
+                    pass
         
         self.callback(event_path)
     

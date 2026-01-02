@@ -29,30 +29,50 @@ def test_build_parser():
 
 
 def test_is_mounted(tmp_path: Path):
-    # Create a fake /proc/mounts
-    proc_mounts = tmp_path / "proc_mounts"
-    proc_mounts.write_text("/dev/sda1 /mnt/test ext4 rw 0 0\n")
+    import subprocess
+    import platform
     
-    with patch("ghostroll.cli.Path") as mock_path:
-        mock_path.return_value = proc_mounts
-        mock_path.read_text = proc_mounts.read_text
-        
-        # Test with matching mount
-        result = _is_mounted(Path("/mnt/test"))
-        assert result is True
-        
-        # Test with non-matching mount
-        result = _is_mounted(Path("/mnt/other"))
-        assert result is False
+    # Mock platform to be Linux so we test the findmnt path
+    with patch("ghostroll.cli.platform.system", return_value="Linux"):
+        # Mock findmnt to return mount info
+        with patch("ghostroll.cli.subprocess.run") as mock_run:
+            # Test with matching mount - findmnt returns real device
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=["findmnt", "-n", "-o", "FSTYPE,SOURCE", "/mnt/test"],
+                returncode=0,
+                stdout="ext4 /dev/sda1\n",
+                stderr=""
+            )
+            # Mock Path.exists() for device check (/dev/sda1 exists)
+            # Path is imported from pathlib in cli.py, so we need to patch it there
+            with patch("ghostroll.cli.Path") as mock_path_class:
+                def path_constructor(path_str):
+                    mock_path = MagicMock()
+                    if str(path_str) == "/dev/sda1":
+                        mock_path.exists.return_value = True
+                    else:
+                        mock_path.exists.return_value = False
+                    return mock_path
+                mock_path_class.side_effect = path_constructor
+                
+                result = _is_mounted(Path("/mnt/test"))
+                assert result is True
+            
+            # Test with non-matching mount - findmnt returns nothing
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=["findmnt", "-n", "-o", "FSTYPE,SOURCE", "/mnt/other"],
+                returncode=1,
+                stdout="",
+                stderr=""
+            )
+            result = _is_mounted(Path("/mnt/other"))
+            assert result is False
 
 
-def test_is_mounted_no_proc_mounts(tmp_path: Path):
-    # Test when /proc/mounts doesn't exist
-    with patch("ghostroll.cli.Path") as mock_path_class:
-        mock_path = MagicMock()
-        mock_path.read_text.side_effect = FileNotFoundError()
-        mock_path_class.return_value = mock_path
-        
+def test_is_mounted_findmnt_fails(tmp_path: Path):
+    # Test when findmnt fails (not available or error)
+    with patch("ghostroll.cli.subprocess.run") as mock_run:
+        mock_run.side_effect = FileNotFoundError("findmnt not found")
         result = _is_mounted(Path("/mnt/test"))
         assert result is False
 

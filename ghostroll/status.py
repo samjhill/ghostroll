@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import socket
 import subprocess
 import time
@@ -20,22 +21,46 @@ def get_ip_address() -> str | None:
     """
     Best-effort "what IP should I SSH to?" helper.
     - On Linux, prefer `hostname -I` (common on Raspberry Pi OS)
+    - On macOS, use `ifconfig` or fallback to UDP socket trick
     - Fallback: UDP socket trick (doesn't send packets)
     """
+    system = platform.system().lower()
+    
     # Linux / Raspberry Pi OS
-    try:
-        res = subprocess.run(["hostname", "-I"], capture_output=True, text=True)
-        if res.returncode == 0:
-            ips = [p.strip() for p in res.stdout.strip().split() if p.strip()]
-            # Skip loopback and link-local if possible
-            for ip in ips:
-                if ip.startswith("127.") or ip.startswith("169.254."):
-                    continue
-                return ip
-            if ips:
-                return ips[0]
-    except Exception:
-        pass
+    if system == "linux":
+        try:
+            res = subprocess.run(["hostname", "-I"], capture_output=True, text=True)
+            if res.returncode == 0:
+                ips = [p.strip() for p in res.stdout.strip().split() if p.strip()]
+                # Skip loopback and link-local if possible
+                for ip in ips:
+                    if ip.startswith("127.") or ip.startswith("169.254."):
+                        continue
+                    return ip
+                if ips:
+                    return ips[0]
+        except Exception:
+            pass
+    
+    # macOS - use ifconfig to get IP
+    if system == "darwin":
+        try:
+            res = subprocess.run(
+                ["ifconfig"], capture_output=True, text=True, timeout=2
+            )
+            if res.returncode == 0:
+                # Parse ifconfig output for inet addresses
+                for line in res.stdout.splitlines():
+                    if "inet " in line and "127.0.0.1" not in line:
+                        parts = line.split()
+                        for i, part in enumerate(parts):
+                            if part == "inet" and i + 1 < len(parts):
+                                ip = parts[i + 1]
+                                # Skip loopback and link-local
+                                if not ip.startswith("127.") and not ip.startswith("169.254."):
+                                    return ip
+        except Exception:
+            pass
 
     # Generic fallback
     try:
@@ -117,15 +142,55 @@ class StatusWriter:
         img = Image.new("1", (w, h), 1)  # 1-bit, white background
         draw = ImageDraw.Draw(img)
         
-        # Load fonts - try for larger, clearer fonts
-        try:
-            default_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 12)
-            title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16)
-            small_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 10)
-        except Exception:
-            default_font = ImageFont.load_default()
-            title_font = default_font
-            small_font = default_font
+        # Load fonts - try platform-specific paths first, then fallback
+        default_font = None
+        title_font = None
+        small_font = None
+        system = platform.system().lower()
+        
+        # Try platform-specific font paths
+        font_paths = []
+        if system == "darwin":
+            # macOS font paths
+            font_paths = [
+                "/System/Library/Fonts/Helvetica.ttc",
+                "/System/Library/Fonts/Supplemental/Arial.ttf",
+                "/Library/Fonts/Arial.ttf",
+            ]
+        elif system == "linux":
+            # Linux font paths
+            font_paths = [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            ]
+        
+        # Try to load fonts from platform-specific paths
+        for font_path in font_paths:
+            try:
+                if Path(font_path).exists():
+                    default_font = ImageFont.truetype(font_path, 12)
+                    # Try to find bold variant
+                    bold_path = font_path.replace("Regular", "Bold").replace("DejaVuSans.ttf", "DejaVuSans-Bold.ttf")
+                    if Path(bold_path).exists():
+                        title_font = ImageFont.truetype(bold_path, 16)
+                    else:
+                        title_font = ImageFont.truetype(font_path, 16)
+                    small_font = ImageFont.truetype(font_path, 10)
+                    break
+            except Exception:
+                continue
+        
+        # Fallback to default fonts if platform-specific fonts failed
+        if default_font is None:
+            try:
+                default_font = ImageFont.load_default()
+                title_font = default_font
+                small_font = default_font
+            except Exception:
+                # Last resort: use built-in default
+                default_font = ImageFont.load_default()
+                title_font = default_font
+                small_font = default_font
 
         state = payload.get("state", "").upper()
         step = payload.get("step", "")
