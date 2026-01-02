@@ -20,6 +20,27 @@ def _env(name: str, default: str) -> str:
 def _run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, text=True, capture_output=True, check=check)
 
+def _run_best_effort(cmd: list[str]) -> None:
+    try:
+        _run(cmd, check=False)
+    except Exception:
+        pass
+
+
+def _rfkill_unblock_best_effort() -> None:
+    # If wifi is blocked, NM can't start AP mode. rfkill is common on Raspberry Pi OS.
+    if Path("/usr/sbin/rfkill").exists() or Path("/usr/bin/rfkill").exists():
+        _run_best_effort(["rfkill", "unblock", "all"])
+
+
+def _nm_wifi_on_best_effort() -> None:
+    _run_best_effort(["nmcli", "radio", "wifi", "on"])
+
+
+def _nm_disconnect_wifi_best_effort(dev: str) -> None:
+    # Ensure device is free to switch into AP mode.
+    _run_best_effort(["nmcli", "dev", "disconnect", dev])
+
 
 def _parse_size(s: str) -> tuple[int, int]:
     s = s.strip().lower()
@@ -130,23 +151,27 @@ def _ensure_hotspot(
         existing = False
 
     if not existing:
-        _run(
-            [
-                "nmcli",
-                "dev",
-                "wifi",
-                "hotspot",
-                "ifname",
-                dev,
-                "con-name",
-                con_name,
-                "ssid",
-                ssid,
-                "password",
-                password,
-            ],
-            check=True,
-        )
+        try:
+            _run(
+                [
+                    "nmcli",
+                    "dev",
+                    "wifi",
+                    "hotspot",
+                    "ifname",
+                    dev,
+                    "con-name",
+                    con_name,
+                    "ssid",
+                    ssid,
+                    "password",
+                    password,
+                ],
+                check=True,
+            )
+        except subprocess.CalledProcessError as e:
+            msg = (e.stderr or e.stdout or str(e)).strip()
+            raise RuntimeError(f"nmcli hotspot create failed: {msg}") from e
 
     # Ensure desired settings (idempotent)
     # Force deterministic gateway address (NM default is often 10.42.0.1)
@@ -296,6 +321,10 @@ def main() -> int:
         print("ghostroll-wifi-setup: no wifi device found (nmcli)", file=sys.stderr)
         return 2
 
+    # Ensure Wi-Fi isn't blocked/disabled.
+    _rfkill_unblock_best_effort()
+    _nm_wifi_on_best_effort()
+
     # Wait for normal connection
     deadline = time.time() + wait_seconds
     while time.time() < deadline:
@@ -305,9 +334,20 @@ def main() -> int:
 
     # Start hotspot
     try:
+        _nm_disconnect_wifi_best_effort(dev)
         _ensure_hotspot(dev=dev, con_name=ap_con, ssid=ap_ssid, password=ap_pass, ipv4_addr=ap_ipv4)
     except Exception as e:
+        # Provide actionable debug hints.
         print(f"ghostroll-wifi-setup: failed to start hotspot: {e}", file=sys.stderr)
+        try:
+            state = _run(["nmcli", "-t", "-f", "STATE", "general"], check=False).stdout.strip()
+            radios = _run(["nmcli", "-t", "-f", "WIFI,WIFI-HW", "radio"], check=False).stdout.strip()
+            devs = _run(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "device"], check=False).stdout.strip()
+            print(f"ghostroll-wifi-setup: nmcli general STATE={state}", file=sys.stderr)
+            print(f"ghostroll-wifi-setup: nmcli radio {radios}", file=sys.stderr)
+            print(f"ghostroll-wifi-setup: nmcli devices:\n{devs}", file=sys.stderr)
+        except Exception:
+            pass
         return 2
 
     # Serve portal

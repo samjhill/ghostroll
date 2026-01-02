@@ -23,6 +23,7 @@ apt-get install -y --no-install-recommends \
   git \
   python3 python3-venv python3-pip \
   python3-rpi.gpio python3-spidev \
+  dnsmasq-base iptables \
   exfatprogs \
   awscli \
   ca-certificates
