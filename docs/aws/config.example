@@ -2,4 +2,7 @@
 region = us-east-1
 output = json
 
+# If you use a named profile, you can run GhostRoll with:
+#   AWS_PROFILE=yourprofile ghostroll watch
+
 

@@ -1,23 +1,18 @@
-# GhostRoll
+## GhostRoll
 
-GhostRoll is a local ingest pipeline:
+GhostRoll is a “drop the SD card in and it just works” ingest pipeline:
 
-**SD Card (DCIM) → local session folder → share-friendly JPEGs + thumbs + gallery → private S3 → one presigned URL**
+**SD card → local session → share-friendly JPEGs + thumbnails + gallery → private S3 → one share link**
 
-## Prerequisites
+It’s designed to be:
 
-- **macOS** (watch mode uses `/Volumes`; Raspberry Pi/Linux notes below)
-- **Python 3.10+**
-- **AWS CLI** installed and configured (`aws sts get-caller-identity` succeeds)
-- An existing private S3 bucket (default: `photo-ingest-project`)
+- **Low-friction** (watch mode + one URL)
+- **Incremental** (dedupe so re-inserting the same card is fast)
+- **Privacy-friendly** (derived images strip metadata; S3 stays private)
 
-Optional:
+## Quick start (macOS)
 
-- `rclone` (not required by the current Python implementation; your original `ingest.sh` uses it)
-
-## Setup
-
-Create a venv and install:
+### 1) Install
 
 ```bash
 python3 -m venv .venv
@@ -26,94 +21,66 @@ pip install -U pip
 pip install -e .
 ```
 
-## AWS credentials (AWS CLI)
+### 2) Configure AWS (once)
 
-GhostRoll uses the **AWS CLI** (`aws s3 cp` + `aws s3 presign`) so you must configure credentials on the machine running GhostRoll (Mac or Pi).
-
-### Option A: `aws configure` (recommended)
+GhostRoll uses the AWS CLI (`aws s3 cp` + `aws s3 presign`), so make sure this works:
 
 ```bash
 aws configure
 aws sts get-caller-identity
 ```
 
-This creates:
-
-- `~/.aws/credentials`
-- `~/.aws/config`
-
-### Option B: create `~/.aws/credentials` manually
-
-Use the templates in:
+If you prefer to edit files directly, use the templates in:
 
 - `docs/aws/credentials.example`
 - `docs/aws/config.example`
+- `docs/aws/iam-policy-ghostroll-s3.json` (starter least-privilege policy)
 
-Then:
+### 3) Name your SD card
 
-```bash
-mkdir -p ~/.aws
-cp docs/aws/credentials.example ~/.aws/credentials
-cp docs/aws/config.example ~/.aws/config
-chmod 600 ~/.aws/credentials
-aws sts get-caller-identity
-```
-
-### IAM permissions (least-privilege)
-
-Your AWS identity needs to be able to upload objects and generate presigned URLs. A starting policy is in:
-
-- `docs/aws/iam-policy-ghostroll-s3.json`
-
-Update the bucket name / region as needed before attaching it to the IAM user/role used on the device.
-
-## SD card naming
-
-Rename your SD card volume label to:
+Set the SD card volume label to:
 
 - `auto-import`
 
-GhostRoll also handles macOS suffixes like `auto-import 1`, `auto-import 2`, etc.
+macOS sometimes mounts as `auto-import 1`, etc — GhostRoll handles that.
 
-## Usage
-
-### Watch mode (recommended)
-
-Runs once per card insert, then waits for removal before running again:
+### 4) Run watch mode
 
 ```bash
 ghostroll watch
 ```
 
-### One-shot run (debugging)
+When it finishes, you’ll get a session directory under `~/ghostroll/` with a `share.txt` presigned URL.
 
-```bash
-ghostroll run --volume /Volumes/auto-import
-```
+## What you get (per session)
 
-## Outputs
-
-By default sessions are written under:
+Default location:
 
 - `~/ghostroll/<SESSION_ID>/`
 
-Each session contains:
+Contents:
 
-- `originals/` (copied from SD, preserving structure)
+- `originals/` (copied from the card; preserves structure)
 - `derived/share/` (max 2048px long edge, quality ~90, auto-oriented, metadata stripped)
 - `derived/thumbs/` (max 512px long edge, quality ~85, auto-oriented, metadata stripped)
-- `index.html` (simple static gallery)
-- `share.txt` (presigned URL)
-- `share-qr.png` (QR code for the presigned URL)
+- `index.html` (local gallery)
+- `share.txt` (the link you share)
+- `share-qr.png` (QR for the share link)
 - `ghostroll.log` (session log)
 
-Note: the uploaded gallery page is generated to work with a **private** S3 bucket. It embeds **presigned URLs for each image**, so you can share a single presigned link to the gallery page and the images still load.
+The uploaded `index.html` is generated to work with a **private** bucket: it embeds presigned URLs for the images.
+The gallery includes a responsive grid and a lightbox (click to open, Esc to close, ←/→ to navigate).
 
-Gallery UI includes a responsive grid and a built-in lightbox (click to open, Esc to close, ←/→ to navigate).
+## Dedupe / incremental behavior
+
+GhostRoll keeps a persistent SQLite DB keyed by **SHA-256 of file bytes** (default `~/.ghostroll/ghostroll.db`).
+
+- Re-insert same card with no new photos: it will quickly report “No new files detected”.
+- Add new photos: only the new files are copied/processed/uploaded.
 
 ## Configuration
 
-Configure via env vars (CLI flags override env):
+You can configure via env vars (CLI flags override env):
 
 - `GHOSTROLL_SD_LABEL` (default `auto-import`)
 - `GHOSTROLL_BASE_DIR` (default `~/ghostroll`)
@@ -121,73 +88,31 @@ Configure via env vars (CLI flags override env):
 - `GHOSTROLL_S3_BUCKET` (default `photo-ingest-project`)
 - `GHOSTROLL_S3_PREFIX_ROOT` (default `sessions/`)
 - `GHOSTROLL_PRESIGN_EXPIRY_SECONDS` (default `604800`)
-- `GHOSTROLL_SHARE_MAX_LONG_EDGE` (default `2048`)
-- `GHOSTROLL_SHARE_QUALITY` (default `90`)
-- `GHOSTROLL_THUMB_MAX_LONG_EDGE` (default `512`)
-- `GHOSTROLL_THUMB_QUALITY` (default `85`)
-- `GHOSTROLL_POLL_SECONDS` (default `2`)
-- `GHOSTROLL_MOUNT_ROOTS` (comma-separated; default includes `/Volumes,/media,/run/media,/mnt`)
+- `GHOSTROLL_MOUNT_ROOTS` (default `/Volumes,/media,/run/media,/mnt`)
 - `GHOSTROLL_STATUS_PATH` (default `~/ghostroll/status.json`)
 - `GHOSTROLL_STATUS_IMAGE_PATH` (default `~/ghostroll/status.png`)
 - `GHOSTROLL_STATUS_IMAGE_SIZE` (default `800x480`)
 
-## Dedupe / incremental behavior
+Image settings:
 
-GhostRoll maintains a persistent SQLite DB (default `~/.ghostroll/ghostroll.db`) keyed by **SHA-256 of file bytes**.
+- `GHOSTROLL_SHARE_MAX_LONG_EDGE` (default `2048`)
+- `GHOSTROLL_SHARE_QUALITY` (default `90`)
+- `GHOSTROLL_THUMB_MAX_LONG_EDGE` (default `512`)
+- `GHOSTROLL_THUMB_QUALITY` (default `85`)
 
-- Re-inserting the same card with no new photos: **no new session is created** by default (it logs “No new files detected”).
-- Adding new photos: only those new files are copied/processed/uploaded.
+## Raspberry Pi / e‑ink
 
-If you want a session even when nothing is new, use:
+GhostRoll runs on Linux and writes status outputs that work well for e‑ink:
 
-```bash
-ghostroll watch --always-create-session
-```
+- `status.json` (machine-readable)
+- `status.png` (monochrome “now doing X” image)
 
-## Acceptance test checklist
-
-- **A1**: Insert card with `DCIM/` + JPEGs → session created → derived files exist → uploads succeed → `share.txt` URL loads gallery.
-- **A2**: Reinsert without new photos → “No new files detected; nothing to do.” (fast).
-- **A3**: Add a few new photos → only those are processed/uploaded.
-- **A4**: RAW+JPEG → RAW is ingested into `originals/`; derivatives are generated from the JPEG (fast).
-
-## Raspberry Pi / Linux notes (future)
-
-The pipeline core is OS-agnostic; only **device detection** changes.
-
-On Linux/Raspberry Pi you’d likely:
-
-- Use `ghostroll watch` scanning Linux mount roots like:
-  - `/media/<user>/<label>`
-  - `/run/media/<user>/<label>`
-- Or replace polling entirely with a systemd unit + udev rule (recommended long-term).
-
-### Raspberry Pi “watch mode” quick start
-
-Most setups mount removable media under `/media/pi/<volume-label>`. If your SD card is labeled `auto-import`:
-
-```bash
-export GHOSTROLL_MOUNT_ROOTS="/media,/run/media,/mnt"
-ghostroll watch --sd-label auto-import
-```
-
-### Status output layer (for e-ink displays)
-
-GhostRoll continuously writes:
-
-- `~/ghostroll/status.json` (machine-readable status/progress)
-- `~/ghostroll/status.png` (simple monochrome image suitable for e-ink)
-
-You can run a small display daemon that periodically refreshes your e-ink panel from `status.png`.
-
-### Build a complete Raspberry Pi OS image (auto-start + text-file config)
-
-If you want a “flash once, boot, and it runs” setup (GhostRoll installed, `ghostroll watch` running via systemd, configured via a boot-partition text file), use:
+If you want a “flash once, boot, and it runs” image with systemd + boot-partition config, follow:
 
 - `pi/README.md`
 
 ## Legacy shell prototype
 
-The original prototype is still in `ingest.sh` (uses `rsync` + `magick` + `rclone` + `aws s3 presign`).
+The original prototype is still in `ingest.sh` (rsync + ImageMagick + rclone + aws presign).
 
 

@@ -9,7 +9,11 @@
 # Image naming
 IMG_NAME='ghostroll-pi'
 
-# Base OS (Bookworm is current for Raspberry Pi OS)
+# Base OS release.
+# IMPORTANT: this must match the pi-gen branch you are building from, otherwise you may see:
+#   "WARNING: RELEASE does not match the intended option for this branch."
+# Recommended:
+# - checkout pi-gen's `bookworm` branch if you want RELEASE='bookworm'
 RELEASE='bookworm'
 
 # 64-bit Raspberry Pi OS (recommended for Pi 4)
