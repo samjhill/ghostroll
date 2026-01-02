@@ -13,6 +13,7 @@ from .logging_utils import setup_logging
 from .pipeline import PipelineError, run_pipeline
 from .status import Status, StatusWriter, get_hostname, get_ip_address
 from .volume_watch import find_candidate_mounts, pick_mount_with_dcim
+from .watchdog_watcher import WatchdogWatcher
 
 
 def _is_mounted(where: Path) -> bool:
@@ -294,14 +295,65 @@ def cmd_watch(args: argparse.Namespace) -> int:
         )
     )
 
-    while True:
-        vol = pick_mount_with_dcim(cfg.mount_roots, label=cfg.sd_label)
-        if vol is None:
+    last_processed_volume: Path | None = None
+    card_detected_event = threading.Event()
+    detected_volume: Path | None = None
+    
+    def on_card_detected(vol: Path):
+        """Callback when Watchdog detects a potential card mount."""
+        nonlocal detected_volume
+        logger.info(f"Watchdog detected potential mount: {vol}")
+        # Verify it has DCIM before triggering
+        dcim_path = vol / "DCIM"
+        if dcim_path.exists() and dcim_path.is_dir():
+            try:
+                list(dcim_path.iterdir())  # Verify accessible
+                detected_volume = vol
+                card_detected_event.set()
+            except Exception:
+                logger.debug(f"Mount {vol} detected but DCIM not accessible yet")
+    
+    # Try to use Watchdog for real-time detection
+    watcher = WatchdogWatcher(cfg.mount_roots, cfg.sd_label, on_card_detected)
+    use_watchdog = watcher.start()
+    
+    if use_watchdog:
+        logger.info("Using Watchdog for real-time mount detection")
+    else:
+        logger.info(f"Using polling mode (checking every {cfg.poll_seconds}s)")
+    
+    try:
+        while True:
+            # If using Watchdog, wait for event; otherwise poll
+            if use_watchdog:
+                # Wait for Watchdog event or timeout for periodic check
+                if card_detected_event.wait(timeout=cfg.poll_seconds):
+                    vol = detected_volume
+                    card_detected_event.clear()
+                    detected_volume = None
+                else:
+                    # Timeout - do a normal check anyway (fallback)
+                    vol = pick_mount_with_dcim(cfg.mount_roots, label=cfg.sd_label)
+            else:
+                # Polling mode
+                vol = pick_mount_with_dcim(cfg.mount_roots, label=cfg.sd_label)
+            
+            if vol is None:
+            # Reset last processed volume if no card is found
+            if last_processed_volume is not None:
+                logger.debug("No card detected, resetting last processed volume")
+                last_processed_volume = None
             cands = find_candidate_mounts(cfg.mount_roots, label=cfg.sd_label)
             if cands:
                 logger.warning(f"Volume detected ({', '.join([str(c) for c in cands])}) but no accessible DCIM directory. Waiting...")
             else:
                 logger.debug(f"No volume with label '{cfg.sd_label}' found. Waiting...")
+            time.sleep(cfg.poll_seconds)
+            continue
+
+        # Skip if this is the same volume we just processed (prevents infinite loop)
+        if last_processed_volume is not None and str(vol) == str(last_processed_volume):
+            logger.debug(f"Skipping {vol} - already processed. Waiting for card removal...")
             time.sleep(cfg.poll_seconds)
             continue
 
@@ -342,6 +394,10 @@ def cmd_watch(args: argparse.Namespace) -> int:
                 )
             )
         
+        # Mark this volume as processed to prevent immediate re-processing
+        last_processed_volume = vol
+        logger.debug(f"Marked {vol} as processed")
+        
         # Unmount the volume after processing (whether successful or not)
         logger.debug(f"Unmounting {vol} after processing")
         _try_unmount(vol, logger)
@@ -354,22 +410,28 @@ def cmd_watch(args: argparse.Namespace) -> int:
             # If we can't write, the card is definitely gone (even if mount point exists)
             try:
                 if not _can_write_to_volume(vol):
-                    logger.debug(f"Removal detected: cannot write to {vol} (card removed)")
+                    logger.info(f"Removal detected: cannot write to {vol} (card removed)")
                     break
             except Exception as e:
                 # If the write test itself fails with an exception, treat it as removal
-                logger.debug(f"Removal detected: write test failed with exception: {e}")
+                logger.info(f"Removal detected: write test failed with exception: {e}")
                 break
             
             # Also check if a different card was inserted
             current_vol = pick_mount_with_dcim(cfg.mount_roots, label=cfg.sd_label)
-            if current_vol is not None and str(current_vol) != str(vol):
-                logger.debug(f"Removal detected: different volume found ({current_vol} vs {vol})")
+            if current_vol is None:
+                # No card detected - treat as removal
+                logger.info(f"Removal detected: no card found")
+                break
+            if str(current_vol) != str(vol):
+                logger.info(f"Removal detected: different volume found ({current_vol} vs {vol})")
                 break
             
             # Card is still present and accessible - wait and check again
             time.sleep(cfg.poll_seconds)
         
+        # Reset last processed volume so we can detect a new card
+        last_processed_volume = None
         logger.info(f"Waiting for next '{cfg.sd_label}' card...")
         status.write(
             Status(
@@ -380,6 +442,10 @@ def cmd_watch(args: argparse.Namespace) -> int:
                 ip=get_ip_address(),
             )
         )
+    finally:
+        # Clean up Watchdog watcher
+        if use_watchdog:
+            watcher.stop()
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     rc, results = run_doctor(
