@@ -384,8 +384,9 @@ def run_pipeline(
                     copied_size += file_size
                     logger.info(f"  Copied [{i}/{len(new_files)}]: {src.name} -> {originals_dir / 'DCIM' / _safe_rel_under(dcim_dir, src)} ({file_size:,} bytes)")
                 else:
-                    logger.debug(f"  Skipped (already exists): {src.name}")
-                # Collect DB inserts for batch operation
+                    logger.debug(f"  Skipped (already exists at destination): {src.name}")
+                # Always mark as ingested in database (even if already exists at destination,
+                # so we can deduplicate by hash in future runs)
                 db_inserts.append((sha, item[2], str(src)))
         
         # Update new_files with computed hashes (all hashes are now in computed_hashes)
@@ -398,7 +399,7 @@ def run_pipeline(
         for sha, size, source_hint in db_inserts:
             _db_mark_ingested(conn, sha256=sha, size_bytes=size, source_hint=source_hint)
         conn.commit()
-        logger.info(f"Ingested originals: {copied} files copied ({copied_size:,} bytes) -> {originals_dir}")
+        logger.info(f"Ingested originals: {copied} files copied ({copied_size:,} bytes), {len(db_inserts)} marked in DB -> {originals_dir}")
 
         # Process: only JPEGs that are newly ingested this run (fast + matches "new since last time" UX).
         if status is not None:
