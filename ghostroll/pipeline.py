@@ -809,6 +809,9 @@ def run_pipeline(
 
         if upload_tasks:
             logger.info(f"Uploading {len(upload_tasks)} objects with {cfg.upload_workers} workers...")
+            # uploaded_ok already includes early uploads (status.json and loading index.html)
+            # so we need to include those in the total count
+            upload_total_with_early = len(upload_tasks) + uploaded_ok
             if status is not None:
                 status.write(
                     Status(
@@ -817,7 +820,7 @@ def run_pipeline(
                         message="Uploading to S3…",
                         session_id=session_id,
                         volume=str(volume_path),
-                        counts={"uploaded_done": 0, "uploaded_total": len(upload_tasks)},
+                        counts={"uploaded_done": uploaded_ok, "uploaded_total": upload_total_with_early},
                     )
                 )
             uploaded_keys: set[str] = set()
@@ -857,7 +860,7 @@ def run_pipeline(
                                 message="Uploading to S3…",
                                 session_id=session_id,
                                 volume=str(volume_path),
-                                counts={"uploaded_done": uploaded_ok, "uploaded_total": len(upload_tasks)},
+                                counts={"uploaded_done": uploaded_ok, "uploaded_total": upload_total_with_early},
                             )
                         )
 
