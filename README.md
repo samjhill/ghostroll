@@ -54,6 +54,14 @@ ghostroll watch
 
 When it finishes, you’ll get a session directory under `~/ghostroll/` with a `share.txt` presigned URL.
 
+## Troubleshooting: doctor
+
+If something feels misconfigured (AWS creds, bucket perms, mount roots, disk space), run:
+
+```bash
+ghostroll doctor
+```
+
 ## What you get (per session)
 
 Default location:

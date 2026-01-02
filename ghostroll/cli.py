@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 from .config import load_config
+from .doctor import format_results, run_doctor
 from .logging_utils import setup_logging
 from .pipeline import PipelineError, run_pipeline
 from .status import Status, StatusWriter, get_hostname, get_ip_address
@@ -178,10 +179,29 @@ def cmd_watch(args: argparse.Namespace) -> int:
             )
         )
 
+def cmd_doctor(args: argparse.Namespace) -> int:
+    rc, results = run_doctor(
+        base_dir=args.base_dir,
+        sd_label=args.sd_label,
+        mount_roots=args.mount_roots,
+        db_path=args.db_path,
+        s3_bucket=args.s3_bucket,
+        min_free_gb=args.min_free_gb,
+        skip_aws=args.skip_aws,
+    )
+    print(format_results(results))
+    return rc
+
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="ghostroll", description="GhostRoll ingest pipeline")
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    p_doc = sub.add_parser("doctor", help="Run environment checks (AWS, mounts, disk, config)")
+    _add_common_args(p_doc)
+    p_doc.add_argument("--min-free-gb", type=float, default=2.0, help="Minimum free disk space required")
+    p_doc.add_argument("--skip-aws", action="store_true", help="Skip AWS checks")
+    p_doc.set_defaults(func=cmd_doctor)
 
     p_run = sub.add_parser("run", help="Run once against a specific volume path (debugging / one-shot)")
     _add_common_args(p_run)
