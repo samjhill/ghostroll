@@ -4,7 +4,14 @@ import logging
 from pathlib import Path
 
 
-def setup_logging(*, session_dir: Path | None = None, verbose: bool = False) -> logging.Logger:
+def setup_logging(*, session_dir: Path | None = None, verbose: bool = True) -> logging.Logger:
+    """
+    Set up logging for GhostRoll.
+    
+    Args:
+        session_dir: Optional session directory to write log file to
+        verbose: If True (default), show DEBUG level logs. If False, only show INFO and above.
+    """
     logger = logging.getLogger("ghostroll")
     logger.setLevel(logging.DEBUG)
     logger.handlers.clear()

@@ -17,8 +17,18 @@ def test_setup_logging_default():
 def test_setup_logging_verbose():
     logger = setup_logging(verbose=True)
     assert isinstance(logger, logging.Logger)
-    # Verbose mode should set a different log level
-    assert logger.level <= logging.INFO
+    # Verbose mode (default) should set DEBUG level
+    assert logger.level <= logging.DEBUG
+
+
+def test_setup_logging_quiet():
+    logger = setup_logging(verbose=False)
+    assert isinstance(logger, logging.Logger)
+    # Quiet mode should set INFO level (no DEBUG)
+    # Check that the stream handler has INFO level
+    stream_handlers = [h for h in logger.handlers if isinstance(h, logging.StreamHandler)]
+    assert len(stream_handlers) > 0
+    assert stream_handlers[0].level == logging.INFO
 
 
 def test_setup_logging_with_session_dir(tmp_path: Path):

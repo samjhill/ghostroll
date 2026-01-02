@@ -59,7 +59,7 @@ def _add_common_args(p: argparse.ArgumentParser) -> None:
         default=None,
         help="Status PNG size like 800x480 (default: 800x480)",
     )
-    p.add_argument("--verbose", action="store_true", help="Verbose logs")
+    p.add_argument("--quiet", action="store_true", help="Reduce log verbosity (INFO level only, no DEBUG)")
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -84,7 +84,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         volume = guessed if guessed is not None else Path(vol_arg).resolve()
     else:
         volume = Path(vol_arg).resolve()
-    logger = setup_logging(session_dir=None, verbose=args.verbose)
+    logger = setup_logging(session_dir=None, verbose=not args.quiet)
     status = StatusWriter(
         json_path=cfg.status_path,
         image_path=cfg.status_image_path,
@@ -131,7 +131,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
         status_image_path=args.status_image_path,
         status_image_size=args.status_image_size,
     )
-    logger = setup_logging(session_dir=None, verbose=args.verbose)
+    logger = setup_logging(session_dir=None, verbose=not args.quiet)
     status = StatusWriter(
         json_path=cfg.status_path,
         image_path=cfg.status_image_path,
@@ -180,7 +180,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
                 status_path=args.status_path,
                 status_image_path=args.status_image_path,
                 status_image_size=args.status_image_size,
-                verbose=args.verbose,
+                verbose=not args.quiet,
                 volume=str(vol),
                 always_create_session=args.always_create_session,
                 session_id=None,
