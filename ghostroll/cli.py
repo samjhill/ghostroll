@@ -11,6 +11,7 @@ from pathlib import Path
 from .config import load_config
 from .doctor import format_results, run_doctor
 from .logging_utils import setup_logging
+from .mount_check import is_real_device_mount
 from .pipeline import PipelineError, run_pipeline
 from .status import Status, StatusWriter, get_hostname, get_ip_address
 from .volume_watch import find_candidate_mounts, pick_mount_with_dcim
@@ -19,20 +20,88 @@ from .watchdog_watcher import WatchdogWatcher
 
 def _is_mounted(where: Path) -> bool:
     """
-    Returns True if `where` is currently a mountpoint (checks /proc/mounts).
+    Returns True if `where` is currently a mountpoint (uses findmnt on Linux).
     Important: does NOT touch the filesystem under `where`, so it won't trigger systemd automount.
+    
+    Also checks that it's a real device mount (not just an automount placeholder).
+    Uses findmnt for simpler, more reliable detection.
     """
-    try:
-        mounts_text = Path("/proc/mounts").read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        return False
-    # /proc/mounts fields: <src> <target> <fstype> <opts> ...
-    # Targets escape spaces as \040.
-    target = str(where).replace(" ", "\\040")
-    for line in mounts_text.splitlines():
-        parts = line.split()
-        if len(parts) >= 2 and parts[1] == target:
+    system = platform.system().lower()
+    vol_str = str(where)
+    
+    if system == "darwin":
+        if vol_str.startswith("/Volumes/"):
             return True
+        try:
+            result = subprocess.run(
+                ["mount"], capture_output=True, text=True, timeout=2
+            )
+            return vol_str in result.stdout
+        except Exception:
+            return False
+    
+    if system == "linux":
+        # /media and /run/media are typically always mounts
+        if vol_str.startswith("/media/") or vol_str.startswith("/run/media/"):
+            return True
+        
+        # Use findmnt (simpler than parsing /proc/mounts)
+        try:
+            result = subprocess.run(
+                ["findmnt", "-n", "-o", "FSTYPE,SOURCE", vol_str],
+                capture_output=True,
+                text=True,
+                timeout=2
+            )
+            
+            if result.returncode != 0:
+                return False
+            
+            output = result.stdout.strip()
+            if not output:
+                return False
+            
+            # Parse: "FSTYPE SOURCE"
+            parts = output.split(None, 1)
+            if len(parts) < 1:
+                return False
+            
+            fstype = parts[0]
+            source = parts[1] if len(parts) > 1 else ""
+            
+            # Reject autofs
+            if fstype == "autofs":
+                return False
+            
+            # Reject systemd-1 or autofs sources
+            if source.startswith("systemd-1") or "autofs" in source.lower():
+                return False
+            
+            # For /dev/ devices, verify device exists
+            if source.startswith("/dev/"):
+                if not Path(source).exists():
+                    return False
+            
+            return True
+            
+        except FileNotFoundError:
+            # findmnt not available, fall back to /proc/mounts
+            try:
+                mounts_text = Path("/proc/mounts").read_text(encoding="utf-8", errors="replace")
+                target = vol_str.replace(" ", "\\040")
+                for line in mounts_text.splitlines():
+                    parts = line.split()
+                    if len(parts) >= 2 and parts[1] == target:
+                        fstype = parts[2] if len(parts) > 2 else ""
+                        if fstype == "autofs":
+                            return False
+                        return True
+                return False
+            except Exception:
+                return False
+        except Exception:
+            return False
+    
     return False
 
 
@@ -302,8 +371,14 @@ def cmd_watch(args: argparse.Namespace) -> int:
     
     def on_card_detected(vol: Path):
         """Callback when Watchdog detects a potential card mount."""
-        nonlocal detected_volume
+        nonlocal detected_volume, last_processed_volume
         logger.info(f"Watchdog detected potential mount: {vol}")
+        
+        # Ignore if this is the same volume we just processed
+        if last_processed_volume is not None and str(vol) == str(last_processed_volume):
+            logger.debug(f"Watchdog: Ignoring {vol} - already processed")
+            return
+        
         # Verify it has DCIM before triggering
         dcim_path = vol / "DCIM"
         if dcim_path.exists() and dcim_path.is_dir():
@@ -332,19 +407,42 @@ def cmd_watch(args: argparse.Namespace) -> int:
                     vol = detected_volume
                     card_detected_event.clear()
                     detected_volume = None
+                    logger.debug(f"Watchdog event triggered, vol={vol}, last_processed={last_processed_volume}")
+                    # Watchdog detected a NEW mount - verify it's actually mounted before proceeding
+                    if vol is not None and platform.system().lower() == "linux" and str(vol).startswith("/mnt/"):
+                        if not _is_mounted(vol):
+                            logger.warning(f"Watchdog detected {vol} but it's not in /proc/mounts - ignoring (stale directory)")
+                            vol = None
                 else:
-                    # Timeout - do a normal check anyway (fallback)
-                    vol = pick_mount_with_dcim(cfg.mount_roots, label=cfg.sd_label)
+                    # Timeout - Watchdog didn't detect anything new
+                    # We still need to poll occasionally to catch mounts that happened before Watchdog started
+                    # But skip if we're waiting for card removal
+                    if last_processed_volume is None:
+                        # Only poll occasionally (every 10 seconds) to avoid finding stale directories
+                        # Watchdog should handle real-time detection
+                        # Use verbose=False to reduce log noise during routine polling
+                        vol = pick_mount_with_dcim(cfg.mount_roots, label=cfg.sd_label, verbose=False)
+                        logger.debug(f"Watchdog timeout, periodic poll check: vol={vol}, last_processed={last_processed_volume}")
+                    else:
+                        vol = None  # Skip polling check while waiting for removal
+                        logger.debug(f"Watchdog timeout, skipping poll (waiting for removal of {last_processed_volume})")
             else:
-                # Polling mode
-                vol = pick_mount_with_dcim(cfg.mount_roots, label=cfg.sd_label)
+                # Polling mode - but skip if we're waiting for card removal
+                if last_processed_volume is None:
+                    # Use verbose=False to reduce log noise during routine polling
+                    vol = pick_mount_with_dcim(cfg.mount_roots, label=cfg.sd_label, verbose=False)
+                    logger.debug(f"Polling check: vol={vol}, last_processed={last_processed_volume}")
+                else:
+                    vol = None  # Skip polling check while waiting for removal
+                    logger.debug(f"Skipping poll (waiting for removal of {last_processed_volume})")
             
             if vol is None:
                 # Reset last processed volume if no card is found
                 if last_processed_volume is not None:
                     logger.debug("No card detected, resetting last processed volume")
                     last_processed_volume = None
-                cands = find_candidate_mounts(cfg.mount_roots, label=cfg.sd_label)
+                # Use verbose=False to reduce log noise when just polling
+                cands = find_candidate_mounts(cfg.mount_roots, label=cfg.sd_label, verbose=False)
                 if cands:
                     logger.warning(f"Volume detected ({', '.join([str(c) for c in cands])}) but no accessible DCIM directory. Waiting...")
                 else:
@@ -352,83 +450,86 @@ def cmd_watch(args: argparse.Namespace) -> int:
                 time.sleep(cfg.poll_seconds)
                 continue
 
-            # Skip if this is the same volume we just processed (prevents infinite loop)
+            # We have a volume - check if it was already processed
+            logger.info(f"📋 Volume found: {vol}, checking if already processed (last={last_processed_volume})")
             if last_processed_volume is not None and str(vol) == str(last_processed_volume):
-                logger.debug(f"Skipping {vol} - already processed. Waiting for card removal...")
-                time.sleep(cfg.poll_seconds)
-                continue
-
-            logger.info(f"Detected camera volume: {vol}")
-            logger.debug(f"Volume path: {vol}")
-            logger.debug(f"DCIM directory: {vol / 'DCIM'}")
-            status.write(Status(state="running", step="detected", message="SD card detected.", volume=str(vol)))
-            rc = cmd_run(
-                argparse.Namespace(
-                    sd_label=cfg.sd_label,
-                    base_dir=str(cfg.base_output_dir),
-                    db_path=str(cfg.db_path),
-                    s3_bucket=cfg.s3_bucket,
-                    s3_prefix_root=cfg.s3_prefix_root,
-                    presign_expiry_seconds=cfg.presign_expiry_seconds,
-                    mount_roots=args.mount_roots,
-                    status_path=args.status_path,
-                    status_image_path=args.status_image_path,
-                    status_image_size=args.status_image_size,
-                    quiet=args.quiet,
-                    volume=str(vol),
-                    always_create_session=args.always_create_session,
-                    session_id=None,
-                )
-            )
-            if rc != 0:
-                logger.error(f"Run failed with exit code {rc}. Waiting for card removal before retrying.")
+                logger.info(f"⚠️ Skipping {vol} - already processed. Entering removal detection...")
+                # Clear any Watchdog events to prevent retriggering
+                if use_watchdog:
+                    card_detected_event.clear()
+                    detected_volume = None
+                # Jump directly to removal detection loop
+                vol_to_wait_for = vol
             else:
-                logger.info("✅ Image offloading complete. You may remove the SD card now.")
-                # Update status to show completion message on e-ink
-                status.write(
-                    Status(
-                        state="done",
-                        step="done",
-                        message="Complete. Remove SD card now.",
-                        hostname=get_hostname(),
-                        ip=get_ip_address(),
+                # New volume detected - process it
+                logger.info(f"🎯 NEW volume detected: {vol} (last_processed was {last_processed_volume})")
+                logger.debug(f"Volume path: {vol}")
+                logger.debug(f"DCIM directory: {vol / 'DCIM'}")
+                status.write(Status(state="running", step="detected", message="SD card detected.", volume=str(vol)))
+                rc = cmd_run(
+                    argparse.Namespace(
+                        sd_label=cfg.sd_label,
+                        base_dir=str(cfg.base_output_dir),
+                        db_path=str(cfg.db_path),
+                        s3_bucket=cfg.s3_bucket,
+                        s3_prefix_root=cfg.s3_prefix_root,
+                        presign_expiry_seconds=cfg.presign_expiry_seconds,
+                        mount_roots=args.mount_roots,
+                        status_path=args.status_path,
+                        status_image_path=args.status_image_path,
+                        status_image_size=args.status_image_size,
+                        quiet=args.quiet,
+                        volume=str(vol),
+                        always_create_session=args.always_create_session,
+                        session_id=None,
                     )
                 )
+                if rc != 0:
+                    logger.error(f"Run failed with exit code {rc}. Waiting for card removal before retrying.")
+                else:
+                    logger.info("✅ Image offloading complete. You may remove the SD card now.")
+                    # Update status to show completion message on e-ink
+                    status.write(
+                        Status(
+                            state="done",
+                            step="done",
+                            message="Complete. Remove SD card now.",
+                            hostname=get_hostname(),
+                            ip=get_ip_address(),
+                        )
+                    )
+                
+                # Mark this volume as processed to prevent immediate re-processing
+                last_processed_volume = vol
+                logger.info(f"✅ Marked {vol} as processed - will ignore until card is removed")
+                
+                # Clear any pending Watchdog events to prevent immediate retrigger
+                if use_watchdog:
+                    card_detected_event.clear()
+                    detected_volume = None
+                    logger.debug("Cleared Watchdog events")
+                
+                # Unmount the volume after processing (whether successful or not)
+                logger.debug(f"Unmounting {vol} after processing")
+                _try_unmount(vol, logger)
+                
+                vol_to_wait_for = vol
             
-            # Mark this volume as processed to prevent immediate re-processing
-            last_processed_volume = vol
-            logger.debug(f"Marked {vol} as processed")
+            # Enter removal detection loop for either newly processed volume or already-processed volume
+            logger.info(f"⏳ Waiting for card removal (monitoring {vol_to_wait_for})...")
+            logger.debug(f"Last detected volume: {vol_to_wait_for}, last_processed_volume: {last_processed_volume}")
             
-            # Unmount the volume after processing (whether successful or not)
-            logger.debug(f"Unmounting {vol} after processing")
-            _try_unmount(vol, logger)
-            
-            logger.info("Waiting for card removal before checking for next card...")
-            logger.debug(f"Last detected volume: {vol}")
-            
-            while True:
-                # Check if we can still write to the volume - this is the definitive test
-                # If we can't write, the card is definitely gone (even if mount point exists)
-                try:
-                    if not _can_write_to_volume(vol):
-                        logger.info(f"Removal detected: cannot write to {vol} (card removed)")
-                        break
-                except Exception as e:
-                    # If the write test itself fails with an exception, treat it as removal
-                    logger.info(f"Removal detected: write test failed with exception: {e}")
+            removal_detected = False
+            while not removal_detected:
+                # Use the bulletproof mount check - it's the source of truth
+                # If there's no real device mount, the card is removed
+                if not is_real_device_mount(vol_to_wait_for, trigger_automount=False):
+                    logger.info(f"✅ Removal detected: {vol_to_wait_for} no longer has a real device mount (card removed)")
+                    removal_detected = True
                     break
                 
-                # Also check if a different card was inserted
-                current_vol = pick_mount_with_dcim(cfg.mount_roots, label=cfg.sd_label)
-                if current_vol is None:
-                    # No card detected - treat as removal
-                    logger.info(f"Removal detected: no card found")
-                    break
-                if str(current_vol) != str(vol):
-                    logger.info(f"Removal detected: different volume found ({current_vol} vs {vol})")
-                    break
-                
-                # Card is still present and accessible - wait and check again
+                # Card is still present - wait and check again
+                logger.debug(f"Card still present at {vol_to_wait_for}, waiting {cfg.poll_seconds}s...")
                 time.sleep(cfg.poll_seconds)
             
             # Reset last processed volume so we can detect a new card

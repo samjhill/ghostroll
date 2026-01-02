@@ -74,6 +74,54 @@ class MountEventHandler(FileSystemEventHandler):
         logger.info(f"Potential SD card mount detected: {event_path}")
         # Give the filesystem a moment to fully mount
         time.sleep(0.2)
+        
+        # Verify it's actually a mount (not just a directory or automount) before calling callback
+        # This prevents false positives from existing directories and automount placeholders
+        import platform
+        if platform.system().lower() == "linux":
+            try:
+                with open("/proc/mounts", "r") as f:
+                    mounts_text = f.read()
+                    target = str(event_path).replace(" ", "\\040")
+                    
+                    # Check if it's in /proc/mounts
+                    if target not in mounts_text:
+                        logger.warning(f"Watchdog: {event_path} created but not in /proc/mounts - ignoring (not a real mount)")
+                        return
+                    
+                    # Check if it's an automount (autofs filesystem or systemd-1 source)
+                    for line in mounts_text.splitlines():
+                        parts = line.split()
+                        if len(parts) >= 2 and parts[1] == target:
+                            src = parts[0] if len(parts) > 0 else ""
+                            fstype = parts[2] if len(parts) > 2 else ""
+                            
+                            # Reject autofs filesystem type (automount placeholder)
+                            if fstype == "autofs":
+                                logger.warning(f"Watchdog: {event_path} is autofs - ignoring (automount placeholder)")
+                                return
+                            
+                            # Reject systemd-1 or autofs sources (automount services)
+                            if src.startswith("systemd-1") or "autofs" in src.lower():
+                                logger.warning(f"Watchdog: {event_path} has automount source {src} - ignoring")
+                                return
+                            
+                            # For /dev/ devices, verify the device file exists (catch stale mounts)
+                            if src.startswith("/dev/"):
+                                try:
+                                    from pathlib import Path
+                                    if not Path(src).exists():
+                                        logger.warning(f"Watchdog: {event_path} device {src} does not exist - ignoring (stale mount)")
+                                        return
+                                except Exception:
+                                    pass  # If we can't check, assume it's valid
+                            
+                            # It's a real mount - proceed
+                            break
+            except Exception as e:
+                logger.debug(f"Error checking /proc/mounts: {e}")
+                # If we can't check, proceed anyway (better to have false positive than miss real mount)
+        
         self.callback(event_path)
     
     def on_deleted(self, event):
