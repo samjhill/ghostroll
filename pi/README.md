@@ -177,13 +177,8 @@ This repo includes a systemd automount for an SD card labeled `auto-import`:
 If you installed manually (not via pi-gen image), enable it:
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y exfatprogs
-sudo mkdir -p /mnt/auto-import
-sudo cp '/home/pi/ghostroll/pi/systemd/mnt-auto\x2dimport.mount' /etc/systemd/system/
-sudo cp '/home/pi/ghostroll/pi/systemd/mnt-auto\x2dimport.automount' /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now 'mnt-auto\x2dimport.automount'
+cd /home/pi/ghostroll
+sudo ./pi/scripts/install-automount.sh
 ```
 
 ## Troubleshooting (the common ones)
