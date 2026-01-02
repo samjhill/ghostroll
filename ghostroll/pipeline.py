@@ -185,14 +185,42 @@ def run_pipeline(
         jpeg_sources, raw_sources = _pair_prefer_jpeg(all_media)
         logger.info(f"Discovered media files: {len(all_media)} (JPEG candidates: {len(jpeg_sources)}, RAW: {len(raw_sources)})")
 
-        # Determine what's new by hashing.
+        # Determine what's new by hashing (parallelized for performance).
         logger.info(f"Hashing {len(all_media)} files to check for duplicates...")
+        
+        def _hash_one(p: Path) -> tuple[Path, str, int]:
+            sha, size = sha256_file(p)
+            return (p, sha, size)
+        
+        # Parallelize hashing (I/O bound operation)
+        hash_workers = min(4, max(1, cfg.process_workers))  # Use fewer workers for hashing
+        hashed_files: list[tuple[Path, str, int]] = []
+        with ThreadPoolExecutor(max_workers=hash_workers) as ex:
+            futures = {ex.submit(_hash_one, p): p for p in all_media}
+            for i, fut in enumerate(as_completed(futures), 1):
+                p, sha, size = fut.result()
+                logger.debug(f"Hashing [{i}/{len(all_media)}]: {p.name}")
+                hashed_files.append((p, sha, size))
+        
+        # Batch check database for duplicates (more efficient than one-by-one)
+        logger.debug("Checking database for duplicates...")
+        all_shas = {sha for (_, sha, _) in hashed_files}
+        if all_shas:
+            # Query all at once
+            placeholders = ",".join("?" * len(all_shas))
+            existing_rows = conn.execute(
+                f"SELECT sha256 FROM ingested_files WHERE sha256 IN ({placeholders})",
+                tuple(all_shas)
+            ).fetchall()
+            existing_shas = {row["sha256"] for row in existing_rows}
+        else:
+            existing_shas = set()
+        
+        # Filter to new files
         new_files: list[tuple[Path, str, int]] = []
         skipped = 0
-        for i, p in enumerate(all_media, 1):
-            logger.debug(f"Hashing [{i}/{len(all_media)}]: {p.name}")
-            sha, size = sha256_file(p)
-            if _db_has_ingested(conn, sha):
+        for p, sha, size in hashed_files:
+            if sha in existing_shas:
                 skipped += 1
                 logger.debug(f"  Skipped (already ingested): {p.name}")
                 continue
@@ -254,16 +282,36 @@ def run_pipeline(
         total_size = sum(size for (_, _, size) in new_files)
         copied_size = 0
         logger.info(f"Copying {len(new_files)} files ({total_size:,} bytes total) to {originals_dir}...")
-        for i, (src, sha, size) in enumerate(new_files, 1):
+        
+        # Parallelize file copying (I/O bound operation)
+        def _copy_one(item: tuple[Path, str, int]) -> tuple[bool, int, Path, str]:
+            src, sha, size = item
             rel = _safe_rel_under(dcim_dir, src)
             dst = originals_dir / "DCIM" / rel
-            if _copy2_ignore_existing(src, dst):
-                copied += 1
-                copied_size += size
-                logger.info(f"  Copied [{i}/{len(new_files)}]: {src.name} -> {dst.relative_to(originals_dir)} ({size:,} bytes)")
-            else:
-                logger.debug(f"  Skipped (already exists): {src.name}")
-            _db_mark_ingested(conn, sha256=sha, size_bytes=size, source_hint=str(src))
+            copied_file = _copy2_ignore_existing(src, dst)
+            return (copied_file, size if copied_file else 0, src, sha)
+        
+        copy_workers = min(4, max(1, cfg.process_workers))  # Use fewer workers for copying
+        db_inserts: list[tuple[str, int, str]] = []  # (sha, size, source_hint)
+        
+        with ThreadPoolExecutor(max_workers=copy_workers) as ex:
+            futures = {ex.submit(_copy_one, item): item for item in new_files}
+            for i, fut in enumerate(as_completed(futures), 1):
+                item = futures[fut]
+                was_copied, file_size, src, sha = fut.result()
+                if was_copied:
+                    copied += 1
+                    copied_size += file_size
+                    logger.info(f"  Copied [{i}/{len(new_files)}]: {src.name} -> {originals_dir / 'DCIM' / _safe_rel_under(dcim_dir, src)} ({file_size:,} bytes)")
+                else:
+                    logger.debug(f"  Skipped (already exists): {src.name}")
+                # Collect DB inserts for batch operation
+                db_inserts.append((sha, item[2], str(src)))
+        
+        # Batch insert into database (more efficient than one-by-one)
+        logger.debug(f"Marking {len(db_inserts)} files as ingested in database...")
+        for sha, size, source_hint in db_inserts:
+            _db_mark_ingested(conn, sha256=sha, size_bytes=size, source_hint=source_hint)
         conn.commit()
         logger.info(f"Ingested originals: {copied} files copied ({copied_size:,} bytes) -> {originals_dir}")
 
@@ -525,15 +573,15 @@ def run_pipeline(
                 )
             )
 
+        # Build upload tasks from processed files (avoid redundant directory scans)
         upload_tasks: list[tuple[Path, str]] = []
-        for p in sorted(derived_share_dir.rglob("*")):
-            if p.is_file():
-                rel = p.relative_to(derived_share_dir)
-                upload_tasks.append((p, f"{prefix}/share/{rel.as_posix()}"))
-        for p in sorted(derived_thumbs_dir.rglob("*")):
-            if p.is_file():
-                rel = p.relative_to(derived_thumbs_dir)
-                upload_tasks.append((p, f"{prefix}/thumbs/{rel.as_posix()}"))
+        # Use the gallery items we already have to build upload tasks efficiently
+        for thumb_href, share_href, _title, _subtitle in local_items:
+            # Convert "derived/thumbs/100CANON/IMG_0001.jpg" -> actual paths
+            thumb_rel = thumb_href.replace("derived/thumbs/", "")
+            share_rel = share_href.replace("derived/share/", "")
+            upload_tasks.append((derived_thumbs_dir / thumb_rel, f"{prefix}/thumbs/{thumb_rel}"))
+            upload_tasks.append((derived_share_dir / share_rel, f"{prefix}/share/{share_rel}"))
         # Also upload the "download all" zip
         upload_tasks.append((share_zip, f"{prefix}/share.zip"))
 
