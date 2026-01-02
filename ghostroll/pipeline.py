@@ -4,6 +4,7 @@ import os
 import shutil
 import sqlite3
 import time
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,7 +14,8 @@ from . import media
 from .aws_cli import AwsCliError, s3_cp, s3_presign
 from .config import Config
 from .db import connect
-from .gallery import build_index_html, build_index_html_presigned
+from .exif_utils import extract_basic_exif
+from .gallery import build_index_html_from_items, build_index_html_presigned
 from .hashing import sha256_file
 from .image_processing import render_jpeg_derivative
 from .logging_utils import attach_session_logfile
@@ -60,6 +62,17 @@ def _copy2_ignore_existing(src: Path, dst: Path) -> bool:
         return False
     shutil.copy2(src, dst)
     return True
+
+
+def _build_share_zip(*, share_dir: Path, out_zip: Path) -> None:
+    """
+    Creates a zip file containing the share/ directory contents.
+    """
+    out_zip.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(out_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for p in sorted([p for p in share_dir.rglob("*") if p.is_file()]):
+            rel = p.relative_to(share_dir)
+            zf.write(p, arcname=str(Path("share") / rel))
 
 
 def _db_has_ingested(conn: sqlite3.Connection, sha256: str) -> bool:
@@ -201,6 +214,7 @@ def run_pipeline(
         derived_share_dir = session_dir / "derived" / "share"
         derived_thumbs_dir = session_dir / "derived" / "thumbs"
         index_html = session_dir / "index.html"
+        share_zip = session_dir / "share.zip"
         share_txt = session_dir / "share.txt"
 
         sp = SessionPaths(
@@ -260,16 +274,16 @@ def run_pipeline(
 
         # Derived outputs mirror DCIM relpath and normalize to .jpg
         processed = 0
-        proc_tasks: list[tuple[Path, Path, Path]] = []
+        proc_tasks: list[tuple[Path, Path, Path, Path]] = []
         for src in jpeg_sources:
             sha = src_sha.get(src)
             if sha is None or sha not in new_sha_set:
                 continue
             rel = _safe_rel_under(dcim_dir, src).with_suffix(".jpg")
-            proc_tasks.append((src, derived_share_dir / rel, derived_thumbs_dir / rel))
+            proc_tasks.append((src, rel, derived_share_dir / rel, derived_thumbs_dir / rel))
 
-        def _process_one(task: tuple[Path, Path, Path]) -> None:
-            src, share_out, thumb_out = task
+        def _process_one(task: tuple[Path, Path, Path, Path]) -> tuple[str, float, str, str]:
+            src, rel, share_out, thumb_out = task
             if not share_out.exists():
                 render_jpeg_derivative(
                     src,
@@ -284,18 +298,38 @@ def run_pipeline(
                     max_long_edge=cfg.thumb_max_long_edge,
                     quality=cfg.thumb_quality,
                 )
+            ex = extract_basic_exif(src)
+            sort_ts = ex.captured_at.timestamp() if ex.captured_at is not None else 9e18
+            title = rel.as_posix()
+            parts = [p for p in [ex.captured_at_display, ex.camera] if p]
+            subtitle = " · ".join(parts)
+            return (rel.as_posix(), sort_ts, title, subtitle)
 
+        gallery_items_local: list[tuple[str, str, str, str, float]] = []
         if proc_tasks:
             logger.info(f"Processing {len(proc_tasks)} new JPEGs with {cfg.process_workers} workers...")
             with ThreadPoolExecutor(max_workers=max(1, cfg.process_workers)) as ex:
                 futures = [ex.submit(_process_one, t) for t in proc_tasks]
                 for fut in as_completed(futures):
-                    fut.result()
+                    rel_posix, sort_ts, title, subtitle = fut.result()
+                    thumb_href = f"derived/thumbs/{rel_posix}"
+                    share_href = f"derived/share/{rel_posix}"
+                    gallery_items_local.append((thumb_href, share_href, title, subtitle, sort_ts))
                     processed += 1
         logger.info(f"Processed JPEGs (share+thumb): {processed}")
 
-        # Gallery
-        build_index_html(session_id=session_id, thumbs_dir=derived_thumbs_dir, out_path=index_html)
+        # Build a downloadable zip of share images (for local + S3 download-all).
+        _build_share_zip(share_dir=derived_share_dir, out_zip=share_zip)
+
+        # Gallery (local): sort by capture time (if available) then filename.
+        gallery_items_local.sort(key=lambda x: (x[4], x[2]))
+        local_items = [(a, b, c, d) for (a, b, c, d, _ts) in gallery_items_local]
+        build_index_html_from_items(
+            session_id=session_id,
+            items=local_items,
+            download_href="share.zip",
+            out_path=index_html,
+        )
         logger.info(f"Generated gallery: {index_html}")
 
         # Upload (retry-tolerant) with per-key upload dedupe (idempotent if re-run)
@@ -321,6 +355,8 @@ def run_pipeline(
             if p.is_file():
                 rel = p.relative_to(derived_thumbs_dir)
                 upload_tasks.append((p, f"{prefix}/thumbs/{rel.as_posix()}"))
+        # Also upload the "download all" zip
+        upload_tasks.append((share_zip, f"{prefix}/share.zip"))
 
         upload_failures: list[str] = []
 
@@ -371,11 +407,11 @@ def run_pipeline(
 
         # Build an S3-shareable gallery that embeds presigned URLs for assets (bucket remains private).
         # We keep the local index.html (relative paths) for offline/local browsing.
-        presigned_items: list[tuple[str, str, str]] = []
+        presigned_items: list[tuple[str, str, str, str]] = []
         thumb_files = sorted([p for p in derived_thumbs_dir.rglob("*") if p.is_file()])
         logger.info(f"Generating presigned asset URLs for {len(thumb_files)} images with {cfg.presign_workers} workers...")
 
-        def _presign_one(t: Path) -> tuple[str, str, str]:
+        def _presign_one(t: Path) -> tuple[str, str, str, str, float]:
             rel = t.relative_to(derived_thumbs_dir)
             thumb_key = f"{prefix}/thumbs/{rel.as_posix()}"
             share_key = f"{prefix}/share/{rel.with_suffix('.jpg').as_posix()}"
@@ -389,7 +425,8 @@ def run_pipeline(
                 key=share_key,
                 expires_in_seconds=cfg.presign_expiry_seconds,
             )
-            return (thumb_url, share_url, rel.as_posix())
+            title = rel.as_posix()
+            return (thumb_url, share_url, title, "", 9e18)
 
         if thumb_files:
             with ThreadPoolExecutor(max_workers=max(1, cfg.presign_workers)) as ex:
@@ -397,8 +434,23 @@ def run_pipeline(
                 for fut in as_completed(futures):
                     presigned_items.append(fut.result())
 
+        # Presign the download zip
+        download_zip_url = s3_presign(
+            bucket=cfg.s3_bucket,
+            key=f"{prefix}/share.zip",
+            expires_in_seconds=cfg.presign_expiry_seconds,
+        )
+
+        presigned_items.sort(key=lambda x: (x[4], x[2]))
+        presigned_ui = [(a, b, c, d) for (a, b, c, d, _ts) in presigned_items]
+
         index_for_s3 = session_dir / "index.s3.html"
-        build_index_html_presigned(session_id=session_id, items=presigned_items, out_path=index_for_s3)
+        build_index_html_presigned(
+            session_id=session_id,
+            items=presigned_ui,
+            download_href=download_zip_url,
+            out_path=index_for_s3,
+        )
         # Upload the final index.html (force content-based dedupe)
         uploaded, err = _upload_one((index_for_s3, f"{prefix}/index.html"))
         if uploaded:

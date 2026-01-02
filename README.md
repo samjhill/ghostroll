@@ -72,6 +72,7 @@ Contents:
 
 The uploaded `index.html` is generated to work with a **private** bucket: it embeds presigned URLs for the images.
 The gallery includes a responsive grid and a lightbox (click to open, Esc to close, ←/→ to navigate).
+It also includes a **Download all** link for the session’s share images.
 
 ## Dedupe / incremental behavior
 

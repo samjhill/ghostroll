@@ -11,8 +11,9 @@ def _posix(p: Path) -> str:
 def _write_gallery_html(
     *,
     session_id: str,
-    # list of (thumb_src, full_href, caption)
-    items: list[tuple[str, str, str]],
+    # list of (thumb_src, full_href, title, subtitle)
+    items: list[tuple[str, str, str, str]],
+    download_href: str | None = None,
     out_path: Path,
 ) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -65,23 +66,30 @@ def _write_gallery_html(
         f.write("<div class=\"wrap\">\n")
         f.write("<div class=\"top\">")
         f.write(f"<h1 class=\"title\">{html.escape(session_id)}</h1>")
-        f.write(f"<div class=\"meta\">{count} image{'s' if count != 1 else ''}</div>")
+        f.write("<div class=\"meta\">")
+        f.write(f"{count} image{'s' if count != 1 else ''}")
+        if download_href:
+            f.write(
+                f" · <a href=\"{html.escape(download_href)}\" style=\"color:inherit\">Download all</a>"
+            )
+        f.write("</div>")
         f.write("</div>\n")
 
         if not items:
             f.write("<div class=\"empty\">No shareable images found.</div>\n")
         else:
             f.write("<div class=\"grid\" id=\"grid\">\n")
-            for i, (thumb_src, full_href, caption) in enumerate(items):
+            for i, (thumb_src, full_href, title, subtitle) in enumerate(items):
                 f.write(
-                    "<a class=\"tile\" href=\"{full}\" data-full=\"{full}\" data-cap=\"{cap}\" "
+                    "<a class=\"tile\" href=\"{full}\" data-full=\"{full}\" data-cap=\"{cap}\" data-sub=\"{sub}\" "
                     "data-idx=\"{idx}\" aria-label=\"Open image\">"
                     "<img src=\"{thumb}\" loading=\"lazy\" decoding=\"async\" alt=\"{cap}\">"
                     "<div class=\"cap\">{cap}</div>"
                     "</a>\n".format(
                         full=html.escape(full_href),
                         thumb=html.escape(thumb_src),
-                        cap=html.escape(caption),
+                        cap=html.escape(title),
+                        sub=html.escape(subtitle),
                         idx=i,
                     )
                 )
@@ -92,7 +100,7 @@ def _write_gallery_html(
             "<div class=\"lb\" id=\"lb\" role=\"dialog\" aria-modal=\"true\" aria-label=\"Image viewer\">"
             "<div class=\"lb-inner\">"
             "<div class=\"lb-bar\">"
-            "<div id=\"lbCap\"></div>"
+            "<div><div id=\"lbCap\"></div><div id=\"lbSub\" style=\"opacity:.8;font-size:12px\"></div></div>"
             "<div style=\"display:flex;gap:8px\">"
             "<button class=\"lb-btn\" id=\"prevBtn\" type=\"button\">← Prev</button>"
             "<button class=\"lb-btn\" id=\"nextBtn\" type=\"button\">Next →</button>"
@@ -107,6 +115,7 @@ def _write_gallery_html(
             "const lb=document.getElementById('lb');"
             "const img=document.getElementById('lbImg');"
             "const cap=document.getElementById('lbCap');"
+            "const sub=document.getElementById('lbSub');"
             "const tiles=[...document.querySelectorAll('#grid .tile')];"
             "let idx=-1;"
             "function openAt(i){"
@@ -116,6 +125,7 @@ def _write_gallery_html(
             "img.src=t.dataset.full;"
             "img.alt=t.dataset.cap||'';"
             "cap.textContent=t.dataset.cap||'';"
+            "sub.textContent=t.dataset.sub||'';"
             "lb.classList.add('open');"
             "document.body.style.overflow='hidden';"
             "}"
@@ -153,29 +163,37 @@ def build_index_html(*, session_id: str, thumbs_dir: Path, out_path: Path) -> No
     if thumbs_dir.exists():
         thumbs = sorted([p for p in thumbs_dir.rglob("*") if p.is_file()])
 
-    items: list[tuple[str, str, str]] = []
+    items: list[tuple[str, str, str, str]] = []
     for t in thumbs:
         rel = t.relative_to(thumbs_dir)
         thumb_href = _posix(Path("thumbs") / rel)
         share_href = _posix(Path("share") / rel.with_suffix(".jpg"))
-        caption = rel.as_posix()
-        items.append((thumb_href, share_href, caption))
+        title = rel.as_posix()
+        items.append((thumb_href, share_href, title, ""))
 
     _write_gallery_html(session_id=session_id, items=items, out_path=out_path)
+
+
+def build_index_html_from_items(
+    *,
+    session_id: str,
+    items: list[tuple[str, str, str, str]],
+    download_href: str | None,
+    out_path: Path,
+) -> None:
+    _write_gallery_html(session_id=session_id, items=items, download_href=download_href, out_path=out_path)
 
 
 def build_index_html_presigned(
     *,
     session_id: str,
-    items: list[tuple[str, str, str]],
+    items: list[tuple[str, str, str, str]],
+    download_href: str | None = None,
     out_path: Path,
 ) -> None:
     """
-    items: list of (thumb_url, share_url, caption) — URLs should be fully-qualified.
+    items: list of (thumb_url, share_url, title, subtitle) — URLs should be fully-qualified.
     """
-    ui_items: list[tuple[str, str, str]] = []
-    for thumb_url, share_url, caption in items:
-        ui_items.append((thumb_url, share_url, caption))
-    _write_gallery_html(session_id=session_id, items=ui_items, out_path=out_path)
+    _write_gallery_html(session_id=session_id, items=items, download_href=download_href, out_path=out_path)
 
 
