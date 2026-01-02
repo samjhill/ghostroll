@@ -288,17 +288,17 @@ def run_pipeline(
         for p, sha, size in hashed_files:
             if sha in existing_shas:
                 skipped += 1
-                logger.debug(f"  Skipped (already ingested): {p.name}")
+                logger.debug(f"  Skipped (already ingested): {p.name} (SHA256: {sha[:16]}...)")
                 continue
             new_files.append((p, sha, size))
-            logger.debug(f"  New file: {p.name} ({size:,} bytes, SHA256: {sha[:16]}...)")
+            logger.info(f"  New file (not in DB): {p.name} ({size:,} bytes, SHA256: {sha[:16]}...)")
         
         # Add files with new sizes (hash will be computed during copy, not upfront)
         for p, size in files_new_size:
             new_files.append((p, None, size))  # None means hash will be computed during copy
-            logger.debug(f"  New file (by size, hash deferred): {p.name} ({size:,} bytes)")
+            logger.info(f"  New file (new size, hash deferred): {p.name} ({size:,} bytes)")
 
-        logger.info(f"New files: {len(new_files)}; skipped already-seen: {skipped}")
+        logger.info(f"Duplicate check complete: {len(new_files)} new files, {skipped} skipped (already in DB)")
         if not new_files and not always_create_session:
             if status is not None:
                 status.write(
