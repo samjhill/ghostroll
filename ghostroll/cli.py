@@ -278,13 +278,15 @@ def cmd_watch(args: argparse.Namespace) -> int:
         )
         if rc != 0:
             logger.error(f"Run failed with exit code {rc}. Waiting for card removal before retrying.")
-
-        logger.info("Remove SD card to run again.")
-        logger.debug(f"Waiting for card removal. Last detected volume: {vol}")
+        else:
+            logger.info("✅ Image offloading complete. You may remove the SD card now.")
         
-        # Try to unmount the volume after processing
-        logger.debug(f"Attempting to unmount {vol} after processing")
+        # Unmount the volume after processing (whether successful or not)
+        logger.debug(f"Unmounting {vol} after processing")
         _try_unmount(vol, logger)
+        
+        logger.info("Waiting for card removal before checking for next card...")
+        logger.debug(f"Last detected volume: {vol}")
         
         while True:
             # Re-check if the card is still present using the same detection logic
