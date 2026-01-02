@@ -207,11 +207,22 @@ def run_pipeline(
 
     conn = connect(cfg.db_path)
     try:
+        # Verify DCIM directory is accessible before scanning
+        try:
+            dcim_listing = list(dcim_dir.iterdir())
+            logger.debug(f"DCIM directory contains {len(dcim_listing)} items (directories/files)")
+        except (OSError, IOError) as e:
+            logger.warning(f"Cannot list DCIM directory {dcim_dir}: {e}")
+        
         logger.debug(f"Scanning DCIM directory: {dcim_dir}")
         all_media = _iter_media_files(dcim_dir)
         logger.info(f"Discovered {len(all_media)} media files in {dcim_dir}")
         if len(all_media) == 0:
             logger.warning(f"No media files found in {dcim_dir} - is the directory accessible?")
+        elif len(all_media) > 0:
+            # Show a sample of discovered files for debugging
+            sample_files = [str(p.relative_to(dcim_dir)) for p in all_media[:5]]
+            logger.debug(f"Sample files found: {', '.join(sample_files)}")
         jpeg_sources, raw_sources = _pair_prefer_jpeg(all_media)
         logger.info(f"File breakdown: {len(jpeg_sources)} JPEG candidates, {len(raw_sources)} RAW files")
 
