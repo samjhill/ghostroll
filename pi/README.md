@@ -92,6 +92,35 @@ GhostRoll uses the AWS CLI (`aws s3 cp` + `aws s3 presign`). You have two option
   - `aws-credentials` → `/home/pi/.aws/credentials`
   - `aws-config` → `/home/pi/.aws/config`
 
+## Automatic updates from GitHub (optional)
+
+You can have the Pi periodically pull the latest code from your Git remote and restart GhostRoll.
+
+How it works:
+
+- A `systemd` timer runs every ~10 minutes (`ghostroll-update.timer`)
+- If `GHOSTROLL_AUTO_UPDATE=1`, it does: `git fetch` → `git reset --hard origin/<branch>` → `pip install -e .` → restart `ghostroll-watch`
+
+To enable:
+
+1) In your boot partition `ghostroll.env`:
+
+- set `GHOSTROLL_AUTO_UPDATE=1`
+- set `GHOSTROLL_GIT_REMOTE=...`
+- set `GHOSTROLL_GIT_BRANCH=main`
+
+2) Reboot (or start the timer manually):
+
+```bash
+sudo systemctl enable --now ghostroll-update.timer
+sudo systemctl list-timers | grep ghostroll-update || true
+```
+
+Private repos:
+
+- easiest is to keep the repo public, or publish releases
+- otherwise use a **read-only deploy key** or token (don’t hardcode secrets into the image)
+
 ## Services and status outputs
 
 Installed services:

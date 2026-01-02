@@ -20,6 +20,7 @@ fi
 
 apt-get update
 apt-get install -y --no-install-recommends \
+  git \
   python3 python3-venv python3-pip \
   awscli \
   ca-certificates
@@ -29,10 +30,14 @@ python3 -m pip install -e /usr/local/src/ghostroll
 
 # Install firstboot helper + systemd services
 install -m 0755 /usr/local/src/ghostroll/pi/scripts/ghostroll-firstboot.sh /usr/local/sbin/ghostroll-firstboot.sh
+install -m 0755 /usr/local/src/ghostroll/pi/scripts/ghostroll-update.sh /usr/local/sbin/ghostroll-update.sh
 install -m 0644 /usr/local/src/ghostroll/pi/systemd/ghostroll-firstboot.service /etc/systemd/system/ghostroll-firstboot.service
 install -m 0644 /usr/local/src/ghostroll/pi/systemd/ghostroll-watch.service /etc/systemd/system/ghostroll-watch.service
+install -m 0644 /usr/local/src/ghostroll/pi/systemd/ghostroll-update.service /etc/systemd/system/ghostroll-update.service
+install -m 0644 /usr/local/src/ghostroll/pi/systemd/ghostroll-update.timer /etc/systemd/system/ghostroll-update.timer
 
 systemctl enable ghostroll-firstboot.service
 systemctl enable ghostroll-watch.service
+systemctl enable ghostroll-update.timer
 
 
