@@ -11,13 +11,50 @@ def _candidate_names_match(name: str, *, label: str) -> bool:
 
 def _is_mount_accessible(where: Path) -> bool:
     """
-    Simple check if a mountpoint is accessible.
-    Just verify we can stat it and it's a directory.
+    Check if a mountpoint is actually accessible by trying to read a file.
+    This is more reliable than just checking if the directory exists - it verifies
+    the filesystem is actually readable, not just a stale mount point.
     """
     try:
+        # First, basic check - is it a directory?
         stat_result = where.stat()
         import stat
-        return stat.S_ISDIR(stat_result.st_mode)
+        if not stat.S_ISDIR(stat_result.st_mode):
+            return False
+        
+        # Try to actually read from the filesystem by listing directory
+        # This will fail if the device is gone (stale mount)
+        try:
+            items = list(where.iterdir())
+        except (OSError, IOError, PermissionError):
+            return False
+        
+        # Additional check: try to find and read a small file to verify filesystem is accessible
+        # Look for any file in the root and try to read it
+        for item in items:
+            if item.is_file():
+                # Try to read just the first byte to verify we can access the filesystem
+                try:
+                    with item.open("rb") as f:
+                        f.read(1)  # Read just 1 byte to verify we can access the filesystem
+                    return True  # Successfully read from filesystem - mount is real
+                except (OSError, IOError):
+                    # File exists but can't read - might be stale mount
+                    return False
+        
+        # No files found in root, but directory is accessible - that's OK
+        # Try accessing a subdirectory if available
+        for item in items:
+            if item.is_dir():
+                try:
+                    # Try to list a subdirectory to verify filesystem access
+                    list(item.iterdir())
+                    return True
+                except (OSError, IOError):
+                    continue
+        
+        # Directory exists and is accessible, even if empty
+        return True
     except (OSError, IOError, PermissionError):
         return False
 
