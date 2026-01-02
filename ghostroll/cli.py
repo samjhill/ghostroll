@@ -280,6 +280,16 @@ def cmd_watch(args: argparse.Namespace) -> int:
             logger.error(f"Run failed with exit code {rc}. Waiting for card removal before retrying.")
         else:
             logger.info("✅ Image offloading complete. You may remove the SD card now.")
+            # Update status to show completion message on e-ink
+            status.write(
+                Status(
+                    state="done",
+                    step="done",
+                    message="Complete. Remove SD card now.",
+                    hostname=get_hostname(),
+                    ip=get_ip_address(),
+                )
+            )
         
         # Unmount the volume after processing (whether successful or not)
         logger.debug(f"Unmounting {vol} after processing")

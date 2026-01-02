@@ -115,56 +115,97 @@ class StatusWriter:
         img = Image.new("1", (w, h), 1)  # 1-bit, white background
         draw = ImageDraw.Draw(img)
         font = ImageFont.load_default()
+        # Try to use a larger font for headers/titles if available
+        try:
+            title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
+        except Exception:
+            title_font = font
 
-        lines: list[str] = []
-        lines.append(f"GhostRoll — {payload.get('state', '')}".strip())
-        if payload.get("hostname") or payload.get("ip"):
+        lines: list[tuple[str, object]] = []  # (text, font) - font is ImageFont object
+        
+        state = payload.get("state", "").upper()
+        step = payload.get("step", "")
+        message = payload.get("message", "")
+        counts = payload.get("counts") or {}
+        
+        # Header: GhostRoll with state
+        header = f"GhostRoll — {state}" if state else "GhostRoll"
+        lines.append((header, title_font))
+        
+        # Most important: Status message (prominent)
+        if message:
+            # Special handling for completion - check if message contains "Remove" hint
+            if state == "DONE" and step == "done" and "Remove" in message:
+                lines.append(("✅ Complete", title_font))
+                lines.append(("Remove SD card now", font))
+            elif state == "DONE" and step == "done":
+                lines.append(("✅ Complete", title_font))
+            elif state == "ERROR":
+                lines.append((f"❌ ERROR: {message}", title_font))
+            else:
+                # Show the message prominently
+                lines.append((message, font))
+        
+        # Progress information (when running)
+        if state == "RUNNING":
+            step_lower = step.lower()
+            prog_pairs = [
+                ("process", "processed_done", "processed_total", "Processing"),
+                ("upload", "uploaded_done", "uploaded_total", "Uploading"),
+                ("presign", "presigned_done", "presigned_total", "Generating link"),
+            ]
+            for step_name, done_k, total_k, label in prog_pairs:
+                if step_name in step_lower and total_k in counts and done_k in counts and counts[total_k] > 0:
+                    done = int(counts[done_k])
+                    total = int(counts[total_k])
+                    pct = int((done / total) * 100)
+                    lines.append((f"{label}: {done}/{total} ({pct}%)", font))
+                    break
+            
+            # Show key counts for running operations
+            key_counts = []
+            if "discovered" in counts:
+                key_counts.append(f"Found: {counts['discovered']}")
+            if "new" in counts:
+                key_counts.append(f"New: {counts['new']}")
+            if "processed" in counts:
+                key_counts.append(f"Done: {counts['processed']}")
+            if key_counts:
+                lines.append((" ".join(key_counts), font))
+        
+        # Session info (when available)
+        if payload.get("session_id"):
+            session_id = payload["session_id"]
+            # Truncate long session IDs for display
+            if len(session_id) > 20:
+                session_id = session_id[:17] + "..."
+            lines.append((f"Session: {session_id}", font))
+        
+        # SSH info (only when idle/waiting, not cluttering during operations)
+        if state in ("IDLE", "") and (payload.get("hostname") or payload.get("ip")):
             hn = payload.get("hostname") or "unknown"
             ip = payload.get("ip") or "no IP yet"
-            lines.append(f"SSH: pi@{ip}  ({hn})")
-        if payload.get("session_id"):
-            lines.append(f"Session: {payload['session_id']}")
-        if payload.get("step"):
-            lines.append(f"Step: {payload['step']}")
-        if payload.get("message"):
-            lines.append(payload["message"])
-
-        # Progress (best-effort): show a single progress line for the active step.
-        counts = payload.get("counts") or {}
-        step = (payload.get("step") or "").lower()
-        prog_pairs = [
-            ("process", "processed_done", "processed_total"),
-            ("upload", "uploaded_done", "uploaded_total"),
-            ("presign", "presigned_done", "presigned_total"),
-        ]
-        for step_name, done_k, total_k in prog_pairs:
-            if step_name in step and total_k in counts and done_k in counts and counts[total_k] > 0:
-                done = int(counts[done_k])
-                total = int(counts[total_k])
-                pct = int((done / total) * 100)
-                lines.append(f"Progress: {done}/{total} ({pct}%)")
-                break
-
-        counts = payload.get("counts") or {}
-        if counts:
-            # Keep stable ordering for readability
-            keys = ["discovered", "new", "skipped", "processed", "uploaded"]
-            parts = []
-            for k in keys:
-                if k in counts:
-                    parts.append(f"{k}:{counts[k]}")
-            extra = [f"{k}:{v}" for k, v in counts.items() if k not in keys]
-            parts.extend(extra)
-            if parts:
-                lines.append(" ".join(parts))
-
+            lines.append((f"SSH: pi@{ip}", font))
+            if hn != "unknown":
+                lines.append((f"({hn})", font))
+        
+        # URL ready (when complete)
         if payload.get("url"):
-            lines.append("Share URL ready (see share.txt / QR)")
-
-        y = 12
-        for line in lines:
-            draw.text((12, y), line, font=font, fill=0)
-            y += 16
+            lines.append(("Share URL ready", font))
+            lines.append(("(see share.txt/QR)", font))
+        
+        # Render lines with appropriate spacing
+        y = 10
+        line_height = 16
+        for line_text, line_font in lines:
+            # Truncate lines that are too long for display
+            max_width = w - 24
+            # Simple truncation - in practice PIL will handle overflow
+            draw.text((12, y), line_text, font=line_font, fill=0)
+            y += line_height
+            # Don't overflow the image
+            if y > h - line_height:
+                break
 
         assert self.image_path is not None
         self.image_path.parent.mkdir(parents=True, exist_ok=True)
