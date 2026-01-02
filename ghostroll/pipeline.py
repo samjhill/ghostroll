@@ -400,7 +400,24 @@ def run_pipeline(
         index_for_s3 = session_dir / "index.s3.html"
         build_index_html_presigned(session_id=session_id, items=presigned_items, out_path=index_for_s3)
         # Upload the final index.html (force content-based dedupe)
-        _upload_one((index_for_s3, f"{prefix}/index.html"))
+        uploaded, err = _upload_one((index_for_s3, f"{prefix}/index.html"))
+        if uploaded:
+            uploaded_ok += 1
+        if err:
+            upload_failures.append(err)
+            logger.error("Upload failures:\n" + "\n".join(upload_failures))
+            if status is not None:
+                status.write(
+                    Status(
+                        state="error",
+                        step="upload",
+                        message="Upload failed for index.html.",
+                        session_id=session_id,
+                        volume=str(volume_path),
+                        counts={"uploaded": uploaded_ok},
+                    )
+                )
+            raise PipelineError("Upload failed for index.html. See log for details.")
 
         # Presign
         if status is not None:
