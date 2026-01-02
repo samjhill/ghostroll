@@ -38,11 +38,13 @@ python3 -m pip install waveshare-epd || true
 install -m 0755 /usr/local/src/ghostroll/pi/scripts/ghostroll-firstboot.sh /usr/local/sbin/ghostroll-firstboot.sh
 install -m 0755 /usr/local/src/ghostroll/pi/scripts/ghostroll-update.sh /usr/local/sbin/ghostroll-update.sh
 install -m 0755 /usr/local/src/ghostroll/pi/scripts/ghostroll-eink-waveshare213v4.py /usr/local/sbin/ghostroll-eink-waveshare213v4.py
+install -m 0755 /usr/local/src/ghostroll/pi/scripts/ghostroll-wifi-setup.py /usr/local/sbin/ghostroll-wifi-setup.py
 install -m 0644 /usr/local/src/ghostroll/pi/systemd/ghostroll-firstboot.service /etc/systemd/system/ghostroll-firstboot.service
 install -m 0644 /usr/local/src/ghostroll/pi/systemd/ghostroll-watch.service /etc/systemd/system/ghostroll-watch.service
 install -m 0644 /usr/local/src/ghostroll/pi/systemd/ghostroll-update.service /etc/systemd/system/ghostroll-update.service
 install -m 0644 /usr/local/src/ghostroll/pi/systemd/ghostroll-update.timer /etc/systemd/system/ghostroll-update.timer
 install -m 0644 /usr/local/src/ghostroll/pi/systemd/ghostroll-eink.service /etc/systemd/system/ghostroll-eink.service
+install -m 0644 /usr/local/src/ghostroll/pi/systemd/ghostroll-wifi-setup.service /etc/systemd/system/ghostroll-wifi-setup.service
 install -m 0644 /usr/local/src/ghostroll/pi/systemd/mnt-auto\\x2dimport.mount /etc/systemd/system/mnt-auto\\x2dimport.mount
 install -m 0644 /usr/local/src/ghostroll/pi/systemd/mnt-auto\\x2dimport.automount /etc/systemd/system/mnt-auto\\x2dimport.automount
 
@@ -53,6 +55,7 @@ systemctl enable ghostroll-firstboot.service
 systemctl enable ghostroll-watch.service
 systemctl enable ghostroll-update.timer
 systemctl enable ghostroll-eink.service
+systemctl enable ghostroll-wifi-setup.service
 systemctl enable mnt-auto\\x2dimport.automount
 
 

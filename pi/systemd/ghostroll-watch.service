@@ -1,7 +1,7 @@
 [Unit]
 Description=GhostRoll watch (SD ingest pipeline)
-After=network-online.target ghostroll-firstboot.service
-Wants=network-online.target
+After=ghostroll-wifi-setup.service network-online.target ghostroll-firstboot.service
+Wants=ghostroll-wifi-setup.service network-online.target
 
 [Service]
 Type=simple

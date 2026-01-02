@@ -163,6 +163,7 @@ Installed services:
 
 - `ghostroll-firstboot.service`: imports `ghostroll.env` (and optional AWS files) from the boot partition once
 - `ghostroll-watch.service`: runs `ghostroll watch` at boot
+- `ghostroll-wifi-setup.service`: AP fallback + Wi‑Fi setup portal (NetworkManager)
 
 Status outputs (for e‑ink):
 
@@ -290,6 +291,37 @@ Then restart:
 ```bash
 sudo systemctl restart ghostroll-watch.service
 sudo journalctl -u ghostroll-watch.service -n 200 --no-pager
+```
+
+## Wi‑Fi: AP fallback + phone setup (recommended)
+
+For travel/field use, the best UX is:
+
+- On boot, Pi tries to connect to saved Wi‑Fi networks.
+- If it can't connect within ~30s, it starts a hotspot **`ghostroll-setup`** and runs a small setup page.
+- Join the hotspot from your phone, then open: `http://192.168.4.1:8080`
+
+The setup page lets you choose an SSID and password; the Pi then switches to that Wi‑Fi.
+
+Defaults are in `pi/ghostroll.env.default`:
+
+- `GHOSTROLL_WIFI_AP_FALLBACK=1`
+- `GHOSTROLL_WIFI_AP_SSID=ghostroll-setup`
+- `GHOSTROLL_WIFI_AP_PASSWORD=ghostroll-setup`
+- `GHOSTROLL_WIFI_AP_IPV4=192.168.4.1/24`
+- `GHOSTROLL_WIFI_PORTAL_PORT=8080`
+
+On the pi-gen image, `ghostroll-wifi-setup.service` is enabled by default.
+
+Manual install enable:
+
+```bash
+cd /home/pi/ghostroll
+sudo cp pi/systemd/ghostroll-wifi-setup.service /etc/systemd/system/
+sudo cp pi/scripts/ghostroll-wifi-setup.py /usr/local/sbin/ghostroll-wifi-setup.py
+sudo chmod +x /usr/local/sbin/ghostroll-wifi-setup.py
+sudo systemctl daemon-reload
+sudo systemctl enable --now ghostroll-wifi-setup.service
 ```
 
 ## Troubleshooting (the common ones)
