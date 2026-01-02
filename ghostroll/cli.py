@@ -246,21 +246,37 @@ def cmd_watch(args: argparse.Namespace) -> int:
             # Check if mount is actually accessible (catches lazy unmounts)
             accessible = _is_mount_accessible(last_mountpoint) if mounted else False
             
+            # Most important check: can we actually access DCIM? (this is what we need)
+            dcim_accessible = False
+            dcim_path = last_mountpoint / "DCIM"
+            try:
+                if dcim_path.is_dir():
+                    # Try to actually list the directory - this will fail if device is gone
+                    try:
+                        next(dcim_path.iterdir(), None)
+                        dcim_accessible = True
+                    except (OSError, PermissionError):
+                        dcim_accessible = False
+            except (OSError, PermissionError):
+                dcim_accessible = False
+            
             # Secondary check (Linux only): is the label symlink still present?
             label_present = None
             if by_label_root.is_dir():
                 label_present = by_label.exists()
-                logger.debug(f"Mount status: {mounted}, Accessible: {accessible}, Label symlink: {label_present}")
+                logger.debug(f"Mount: {mounted}, Accessible: {accessible}, DCIM accessible: {dcim_accessible}, Label: {label_present}")
             else:
-                logger.debug(f"Mount status: {mounted}, Accessible: {accessible} (label symlink check not available on this system)")
+                logger.debug(f"Mount: {mounted}, Accessible: {accessible}, DCIM accessible: {dcim_accessible}")
             
-            # Card is removed if:
-            # 1. Mount is not accessible (even if still in mount table - lazy unmount)
-            # 2. Mount is gone from mount table
-            # 3. On Linux: label symlink is also gone (confirms removal)
+            # Card is removed if DCIM is not accessible (most reliable check)
+            # This catches cases where mount appears present but device is gone
             is_removed = False
             
-            if not accessible or not mounted:
+            if not dcim_accessible:
+                # DCIM is not accessible - card is effectively removed
+                is_removed = True
+                logger.debug("Removal detected: DCIM directory not accessible")
+            elif not accessible or not mounted:
                 # Mount is gone or not accessible - card is likely removed
                 if by_label_root.is_dir():
                     # On Linux, also check label symlink for confirmation
@@ -276,10 +292,14 @@ def cmd_watch(args: argparse.Namespace) -> int:
                         # Mount gone but label still present - might be transient, wait a bit
                         logger.debug("Mount gone but label still present, waiting...")
                         time.sleep(cfg.poll_seconds)
-                        # Re-check
-                        if not _is_mounted(last_mountpoint) or not _is_mount_accessible(last_mountpoint):
+                        # Re-check DCIM specifically
+                        try:
+                            if not (last_mountpoint / "DCIM").is_dir():
+                                is_removed = True
+                                logger.debug("Removal confirmed: DCIM gone after re-check")
+                        except (OSError, PermissionError):
                             is_removed = True
-                            logger.debug("Removal confirmed after re-check")
+                            logger.debug("Removal confirmed: DCIM inaccessible after re-check")
                 else:
                     # On macOS/other systems, check mount and accessibility
                     is_removed = True
