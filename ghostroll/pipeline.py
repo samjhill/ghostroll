@@ -3,9 +3,11 @@ from __future__ import annotations
 import os
 import shutil
 import sqlite3
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from . import media
 from .aws_cli import AwsCliError, s3_cp, s3_presign
@@ -89,6 +91,23 @@ def _db_mark_uploaded(
         "INSERT OR REPLACE INTO uploads(s3_key,local_sha256,size_bytes,uploaded_utc) VALUES(?,?,?,?)",
         (s3_key, local_sha256, size_bytes, _utc_now()),
     )
+
+def _db_with_retry(db_path: Path, fn, *, retries: int = 10, backoff: float = 0.05):
+    """
+    SQLite can briefly lock under concurrent writes. This helper retries a small number of times.
+    """
+    last_exc = None
+    for i in range(retries):
+        try:
+            conn = connect(db_path)
+            try:
+                return fn(conn)
+            finally:
+                conn.close()
+        except sqlite3.OperationalError as e:
+            last_exc = e
+            time.sleep(backoff * (i + 1))
+    raise last_exc  # type: ignore[misc]
 
 
 def _iter_media_files(dcim_dir: Path) -> list[Path]:
@@ -241,13 +260,16 @@ def run_pipeline(
 
         # Derived outputs mirror DCIM relpath and normalize to .jpg
         processed = 0
+        proc_tasks: list[tuple[Path, Path, Path]] = []
         for src in jpeg_sources:
             sha = src_sha.get(src)
             if sha is None or sha not in new_sha_set:
                 continue
             rel = _safe_rel_under(dcim_dir, src).with_suffix(".jpg")
-            share_out = derived_share_dir / rel
-            thumb_out = derived_thumbs_dir / rel
+            proc_tasks.append((src, derived_share_dir / rel, derived_thumbs_dir / rel))
+
+        def _process_one(task: tuple[Path, Path, Path]) -> None:
+            src, share_out, thumb_out = task
             if not share_out.exists():
                 render_jpeg_derivative(
                     src,
@@ -262,7 +284,14 @@ def run_pipeline(
                     max_long_edge=cfg.thumb_max_long_edge,
                     quality=cfg.thumb_quality,
                 )
-            processed += 1
+
+        if proc_tasks:
+            logger.info(f"Processing {len(proc_tasks)} new JPEGs with {cfg.process_workers} workers...")
+            with ThreadPoolExecutor(max_workers=max(1, cfg.process_workers)) as ex:
+                futures = [ex.submit(_process_one, t) for t in proc_tasks]
+                for fut in as_completed(futures):
+                    fut.result()
+                    processed += 1
         logger.info(f"Processed JPEGs (share+thumb): {processed}")
 
         # Gallery
@@ -281,37 +310,49 @@ def run_pipeline(
                 )
             )
         prefix = f"{cfg.s3_prefix_root}{session_id}".rstrip("/")
-        upload_failures: list[str] = []
         uploaded_ok = 0
 
-        def upload_one(local: Path, key: str) -> None:
-            nonlocal uploaded_ok
-            sha, size = sha256_file(local)
-            prev_sha = _db_uploaded_sha(conn, s3_key=key)
-            if prev_sha == sha:
-                return
-            try:
-                s3_cp(local, bucket=cfg.s3_bucket, key=key, retries=3)
-                _db_mark_uploaded(conn, s3_key=key, local_sha256=sha, size_bytes=size)
-                conn.commit()
-                uploaded_ok += 1
-            except AwsCliError as e:
-                upload_failures.append(f"{local} -> s3://{cfg.s3_bucket}/{key}: {e}")
-
-        # Upload share/thumb trees
+        upload_tasks: list[tuple[Path, str]] = []
         for p in sorted(derived_share_dir.rglob("*")):
-            if not p.is_file():
-                continue
-            rel = p.relative_to(derived_share_dir)
-            key = f"{prefix}/share/{rel.as_posix()}"
-            upload_one(p, key)
-
+            if p.is_file():
+                rel = p.relative_to(derived_share_dir)
+                upload_tasks.append((p, f"{prefix}/share/{rel.as_posix()}"))
         for p in sorted(derived_thumbs_dir.rglob("*")):
-            if not p.is_file():
-                continue
-            rel = p.relative_to(derived_thumbs_dir)
-            key = f"{prefix}/thumbs/{rel.as_posix()}"
-            upload_one(p, key)
+            if p.is_file():
+                rel = p.relative_to(derived_thumbs_dir)
+                upload_tasks.append((p, f"{prefix}/thumbs/{rel.as_posix()}"))
+
+        upload_failures: list[str] = []
+
+        def _upload_one(task: tuple[Path, str]) -> tuple[bool, str | None]:
+            local, key = task
+
+            def do(conn2: sqlite3.Connection):
+                sha, size = sha256_file(local)
+                prev_sha = _db_uploaded_sha(conn2, s3_key=key)
+                if prev_sha == sha:
+                    return ("skipped", None)
+                s3_cp(local, bucket=cfg.s3_bucket, key=key, retries=3)
+                _db_mark_uploaded(conn2, s3_key=key, local_sha256=sha, size_bytes=size)
+                conn2.commit()
+                return ("uploaded", None)
+
+            try:
+                outcome, _ = _db_with_retry(cfg.db_path, do)
+                return (outcome == "uploaded", None)
+            except Exception as e:
+                return (False, f"{local} -> s3://{cfg.s3_bucket}/{key}: {e}")
+
+        if upload_tasks:
+            logger.info(f"Uploading {len(upload_tasks)} objects with {cfg.upload_workers} workers...")
+            with ThreadPoolExecutor(max_workers=max(1, cfg.upload_workers)) as ex:
+                futures = {ex.submit(_upload_one, t): t for t in upload_tasks}
+                for fut in as_completed(futures):
+                    uploaded, err = fut.result()
+                    if uploaded:
+                        uploaded_ok += 1
+                    if err:
+                        upload_failures.append(err)
 
         if upload_failures:
             logger.error("Upload failures:\n" + "\n".join(upload_failures))
@@ -332,8 +373,9 @@ def run_pipeline(
         # We keep the local index.html (relative paths) for offline/local browsing.
         presigned_items: list[tuple[str, str, str]] = []
         thumb_files = sorted([p for p in derived_thumbs_dir.rglob("*") if p.is_file()])
-        logger.info(f"Generating presigned asset URLs for {len(thumb_files)} images...")
-        for t in thumb_files:
+        logger.info(f"Generating presigned asset URLs for {len(thumb_files)} images with {cfg.presign_workers} workers...")
+
+        def _presign_one(t: Path) -> tuple[str, str, str]:
             rel = t.relative_to(derived_thumbs_dir)
             thumb_key = f"{prefix}/thumbs/{rel.as_posix()}"
             share_key = f"{prefix}/share/{rel.with_suffix('.jpg').as_posix()}"
@@ -347,11 +389,18 @@ def run_pipeline(
                 key=share_key,
                 expires_in_seconds=cfg.presign_expiry_seconds,
             )
-            presigned_items.append((thumb_url, share_url, rel.as_posix()))
+            return (thumb_url, share_url, rel.as_posix())
+
+        if thumb_files:
+            with ThreadPoolExecutor(max_workers=max(1, cfg.presign_workers)) as ex:
+                futures = [ex.submit(_presign_one, t) for t in thumb_files]
+                for fut in as_completed(futures):
+                    presigned_items.append(fut.result())
 
         index_for_s3 = session_dir / "index.s3.html"
         build_index_html_presigned(session_id=session_id, items=presigned_items, out_path=index_for_s3)
-        upload_one(index_for_s3, f"{prefix}/index.html")
+        # Upload the final index.html (force content-based dedupe)
+        _upload_one((index_for_s3, f"{prefix}/index.html"))
 
         # Presign
         if status is not None:

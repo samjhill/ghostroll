@@ -94,6 +94,9 @@ You can configure via env vars (CLI flags override env):
 - `GHOSTROLL_STATUS_PATH` (default `~/ghostroll/status.json`)
 - `GHOSTROLL_STATUS_IMAGE_PATH` (default `~/ghostroll/status.png`)
 - `GHOSTROLL_STATUS_IMAGE_SIZE` (default `800x480`)
+- `GHOSTROLL_PROCESS_WORKERS` (default: CPU-count clamped to 1–6)
+- `GHOSTROLL_UPLOAD_WORKERS` (default `4`)
+- `GHOSTROLL_PRESIGN_WORKERS` (default `8`)
 
 Image settings:
 

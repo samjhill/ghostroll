@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+import multiprocessing
 
 
 def _expand(p: str) -> Path:
@@ -20,6 +21,17 @@ def _parse_size(s: str) -> tuple[int, int]:
         raise ValueError(f"Invalid size '{s}' (expected like 800x480)")
     w, h = s.lower().split("x", 1)
     return int(w), int(h)
+
+
+def _cpu_count() -> int:
+    try:
+        return multiprocessing.cpu_count()
+    except Exception:
+        return 4
+
+
+def _clamp(n: int, lo: int, hi: int) -> int:
+    return max(lo, min(hi, n))
 
 
 @dataclass(frozen=True)
@@ -44,6 +56,10 @@ class Config:
     status_path: Path
     status_image_path: Path
     status_image_size: tuple[int, int]
+
+    process_workers: int
+    upload_workers: int
+    presign_workers: int
 
     @property
     def sessions_dir(self) -> Path:
@@ -72,6 +88,9 @@ def load_config(
     status_path: str | None = None,
     status_image_path: str | None = None,
     status_image_size: str | None = None,
+    process_workers: int | None = None,
+    upload_workers: int | None = None,
+    presign_workers: int | None = None,
 ) -> Config:
     env = os.environ
 
@@ -121,6 +140,17 @@ def load_config(
     )
     status_image_size = status_image_size or env.get("GHOSTROLL_STATUS_IMAGE_SIZE", "800x480")
 
+    cpu = _cpu_count()
+    process_workers = int(
+        process_workers if process_workers is not None else env.get("GHOSTROLL_PROCESS_WORKERS", str(_clamp(cpu, 1, 6)))
+    )
+    upload_workers = int(
+        upload_workers if upload_workers is not None else env.get("GHOSTROLL_UPLOAD_WORKERS", "4")
+    )
+    presign_workers = int(
+        presign_workers if presign_workers is not None else env.get("GHOSTROLL_PRESIGN_WORKERS", "8")
+    )
+
     cfg = Config(
         sd_label=sd_label,
         base_output_dir=_expand(base_output_dir),
@@ -137,6 +167,9 @@ def load_config(
         status_path=_expand(status_path),
         status_image_path=_expand(status_image_path),
         status_image_size=_parse_size(status_image_size),
+        process_workers=process_workers,
+        upload_workers=upload_workers,
+        presign_workers=presign_workers,
     )
 
     cfg.base_output_dir.mkdir(parents=True, exist_ok=True)
