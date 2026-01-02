@@ -76,8 +76,16 @@ def find_candidate_volumes(volumes_root: Path, *, label: str) -> list[Path]:
 def pick_volume_with_dcim(volumes_root: Path, *, label: str) -> Path | None:
     for vol in find_candidate_volumes(volumes_root, label=label):
         try:
-            if (vol / "DCIM").is_dir():
-                return vol
+            dcim_path = vol / "DCIM"
+            if dcim_path.is_dir():
+                # Try to actually access the DCIM directory - this will fail if it's a stale mount
+                try:
+                    # Try to list the directory - this will fail if device is gone
+                    list(dcim_path.iterdir())
+                    return vol
+                except (OSError, IOError):
+                    # DCIM directory exists but is not accessible - stale mount, skip it
+                    continue
         except (OSError, IOError):
             # Volume became inaccessible, skip it
             continue
@@ -126,8 +134,16 @@ def find_candidate_mounts(mount_roots: list[Path], *, label: str) -> list[Path]:
 def pick_mount_with_dcim(mount_roots: list[Path], *, label: str) -> Path | None:
     for vol in find_candidate_mounts(mount_roots, label=label):
         try:
-            if (vol / "DCIM").is_dir():
-                return vol
+            dcim_path = vol / "DCIM"
+            if dcim_path.is_dir():
+                # Try to actually access the DCIM directory - this will fail if it's a stale mount
+                try:
+                    # Try to list the directory - this will fail if device is gone
+                    list(dcim_path.iterdir())
+                    return vol
+                except (OSError, IOError):
+                    # DCIM directory exists but is not accessible - stale mount, skip it
+                    continue
         except (OSError, IOError):
             # Volume became inaccessible, skip it
             continue
