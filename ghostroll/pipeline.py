@@ -395,6 +395,134 @@ def run_pipeline(
         derived_share_dir.mkdir(parents=True, exist_ok=True)
         derived_thumbs_dir.mkdir(parents=True, exist_ok=True)
 
+        # Early QR code generation: publish the gallery link (loading page) immediately after session creation,
+        # before processing files, so the QR code is available as soon as possible.
+        prefix = f"{cfg.s3_prefix_root}{session_id}".rstrip("/")
+        uploaded_ok = 0
+        upload_failures: list[str] = []
+        url: str | None = None
+
+        def _upload_one(task: tuple[Path, str]) -> tuple[bool, str | None]:
+            local, key = task
+            file_size = local.stat().st_size if local.exists() else 0
+            logger.debug(f"Uploading: {local.name} -> s3://{cfg.s3_bucket}/{key} ({file_size:,} bytes)")
+
+            def do(conn2: sqlite3.Connection):
+                sha, size = sha256_file(local)
+                prev_sha = _db_uploaded_sha(conn2, s3_key=key)
+                if prev_sha == sha:
+                    logger.debug(f"  Skipped (already uploaded): {local.name}")
+                    return ("skipped", None)
+                logger.debug(f"  Uploading {local.name} to s3://{cfg.s3_bucket}/{key}...")
+                s3_cp(local, bucket=cfg.s3_bucket, key=key, retries=3)
+                _db_mark_uploaded(conn2, s3_key=key, local_sha256=sha, size_bytes=size)
+                conn2.commit()
+                logger.debug(f"  Uploaded: {local.name}")
+                return ("uploaded", None)
+
+            try:
+                outcome, _ = _db_with_retry(cfg.db_path, do)
+                return (outcome == "uploaded", None)
+            except Exception as e:
+                logger.error(f"  Upload failed: {local.name} -> s3://{cfg.s3_bucket}/{key}: {e}")
+                return (False, f"{local} -> s3://{cfg.s3_bucket}/{key}: {e}")
+
+        # Upload loading page and generate QR code early
+        status_key = f"{prefix}/status.json"
+        s3_index_key = f"{prefix}/index.html"
+
+        logger.info(f"Publishing initial gallery link (loading page)...")
+        s3_status_local = session_dir / "status.s3.json"
+        s3_status_local.write_text(
+            json.dumps(
+                {
+                    "uploading": True,
+                    "message": "Upload in progress…",
+                    "session_id": session_id,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        logger.debug(f"Uploading status.json: {status_key}")
+        uploaded, err = _upload_one((s3_status_local, status_key))
+        if uploaded:
+            uploaded_ok += 1
+            logger.debug(f"Status.json uploaded successfully")
+        if err:
+            upload_failures.append(err)
+
+        logger.debug(f"Generating presigned URL for status.json...")
+        status_url = s3_presign(
+            bucket=cfg.s3_bucket,
+            key=status_key,
+            expires_in_seconds=cfg.presign_expiry_seconds,
+        )
+        logger.debug(f"Status URL: {status_url[:80]}...")
+
+        index_loading = session_dir / "index.loading.s3.html"
+        logger.debug(f"Building loading page HTML...")
+        build_index_html_loading(
+            session_id=session_id,
+            status_json_url=status_url,
+            poll_seconds=cfg.poll_seconds,
+            out_path=index_loading,
+        )
+        logger.debug(f"Uploading loading page: {s3_index_key}")
+        uploaded, err = _upload_one((index_loading, s3_index_key))
+        if uploaded:
+            uploaded_ok += 1
+        if err:
+            upload_failures.append(err)
+
+        if upload_failures:
+            logger.error("Upload failures:\n" + "\n".join(upload_failures))
+            if status is not None:
+                status.write(
+                    Status(
+                        state="error",
+                        step="upload",
+                        message="Failed to publish gallery link.",
+                        session_id=session_id,
+                        volume=str(volume_path),
+                        counts={"uploaded": uploaded_ok},
+                    )
+                )
+            raise PipelineError("Failed to publish gallery link. See log for details.")
+
+        # Presign the (loading) index now so we can share immediately.
+        logger.info(f"Generating presigned share URL for gallery...")
+        url = s3_presign(
+            bucket=cfg.s3_bucket,
+            key=s3_index_key,
+            expires_in_seconds=cfg.presign_expiry_seconds,
+        )
+        share_txt.write_text(url + os.linesep, encoding="utf-8")
+        logger.info(f"Share URL (available immediately; expires in {cfg.presign_expiry_seconds}s): {url}")
+
+        # QR code: write a PNG into the session folder and print an ASCII QR in logs.
+        try:
+            qr_png = session_dir / "share-qr.png"
+            write_qr_png(data=url, out_path=qr_png)
+            logger.info(f"QR code written: {qr_png}")
+            logger.info("\n" + render_qr_ascii(url))
+        except QrError as e:
+            logger.warning(str(e))
+
+        # Update status immediately with URL so QR code is available in status system right away.
+        if status is not None:
+            status.write(
+                Status(
+                    state="running",
+                    step="ingest",
+                    message="Gallery link ready. Processing files…",
+                    session_id=session_id,
+                    volume=str(volume_path),
+                    counts={"discovered": len(all_media), "new": len(new_files), "skipped": skipped},
+                    url=url,
+                )
+            )
+
         # Ingest: copy only new files, preserving DCIM structure under originals/DCIM/
         if status is not None:
             status.write(
@@ -568,147 +696,22 @@ def run_pipeline(
         )
         logger.info(f"Generated gallery: {index_html}")
 
-        # Upload (retry-tolerant) with per-key upload dedupe (idempotent if re-run)
+        # Upload photos (retry-tolerant) with per-key upload dedupe (idempotent if re-run)
+        # Note: Loading page and QR code were already uploaded/generated earlier after session creation.
         if status is not None:
             status.write(
                 Status(
                     state="running",
                     step="upload",
-                    message="Uploading to S3…",
-                    session_id=session_id,
-                    volume=str(volume_path),
-                    counts={"uploaded_done": 0, "uploaded_total": 0},
-                )
-            )
-        prefix = f"{cfg.s3_prefix_root}{session_id}".rstrip("/")
-        uploaded_ok = 0
-
-        upload_failures: list[str] = []
-
-        def _upload_one(task: tuple[Path, str]) -> tuple[bool, str | None]:
-            local, key = task
-            file_size = local.stat().st_size if local.exists() else 0
-            logger.debug(f"Uploading: {local.name} -> s3://{cfg.s3_bucket}/{key} ({file_size:,} bytes)")
-
-            def do(conn2: sqlite3.Connection):
-                sha, size = sha256_file(local)
-                prev_sha = _db_uploaded_sha(conn2, s3_key=key)
-                if prev_sha == sha:
-                    logger.debug(f"  Skipped (already uploaded): {local.name}")
-                    return ("skipped", None)
-                logger.debug(f"  Uploading {local.name} to s3://{cfg.s3_bucket}/{key}...")
-                s3_cp(local, bucket=cfg.s3_bucket, key=key, retries=3)
-                _db_mark_uploaded(conn2, s3_key=key, local_sha256=sha, size_bytes=size)
-                conn2.commit()
-                logger.debug(f"  Uploaded: {local.name}")
-                return ("uploaded", None)
-
-            try:
-                outcome, _ = _db_with_retry(cfg.db_path, do)
-                return (outcome == "uploaded", None)
-            except Exception as e:
-                logger.error(f"  Upload failed: {local.name} -> s3://{cfg.s3_bucket}/{key}: {e}")
-                return (False, f"{local} -> s3://{cfg.s3_bucket}/{key}: {e}")
-
-        # Snappy UX: publish the gallery link first (loading page), then upload photos.
-        # We upload a small status.json + a lightweight loading index.html to the FINAL S3 key
-        # (prefix/index.html), presign it, and show the QR immediately. Later we overwrite that
-        # same key with the final presigned gallery page.
-        status_key = f"{prefix}/status.json"
-        s3_index_key = f"{prefix}/index.html"
-
-        logger.info(f"Publishing initial gallery link (loading page)...")
-        s3_status_local = session_dir / "status.s3.json"
-        s3_status_local.write_text(
-            json.dumps(
-                {
-                    "uploading": True,
-                    "message": "Upload in progress…",
-                    "session_id": session_id,
-                }
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        logger.debug(f"Uploading status.json: {status_key}")
-        uploaded, err = _upload_one((s3_status_local, status_key))
-        if uploaded:
-            uploaded_ok += 1
-            logger.debug(f"Status.json uploaded successfully")
-        if err:
-            upload_failures.append(err)
-
-        logger.debug(f"Generating presigned URL for status.json...")
-        status_url = s3_presign(
-            bucket=cfg.s3_bucket,
-            key=status_key,
-            expires_in_seconds=cfg.presign_expiry_seconds,
-        )
-        logger.debug(f"Status URL: {status_url[:80]}...")
-
-        index_loading = session_dir / "index.loading.s3.html"
-        logger.debug(f"Building loading page HTML...")
-        build_index_html_loading(
-            session_id=session_id,
-            status_json_url=status_url,
-            poll_seconds=cfg.poll_seconds,
-            out_path=index_loading,
-        )
-        logger.debug(f"Uploading loading page: {s3_index_key}")
-        uploaded, err = _upload_one((index_loading, s3_index_key))
-        if uploaded:
-            uploaded_ok += 1
-        if err:
-            upload_failures.append(err)
-
-        if upload_failures:
-            logger.error("Upload failures:\n" + "\n".join(upload_failures))
-            if status is not None:
-                status.write(
-                    Status(
-                        state="error",
-                        step="upload",
-                        message="Failed to publish gallery link.",
-                        session_id=session_id,
-                        volume=str(volume_path),
-                        counts={"uploaded": uploaded_ok},
-                    )
-                )
-            raise PipelineError("Failed to publish gallery link. See log for details.")
-
-        # Presign the (loading) index now so we can share immediately.
-        logger.info(f"Generating presigned share URL for gallery...")
-        url = s3_presign(
-            bucket=cfg.s3_bucket,
-            key=s3_index_key,
-            expires_in_seconds=cfg.presign_expiry_seconds,
-        )
-        share_txt.write_text(url + os.linesep, encoding="utf-8")
-        logger.info(f"Share URL (available immediately; expires in {cfg.presign_expiry_seconds}s): {url}")
-
-        # QR code (nice-to-have): write a PNG into the session folder and print an ASCII QR in logs.
-        try:
-            qr_png = session_dir / "share-qr.png"
-            write_qr_png(data=url, out_path=qr_png)
-            logger.info(f"QR code written: {qr_png}")
-            logger.info("\n" + render_qr_ascii(url))
-        except QrError as e:
-            logger.warning(str(e))
-
-        if status is not None:
-            status.write(
-                Status(
-                    state="running",
-                    step="upload",
-                    message="Gallery link ready. Uploading photos…",
+                    message="Uploading photos to S3…",
                     session_id=session_id,
                     volume=str(volume_path),
                     counts={"uploaded_done": uploaded_ok, "uploaded_total": 0},
                     url=url,
                 )
             )
-
-        # Build upload tasks from processed files (avoid redundant directory scans)
+        # Note: prefix, uploaded_ok, upload_failures, _upload_one, and url are already defined earlier
+        # (after session creation, when loading page was uploaded and QR code was generated).
         upload_tasks: list[tuple[Path, str]] = []
         # Use the gallery items we already have to build upload tasks efficiently
         for thumb_href, share_href, _title, _subtitle in local_items:

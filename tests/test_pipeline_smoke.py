@@ -87,6 +87,7 @@ def test_end_to_end_offline_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert (sess / "index.s3.html").is_file()
     assert (sess / "share.txt").is_file()
     assert (sess / "share.zip").is_file()
+    assert (sess / "share-qr.png").is_file(), "QR code PNG should be created"
     assert (sess / "derived" / "share" / "100CANON" / "IMG_0001.jpg").is_file()
     assert (sess / "derived" / "thumbs" / "100CANON" / "IMG_0001.jpg").is_file()
 
