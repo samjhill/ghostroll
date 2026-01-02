@@ -126,7 +126,10 @@ def test_pick_mount_with_dcim(tmp_path: Path):
     
     vol = mount_root / "auto-import"
     vol.mkdir()
-    (vol / "DCIM").mkdir()
+    dcim = vol / "DCIM"
+    dcim.mkdir()
+    # Create a file in DCIM so it's not empty (required by pick_mount_with_dcim)
+    (dcim / "test.jpg").touch()
     
     result = pick_mount_with_dcim([mount_root], label="auto-import")
     assert result == vol
@@ -152,7 +155,10 @@ def test_pick_mount_with_dcim_multiple_roots(tmp_path: Path):
     
     vol = root2 / "auto-import"
     vol.mkdir()
-    (vol / "DCIM").mkdir()
+    dcim = vol / "DCIM"
+    dcim.mkdir()
+    # Create a file in DCIM so it's not empty (required by pick_mount_with_dcim)
+    (dcim / "test.jpg").touch()
     
     result = pick_mount_with_dcim([root1, root2], label="auto-import")
     assert result == vol
