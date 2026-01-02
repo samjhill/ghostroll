@@ -69,6 +69,10 @@ This repo includes:
 - `ghostroll doctor` for quick environment checks
 - a small CI smoke test (`tests/test_pipeline_smoke.py`) that runs on every push via GitHub Actions
 
+## License
+
+This project is licensed under the **PolyForm Noncommercial License 1.0.0** (non‑commercial use only). See `LICENSE`.
+
 ## What you get (per session)
 
 Default location:

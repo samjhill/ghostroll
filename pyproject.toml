@@ -7,6 +7,7 @@ name = "ghostroll"
 version = "0.1.0"
 description = "GhostRoll — SD Card → Processing Pipeline → S3 Share Link"
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dependencies = [
   "Pillow>=10.0.0",
