@@ -131,19 +131,28 @@ def _db_with_retry(db_path: Path, fn, *, retries: int = 10, backoff: float = 0.0
 
 
 def _iter_media_files(dcim_dir: Path) -> list[Path]:
+    """
+    Recursively find all media files in the DCIM directory.
+    Uses os.walk instead of Path.rglob to avoid potential directory caching issues.
+    """
     out: list[Path] = []
     try:
-        for p in sorted(dcim_dir.rglob("*")):
-            try:
-                if p.is_file() and media.is_media(p):
-                    out.append(p)
-            except (OSError, IOError):
-                # File/directory became inaccessible during iteration, skip it
-                continue
+        # Use os.walk instead of Path.rglob to avoid potential caching issues
+        # os.walk always reads the directory from disk
+        for root, dirs, files in os.walk(str(dcim_dir)):
+            root_path = Path(root)
+            for filename in files:
+                file_path = root_path / filename
+                try:
+                    if media.is_media(file_path):
+                        out.append(file_path)
+                except (OSError, IOError):
+                    # File became inaccessible, skip it
+                    continue
     except (OSError, IOError):
         # Volume became inaccessible during directory traversal, return what we have
         pass
-    return out
+    return sorted(out)
 
 
 def _pair_prefer_jpeg(files: list[Path]) -> tuple[list[Path], list[Path]]:
