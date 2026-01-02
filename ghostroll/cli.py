@@ -13,6 +13,25 @@ from .status import Status, StatusWriter, get_hostname, get_ip_address
 from .volume_watch import find_candidate_mounts, pick_mount_with_dcim
 
 
+def _is_mounted(where: Path) -> bool:
+    """
+    Returns True if `where` is currently a mountpoint (checks /proc/mounts).
+    Important: does NOT touch the filesystem under `where`, so it won't trigger systemd automount.
+    """
+    try:
+        mounts_text = Path("/proc/mounts").read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return False
+    # /proc/mounts fields: <src> <target> <fstype> <opts> ...
+    # Targets escape spaces as \040.
+    target = str(where).replace(" ", "\\040")
+    for line in mounts_text.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == target:
+            return True
+    return False
+
+
 def _add_common_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--sd-label", default=None, help="SD card volume label to watch (default: auto-import)")
     p.add_argument("--base-dir", default=None, help="Base output directory (default: ~/ghostroll)")
@@ -166,17 +185,20 @@ def cmd_watch(args: argparse.Namespace) -> int:
             logger.error(f"Run failed with exit code {rc}. Waiting for card removal before retrying.")
 
         logger.info("Remove SD card to run again.")
-        # On Raspberry Pi OS Lite, we often rely on systemd automount for /mnt/auto-import.
-        # Continuously probing the mountpoint can keep the automount "busy" and prevent it from unmounting,
-        # so detect removal using the udev-created by-label symlink when available.
+        # On Raspberry Pi OS Lite, we often rely on systemd automount (e.g. /mnt/auto-import).
+        # Continuously probing vol/DCIM can keep the automount "busy". For removal detection, avoid touching
+        # the mountpoint and instead check:
+        # - /dev/disk/by-label/<label> (udev symlink; disappears when the partition is gone)
+        # - mount table (/proc/mounts) for the last-detected mountpoint path
         by_label_root = Path("/dev/disk/by-label")
         by_label = by_label_root / cfg.sd_label
-        if by_label_root.is_dir():
-            while by_label.exists():
-                time.sleep(cfg.poll_seconds)
-        else:
-            while pick_mount_with_dcim(cfg.mount_roots, label=cfg.sd_label) is not None:
-                time.sleep(cfg.poll_seconds)
+        last_mountpoint = Path(vol)
+        while True:
+            label_present = by_label.exists() if by_label_root.is_dir() else False
+            mounted = _is_mounted(last_mountpoint)
+            if (by_label_root.is_dir() and not label_present) or not mounted:
+                break
+            time.sleep(cfg.poll_seconds)
         logger.info(f"Waiting for next '{cfg.sd_label}' card...")
         status.write(
             Status(
