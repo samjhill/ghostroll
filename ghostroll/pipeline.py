@@ -198,9 +198,13 @@ def run_pipeline(
 
     conn = connect(cfg.db_path)
     try:
+        logger.debug(f"Scanning DCIM directory: {dcim_dir}")
         all_media = _iter_media_files(dcim_dir)
+        logger.info(f"Discovered {len(all_media)} media files in {dcim_dir}")
+        if len(all_media) == 0:
+            logger.warning(f"No media files found in {dcim_dir} - is the directory accessible?")
         jpeg_sources, raw_sources = _pair_prefer_jpeg(all_media)
-        logger.info(f"Discovered media files: {len(all_media)} (JPEG candidates: {len(jpeg_sources)}, RAW: {len(raw_sources)})")
+        logger.info(f"File breakdown: {len(jpeg_sources)} JPEG candidates, {len(raw_sources)} RAW files")
 
         # Get file sizes (we still need them for database records, but won't use for pre-filtering)
         files_with_sizes: list[tuple[Path, int]] = []
