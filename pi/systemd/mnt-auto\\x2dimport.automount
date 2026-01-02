@@ -1,0 +1,12 @@
+[Unit]
+Description=Automount /mnt/auto-import (SD card labeled auto-import)
+
+[Automount]
+Where=/mnt/auto-import
+TimeoutIdleSec=30
+
+[Install]
+WantedBy=multi-user.target
+
+
+
