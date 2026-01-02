@@ -136,6 +136,8 @@ If you want a “flash once, boot, and it runs” image with systemd + boot-part
 
 - `pi/README.md`
 
+Note: on Raspberry Pi OS Bookworm, system Python is “externally managed” (PEP 668), so manual installs typically use a **virtualenv**. See `pi/README.md` for the tested manual setup steps.
+
 ## Legacy shell prototype
 
 The original prototype is still in `ingest.sh` (rsync + ImageMagick + rclone + aws presign).

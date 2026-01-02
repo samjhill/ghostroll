@@ -7,7 +7,9 @@ This guide gets you to a **flash-and-go** Raspberry Pi image:
 - You configure it by dropping **one text file** onto the boot partition: `ghostroll.env`
 - The Pi continuously writes `status.json` + `status.png` (great for an e‑ink display loop)
 
-If you only want “run GhostRoll on a Pi”, you can skip all this and just `pip install -e .` on the Pi. This guide is for the *appliance* experience.
+If you only want “run GhostRoll on a Pi”, you can skip all this and do a manual install on Raspberry Pi OS.
+Note: on Bookworm, system Python is “externally managed” (PEP 668), so the manual path typically uses a **venv**.
+This guide is for the *appliance* experience.
 
 ## What you build
 
@@ -179,6 +181,69 @@ If you installed manually (not via pi-gen image), enable it:
 ```bash
 cd /home/pi/ghostroll
 sudo ./pi/scripts/install-automount.sh
+```
+
+## Manual install on Raspberry Pi OS Lite (testing path)
+
+This is the fastest way to validate hardware + SD ingest + S3 uploads **while pi-gen is still building**.
+
+### 1) Install dependencies
+
+```bash
+sudo apt-get update
+sudo apt-get install -y git python3-full python3-venv python3-pip awscli rsync
+```
+
+If your SD card is **exFAT** (common):
+
+```bash
+sudo apt-get install -y exfatprogs
+```
+
+### 2) Clone + install GhostRoll into a venv (Bookworm)
+
+```bash
+cd /home/pi
+git clone https://github.com/samjhill/ghostroll.git
+cd /home/pi/ghostroll
+python3 -m venv .venv
+/home/pi/ghostroll/.venv/bin/python -m pip install -U pip setuptools wheel
+/home/pi/ghostroll/.venv/bin/python -m pip install -e .
+```
+
+### 3) Install default config (optional)
+
+```bash
+sudo cp /home/pi/ghostroll/pi/ghostroll.env.default /etc/ghostroll.env
+sudo chmod 0644 /etc/ghostroll.env
+```
+
+### 4) Enable SD auto-mount (Lite)
+
+```bash
+cd /home/pi/ghostroll
+sudo ./pi/scripts/install-automount.sh
+```
+
+### 5) Start GhostRoll at boot (systemd)
+
+Use the helper so `ExecStart` points at the right binary:
+
+- pi-gen image: `/usr/local/bin/ghostroll`
+- manual venv: `/home/pi/ghostroll/.venv/bin/ghostroll`
+
+```bash
+cd /home/pi/ghostroll
+sudo ./pi/scripts/install-services.sh
+sudo journalctl -u ghostroll-watch.service -f
+```
+
+### 6) Check progress
+
+```bash
+sudo journalctl -u ghostroll-watch.service -f
+cat /home/pi/ghostroll/status.json
+ls -lh /home/pi/ghostroll/status.png
 ```
 
 ## Troubleshooting (the common ones)
