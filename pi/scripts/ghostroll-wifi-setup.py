@@ -21,6 +21,43 @@ def _run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[s
     return subprocess.run(cmd, text=True, capture_output=True, check=check)
 
 
+def _parse_size(s: str) -> tuple[int, int]:
+    s = s.strip().lower()
+    if "x" not in s:
+        return (800, 480)
+    w, h = s.split("x", 1)
+    try:
+        return (int(w), int(h))
+    except Exception:
+        return (800, 480)
+
+
+def _write_status_best_effort(*, state: str, step: str, message: str) -> None:
+    """
+    Best-effort: if GhostRoll is installed system-wide (pi-gen image), reuse StatusWriter so the e-ink panel
+    shows Wi-Fi setup instructions. On manual venv installs, this may not be importable; ignore failures.
+    """
+    try:
+        from ghostroll.status import Status, StatusWriter, get_hostname, get_ip_address  # type: ignore
+
+        json_path = Path(_env("GHOSTROLL_STATUS_PATH", "/home/pi/ghostroll/status.json"))
+        img_path = Path(_env("GHOSTROLL_STATUS_IMAGE_PATH", "/home/pi/ghostroll/status.png"))
+        img_size = _parse_size(_env("GHOSTROLL_STATUS_IMAGE_SIZE", "800x480"))
+
+        sw = StatusWriter(json_path=json_path, image_path=img_path, image_size=img_size)
+        sw.write(
+            Status(
+                state=state,
+                step=step,
+                message=message,
+                hostname=get_hostname(),
+                ip=get_ip_address(),
+            )
+        )
+    except Exception:
+        return
+
+
 def _nm_connected() -> bool:
     try:
         # "connected", "connecting", "disconnected", ...
@@ -277,7 +314,14 @@ def main() -> int:
     server = HTTPServer((listen_host, listen_port), _Handler)
     server.dev = dev  # type: ignore[attr-defined]
     server.stop_after = None  # type: ignore[attr-defined]
-    print(f"ghostroll-wifi-setup: AP '{ap_ssid}' up; portal on http://{ap_ipv4.split('/')[0]}:{listen_port}")
+    ap_ip = ap_ipv4.split("/")[0]
+    portal_url = f"http://{ap_ip}:{listen_port}"
+    print(f"ghostroll-wifi-setup: AP '{ap_ssid}' up; portal on {portal_url}")
+    _write_status_best_effort(
+        state="idle",
+        step="wifi",
+        message=f"Wi‑Fi setup: join '{ap_ssid}' then open {portal_url}",
+    )
     try:
         while True:
             server.handle_request()
@@ -286,6 +330,7 @@ def main() -> int:
                 break
     finally:
         server.server_close()
+        _write_status_best_effort(state="idle", step="wifi", message="Wi‑Fi setup complete.")
     return 0
 
 
