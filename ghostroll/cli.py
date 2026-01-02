@@ -141,6 +141,9 @@ def cmd_watch(args: argparse.Namespace) -> int:
     logger.info(
         f"GhostRoll watching for SD volume '{cfg.sd_label}' under: {', '.join([str(p) for p in cfg.mount_roots])}"
     )
+    logger.info(f"Polling interval: {cfg.poll_seconds}s")
+    logger.info(f"Session directory: {cfg.sessions_dir}")
+    logger.info(f"S3 bucket: {cfg.s3_bucket}")
     logger.info("Insert the SD card to begin.")
     status.write(
         Status(
@@ -162,6 +165,8 @@ def cmd_watch(args: argparse.Namespace) -> int:
             continue
 
         logger.info(f"Detected camera volume: {vol}")
+        logger.debug(f"Volume path: {vol}")
+        logger.debug(f"DCIM directory: {vol / 'DCIM'}")
         status.write(Status(state="running", step="detected", message="SD card detected.", volume=str(vol)))
         rc = cmd_run(
             argparse.Namespace(

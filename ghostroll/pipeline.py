@@ -186,14 +186,18 @@ def run_pipeline(
         logger.info(f"Discovered media files: {len(all_media)} (JPEG candidates: {len(jpeg_sources)}, RAW: {len(raw_sources)})")
 
         # Determine what's new by hashing.
+        logger.info(f"Hashing {len(all_media)} files to check for duplicates...")
         new_files: list[tuple[Path, str, int]] = []
         skipped = 0
-        for p in all_media:
+        for i, p in enumerate(all_media, 1):
+            logger.debug(f"Hashing [{i}/{len(all_media)}]: {p.name}")
             sha, size = sha256_file(p)
             if _db_has_ingested(conn, sha):
                 skipped += 1
+                logger.debug(f"  Skipped (already ingested): {p.name}")
                 continue
             new_files.append((p, sha, size))
+            logger.debug(f"  New file: {p.name} ({size:,} bytes, SHA256: {sha[:16]}...)")
 
         logger.info(f"New files: {len(new_files)}; skipped already-seen: {skipped}")
         if not new_files and not always_create_session:
@@ -247,14 +251,21 @@ def run_pipeline(
                 )
             )
         copied = 0
-        for src, sha, size in new_files:
+        total_size = sum(size for (_, _, size) in new_files)
+        copied_size = 0
+        logger.info(f"Copying {len(new_files)} files ({total_size:,} bytes total) to {originals_dir}...")
+        for i, (src, sha, size) in enumerate(new_files, 1):
             rel = _safe_rel_under(dcim_dir, src)
             dst = originals_dir / "DCIM" / rel
             if _copy2_ignore_existing(src, dst):
                 copied += 1
+                copied_size += size
+                logger.info(f"  Copied [{i}/{len(new_files)}]: {src.name} -> {dst.relative_to(originals_dir)} ({size:,} bytes)")
+            else:
+                logger.debug(f"  Skipped (already exists): {src.name}")
             _db_mark_ingested(conn, sha256=sha, size_bytes=size, source_hint=str(src))
         conn.commit()
-        logger.info(f"Ingested originals copied: {copied} -> {originals_dir}")
+        logger.info(f"Ingested originals: {copied} files copied ({copied_size:,} bytes) -> {originals_dir}")
 
         # Process: only JPEGs that are newly ingested this run (fast + matches "new since last time" UX).
         if status is not None:
@@ -285,25 +296,33 @@ def run_pipeline(
 
         def _process_one(task: tuple[Path, Path, Path, Path]) -> tuple[str, float, str, str]:
             src, rel, share_out, thumb_out = task
+            logger.debug(f"Processing image: {src.name}")
             if not share_out.exists():
+                logger.debug(f"  Generating share image: {share_out.name} (max {cfg.share_max_long_edge}px, quality {cfg.share_quality})")
                 render_jpeg_derivative(
                     src,
                     dst_path=share_out,
                     max_long_edge=cfg.share_max_long_edge,
                     quality=cfg.share_quality,
                 )
+            else:
+                logger.debug(f"  Share image exists, skipping: {share_out.name}")
             if not thumb_out.exists():
+                logger.debug(f"  Generating thumbnail: {thumb_out.name} (max {cfg.thumb_max_long_edge}px, quality {cfg.thumb_quality})")
                 render_jpeg_derivative(
                     src,
                     dst_path=thumb_out,
                     max_long_edge=cfg.thumb_max_long_edge,
                     quality=cfg.thumb_quality,
                 )
+            else:
+                logger.debug(f"  Thumbnail exists, skipping: {thumb_out.name}")
             ex = extract_basic_exif(src)
             sort_ts = ex.captured_at.timestamp() if ex.captured_at is not None else 9e18
             title = rel.as_posix()
             parts = [p for p in [ex.captured_at_display, ex.camera] if p]
             subtitle = " · ".join(parts)
+            logger.debug(f"  Processed: {src.name} -> {rel.as_posix()}")
             return (rel.as_posix(), sort_ts, title, subtitle)
 
         gallery_items_local: list[tuple[str, str, str, str, float]] = []
@@ -329,6 +348,7 @@ def run_pipeline(
                     share_href = f"derived/share/{rel_posix}"
                     gallery_items_local.append((thumb_href, share_href, title, subtitle, sort_ts))
                     processed += 1
+                    logger.debug(f"Processed [{processed}/{len(proc_tasks)}]: {rel_posix}")
                     if status is not None and (time.time() - last_ui) > 0.75:
                         last_ui = time.time()
                         status.write(
@@ -349,7 +369,10 @@ def run_pipeline(
         logger.info(f"Processed JPEGs (share+thumb): {processed}")
 
         # Build a downloadable zip of share images (for local + S3 download-all).
+        logger.info(f"Building share.zip from {derived_share_dir}...")
         _build_share_zip(share_dir=derived_share_dir, out_zip=share_zip)
+        zip_size = share_zip.stat().st_size if share_zip.exists() else 0
+        logger.info(f"Created share.zip: {share_zip} ({zip_size:,} bytes)")
 
         # Gallery (local): sort by capture time (if available) then filename.
         gallery_items_local.sort(key=lambda x: (x[4], x[2]))
@@ -381,21 +404,27 @@ def run_pipeline(
 
         def _upload_one(task: tuple[Path, str]) -> tuple[bool, str | None]:
             local, key = task
+            file_size = local.stat().st_size if local.exists() else 0
+            logger.debug(f"Uploading: {local.name} -> s3://{cfg.s3_bucket}/{key} ({file_size:,} bytes)")
 
             def do(conn2: sqlite3.Connection):
                 sha, size = sha256_file(local)
                 prev_sha = _db_uploaded_sha(conn2, s3_key=key)
                 if prev_sha == sha:
+                    logger.debug(f"  Skipped (already uploaded): {local.name}")
                     return ("skipped", None)
+                logger.debug(f"  Uploading {local.name} to s3://{cfg.s3_bucket}/{key}...")
                 s3_cp(local, bucket=cfg.s3_bucket, key=key, retries=3)
                 _db_mark_uploaded(conn2, s3_key=key, local_sha256=sha, size_bytes=size)
                 conn2.commit()
+                logger.debug(f"  Uploaded: {local.name}")
                 return ("uploaded", None)
 
             try:
                 outcome, _ = _db_with_retry(cfg.db_path, do)
                 return (outcome == "uploaded", None)
             except Exception as e:
+                logger.error(f"  Upload failed: {local.name} -> s3://{cfg.s3_bucket}/{key}: {e}")
                 return (False, f"{local} -> s3://{cfg.s3_bucket}/{key}: {e}")
 
         # Snappy UX: publish the gallery link first (loading page), then upload photos.
@@ -405,6 +434,7 @@ def run_pipeline(
         status_key = f"{prefix}/status.json"
         s3_index_key = f"{prefix}/index.html"
 
+        logger.info(f"Publishing initial gallery link (loading page)...")
         s3_status_local = session_dir / "status.s3.json"
         s3_status_local.write_text(
             json.dumps(
@@ -417,25 +447,31 @@ def run_pipeline(
             + "\n",
             encoding="utf-8",
         )
+        logger.debug(f"Uploading status.json: {status_key}")
         uploaded, err = _upload_one((s3_status_local, status_key))
         if uploaded:
             uploaded_ok += 1
+            logger.debug(f"Status.json uploaded successfully")
         if err:
             upload_failures.append(err)
 
+        logger.debug(f"Generating presigned URL for status.json...")
         status_url = s3_presign(
             bucket=cfg.s3_bucket,
             key=status_key,
             expires_in_seconds=cfg.presign_expiry_seconds,
         )
+        logger.debug(f"Status URL: {status_url[:80]}...")
 
         index_loading = session_dir / "index.loading.s3.html"
+        logger.debug(f"Building loading page HTML...")
         build_index_html_loading(
             session_id=session_id,
             status_json_url=status_url,
             poll_seconds=cfg.poll_seconds,
             out_path=index_loading,
         )
+        logger.debug(f"Uploading loading page: {s3_index_key}")
         uploaded, err = _upload_one((index_loading, s3_index_key))
         if uploaded:
             uploaded_ok += 1
@@ -458,6 +494,7 @@ def run_pipeline(
             raise PipelineError("Failed to publish gallery link. See log for details.")
 
         # Presign the (loading) index now so we can share immediately.
+        logger.info(f"Generating presigned share URL for gallery...")
         url = s3_presign(
             bucket=cfg.s3_bucket,
             key=s3_index_key,
@@ -611,8 +648,10 @@ def run_pipeline(
                         uploaded_ok += 1
                         # Track which key was uploaded (task is (Path, s3_key))
                         uploaded_keys.add(task[1])
+                        logger.info(f"Uploaded [{uploaded_ok}/{len(upload_tasks)}]: {task[0].name} -> {task[1]}")
                     if err:
                         upload_failures.append(err)
+                        logger.error(f"Upload failed [{uploaded_ok}/{len(upload_tasks)}]: {task[0].name} -> {task[1]}: {err}")
 
                     # Periodic gallery refresh (every 30 seconds)
                     now = time.time()
@@ -677,6 +716,7 @@ def run_pipeline(
         def _presign_one(t: Path) -> tuple[str, str, str, str, float]:
             rel = t.relative_to(derived_thumbs_dir)
             thumb_key = f"{prefix}/thumbs/{rel.as_posix()}"
+            logger.debug(f"Presigning: {rel.as_posix()}")
             share_key = f"{prefix}/share/{rel.with_suffix('.jpg').as_posix()}"
             thumb_url = s3_presign(
                 bucket=cfg.s3_bucket,
@@ -697,8 +737,10 @@ def run_pipeline(
                 done = 0
                 last_ui = time.time()
                 for fut in as_completed(futures):
-                    presigned_items.append(fut.result())
+                    result = fut.result()
+                    presigned_items.append(result)
                     done += 1
+                    logger.debug(f"Presigned [{done}/{len(thumb_files)}]: {result[2]}")
                     if status is not None and (time.time() - last_ui) > 0.75:
                         last_ui = time.time()
                         status.write(
@@ -713,11 +755,13 @@ def run_pipeline(
                         )
 
         # Presign the download zip
+        logger.debug(f"Presigning share.zip...")
         download_zip_url = s3_presign(
             bucket=cfg.s3_bucket,
             key=f"{prefix}/share.zip",
             expires_in_seconds=cfg.presign_expiry_seconds,
         )
+        logger.debug(f"Presigned share.zip URL")
         if status is not None:
             status.write(
                 Status(
@@ -734,12 +778,14 @@ def run_pipeline(
         presigned_ui = [(a, b, c, d) for (a, b, c, d, _ts) in presigned_items]
 
         index_for_s3 = session_dir / "index.s3.html"
+        logger.info(f"Building final presigned gallery with {len(presigned_ui)} images...")
         build_index_html_presigned(
             session_id=session_id,
             items=presigned_ui,
             download_href=download_zip_url,
             out_path=index_for_s3,
         )
+        logger.info(f"Uploading final gallery to s3://{cfg.s3_bucket}/{s3_index_key}...")
         # Upload the final index.html (force content-based dedupe)
         uploaded, err = _upload_one((index_for_s3, s3_index_key))
         if uploaded:
@@ -761,6 +807,7 @@ def run_pipeline(
             raise PipelineError("Upload failed for index.html. See log for details.")
 
         # Mark S3 status as complete so the early "loading" page auto-refreshes into the final gallery.
+        logger.info("Marking upload as complete in status.json...")
         s3_status_local.write_text(
             json.dumps(
                 {
