@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -30,6 +31,44 @@ def _is_mounted(where: Path) -> bool:
         if len(parts) >= 2 and parts[1] == target:
             return True
     return False
+
+
+def _try_unmount(where: Path, logger) -> bool:
+    """
+    Try to unmount a mount point. Returns True if successful or already unmounted,
+    False if unmount failed for other reasons.
+    """
+    try:
+        # Check if it's actually mounted first
+        if not _is_mounted(where):
+            logger.debug(f"Mount point {where} is not mounted, skipping unmount")
+            return True
+        
+        # Try to unmount it
+        logger.debug(f"Attempting to unmount {where}")
+        result = subprocess.run(
+            ["umount", str(where)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            logger.debug(f"Successfully unmounted {where}")
+            return True
+        else:
+            # Check if error is "not mounted" (already unmounted)
+            error_msg = (result.stderr or "").lower()
+            if "not mounted" in error_msg or "no such file or directory" in error_msg:
+                logger.debug(f"Mount point {where} was already unmounted")
+                return True
+            logger.debug(f"Unmount failed for {where}: {result.stderr}")
+            return False
+    except subprocess.TimeoutExpired:
+        logger.debug(f"Unmount timed out for {where}")
+        return False
+    except Exception as e:
+        logger.debug(f"Unmount error for {where}: {e}")
+        return False
 
 
 def _is_mount_accessible(where: Path) -> bool:
@@ -182,6 +221,19 @@ def cmd_watch(args: argparse.Namespace) -> int:
     logger.info(f"Polling interval: {cfg.poll_seconds}s")
     logger.info(f"Session directory: {cfg.sessions_dir}")
     logger.info(f"S3 bucket: {cfg.s3_bucket}")
+    
+    # Try to unmount any stale mounts before starting
+    logger.debug("Checking for stale mounts before starting...")
+    for root in cfg.mount_roots:
+        try:
+            cands = find_candidate_mounts([root], label=cfg.sd_label)
+            for cand in cands:
+                # Try to unmount stale mounts (they might be accessible but stale)
+                _try_unmount(cand, logger)
+        except Exception:
+            # Ignore errors during cleanup
+            pass
+    
     logger.info("Insert the SD card to begin.")
     status.write(
         Status(
@@ -229,6 +281,10 @@ def cmd_watch(args: argparse.Namespace) -> int:
 
         logger.info("Remove SD card to run again.")
         logger.debug(f"Waiting for card removal. Last detected volume: {vol}")
+        
+        # Try to unmount the volume after processing
+        logger.debug(f"Attempting to unmount {vol} after processing")
+        _try_unmount(vol, logger)
         
         while True:
             # Re-check if the card is still present using the same detection logic
