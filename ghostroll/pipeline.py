@@ -238,12 +238,20 @@ def run_pipeline(
 
     conn = connect(cfg.db_path)
     try:
-        # Verify DCIM directory is accessible before scanning
+        # Reconnect to the mount by accessing it (wakes up automount if needed)
+        # This is important because we may have unmounted the volume earlier
         try:
+            logger.debug(f"Reconnecting to mount point: {volume_path}")
+            # Access the volume root to trigger automount refresh
+            _ = volume_path.stat()
+            # Access the DCIM directory to ensure it's accessible
+            _ = dcim_dir.stat()
+            # List the directory to force a fresh read
             dcim_listing = list(dcim_dir.iterdir())
             logger.debug(f"DCIM directory contains {len(dcim_listing)} items (directories/files)")
         except (OSError, IOError) as e:
-            logger.warning(f"Cannot list DCIM directory {dcim_dir}: {e}")
+            logger.warning(f"Cannot access mount/DCIM directory {dcim_dir}: {e}")
+            raise PipelineError(f"Volume or DCIM directory not accessible: {dcim_dir}: {e}")
         
         logger.debug(f"Scanning DCIM directory: {dcim_dir}")
         all_media = _iter_media_files(dcim_dir)
