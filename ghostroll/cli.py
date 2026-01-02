@@ -59,19 +59,24 @@ def _can_write_to_volume(vol: Path) -> bool:
         return True
     except (OSError, IOError, PermissionError):
         # Any error means the volume is not accessible
-        # Clean up if file was created
-        if test_file and test_file.exists():
+        # Clean up if file was created (handle cleanup failures gracefully)
+        if test_file is not None:
             try:
-                test_file.unlink()
+                if test_file.exists():
+                    test_file.unlink()
             except Exception:
+                # Ignore cleanup errors - device might be gone
                 pass
         return False
     except Exception:
         # Unexpected error - assume not accessible
-        if test_file and test_file.exists():
+        # Clean up if file was created (handle cleanup failures gracefully)
+        if test_file is not None:
             try:
-                test_file.unlink()
+                if test_file.exists():
+                    test_file.unlink()
             except Exception:
+                # Ignore cleanup errors - device might be gone
                 pass
         return False
 
@@ -344,8 +349,13 @@ def cmd_watch(args: argparse.Namespace) -> int:
         while True:
             # Check if we can still write to the volume - this is the definitive test
             # If we can't write, the card is definitely gone (even if mount point exists)
-            if not _can_write_to_volume(vol):
-                logger.debug(f"Removal detected: cannot write to {vol} (card removed)")
+            try:
+                if not _can_write_to_volume(vol):
+                    logger.debug(f"Removal detected: cannot write to {vol} (card removed)")
+                    break
+            except Exception as e:
+                # If the write test itself fails with an exception, treat it as removal
+                logger.debug(f"Removal detected: write test failed with exception: {e}")
                 break
             
             # Also check if a different card was inserted
