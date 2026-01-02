@@ -257,6 +257,12 @@ def run_pipeline(
         # This is important because we may have unmounted the volume earlier
         try:
             logger.debug(f"Reconnecting to mount point: {volume_path}")
+            # Sync filesystem to ensure we see all files (flush kernel buffers)
+            try:
+                subprocess.run(["sync", str(volume_path)], timeout=5, check=False)
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                # sync command not available or timed out, continue anyway
+                pass
             # Access the volume root to trigger automount refresh
             _ = volume_path.stat()
             # Access the DCIM directory to ensure it's accessible
