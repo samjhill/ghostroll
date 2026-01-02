@@ -275,46 +275,27 @@ def cmd_watch(args: argparse.Namespace) -> int:
             else:
                 logger.debug(f"Mount: {mounted}, Accessible: {accessible}, DCIM accessible: {dcim_accessible}, DCIM has content: {dcim_has_content}")
             
-            # Card is removed if DCIM is not accessible OR has no content (most reliable check)
-            # Empty DCIM from stale mount doesn't count as "card present"
-            # This catches cases where mount appears present but device/filesystem is gone
+            # Card is removed if:
+            # 1. DCIM is not accessible (most reliable - catches lazy unmounts and device removal)
+            # 2. Mount is not accessible (catches lazy unmounts)
+            # 3. Mount is not in mount table (definitive removal)
+            # We prioritize DCIM accessibility check as it's the most reliable indicator
             is_removed = False
             
-            if not dcim_accessible or not dcim_has_content:
-                # DCIM is not accessible or empty - card is effectively removed
+            if not dcim_accessible:
+                # DCIM not accessible - card is removed (most reliable check)
                 is_removed = True
-                if not dcim_accessible:
-                    logger.debug("Removal detected: DCIM directory not accessible")
-                else:
-                    logger.debug("Removal detected: DCIM directory is empty (stale mount)")
-            elif not accessible or not mounted:
-                # Mount is gone or not accessible - card is likely removed
-                if by_label_root.is_dir():
-                    # On Linux, also check label symlink for confirmation
-                    if label_present is False:
-                        # Both mount and label are gone - definitely removed
-                        is_removed = True
-                        logger.debug("Removal detected: mount inaccessible/gone and label symlink gone")
-                    elif not accessible:
-                        # Mount not accessible (lazy unmount) - removed even if label still present
-                        is_removed = True
-                        logger.debug("Removal detected: mount not accessible (lazy unmount)")
-                    else:
-                        # Mount gone but label still present - might be transient, wait a bit
-                        logger.debug("Mount gone but label still present, waiting...")
-                        time.sleep(cfg.poll_seconds)
-                        # Re-check DCIM specifically
-                        try:
-                            if not (last_mountpoint / "DCIM").is_dir():
-                                is_removed = True
-                                logger.debug("Removal confirmed: DCIM gone after re-check")
-                        except (OSError, PermissionError):
-                            is_removed = True
-                            logger.debug("Removal confirmed: DCIM inaccessible after re-check")
-                else:
-                    # On macOS/other systems, check mount and accessibility
-                    is_removed = True
-                    logger.debug("Removal detected: mount gone or not accessible")
+                logger.debug("Removal detected: DCIM directory not accessible")
+            elif not accessible:
+                # Mount not accessible (lazy unmount) - card is removed
+                is_removed = True
+                logger.debug("Removal detected: mount not accessible (lazy unmount)")
+            elif not mounted:
+                # Mount not in mount table - card is removed
+                is_removed = True
+                logger.debug("Removal detected: mount not in mount table")
+            # Note: We don't check dcim_has_content because an empty DCIM directory
+            # could be a valid card that was just formatted, not a removed card
             
             if is_removed:
                 break
