@@ -131,12 +131,13 @@ def _db_with_retry(db_path: Path, fn, *, retries: int = 10, backoff: float = 0.0
     raise last_exc  # type: ignore[misc]
 
 
-def _iter_media_files(dcim_dir: Path) -> list[Path]:
+def _iter_media_files(dcim_dir: Path, logger=None) -> list[Path]:
     """
     Recursively find all media files in the DCIM directory.
     Uses subprocess find command to bypass any Python filesystem caching.
     """
     out: list[Path] = []
+    all_files_count = 0
     try:
         # Use subprocess find to bypass any Python filesystem caching
         # This should give us a fresh view of the filesystem
@@ -147,10 +148,13 @@ def _iter_media_files(dcim_dir: Path) -> list[Path]:
             timeout=60,
         )
         if result.returncode != 0:
+            if logger:
+                logger.warning(f"find command failed with return code {result.returncode}: {result.stderr}")
             # Fallback to os.walk if find fails
             for root, dirs, files in os.walk(str(dcim_dir)):
                 root_path = Path(root)
                 for filename in files:
+                    all_files_count += 1
                     file_path = root_path / filename
                     try:
                         if media.is_media(file_path):
@@ -159,7 +163,12 @@ def _iter_media_files(dcim_dir: Path) -> list[Path]:
                         continue
         else:
             # Process find output
-            for line in result.stdout.splitlines():
+            all_find_files = result.stdout.splitlines()
+            all_files_count = len([f for f in all_find_files if f.strip()])
+            if logger:
+                logger.debug(f"find command found {all_files_count} total files in {dcim_dir}")
+            
+            for line in all_find_files:
                 if not line.strip():
                     continue
                 file_path = Path(line.strip())
@@ -169,12 +178,15 @@ def _iter_media_files(dcim_dir: Path) -> list[Path]:
                 except (OSError, IOError):
                     # File became inaccessible, skip it
                     continue
-    except (OSError, IOError, subprocess.TimeoutExpired):
+    except (OSError, IOError, subprocess.TimeoutExpired) as e:
+        if logger:
+            logger.warning(f"find command exception: {e}")
         # Fallback to os.walk if find fails or times out
         try:
             for root, dirs, files in os.walk(str(dcim_dir)):
                 root_path = Path(root)
                 for filename in files:
+                    all_files_count += 1
                     file_path = root_path / filename
                     try:
                         if media.is_media(file_path):
@@ -183,6 +195,9 @@ def _iter_media_files(dcim_dir: Path) -> list[Path]:
                         continue
         except (OSError, IOError):
             pass
+    
+    if logger:
+        logger.debug(f"Found {len(out)} media files out of {all_files_count} total files")
     return sorted(out)
 
 
@@ -254,7 +269,7 @@ def run_pipeline(
             raise PipelineError(f"Volume or DCIM directory not accessible: {dcim_dir}: {e}")
         
         logger.debug(f"Scanning DCIM directory: {dcim_dir}")
-        all_media = _iter_media_files(dcim_dir)
+        all_media = _iter_media_files(dcim_dir, logger=logger)
         logger.info(f"Discovered {len(all_media)} media files in {dcim_dir}")
         if len(all_media) == 0:
             logger.warning(f"No media files found in {dcim_dir} - is the directory accessible?")
