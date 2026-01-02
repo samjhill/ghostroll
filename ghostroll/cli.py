@@ -228,78 +228,25 @@ def cmd_watch(args: argparse.Namespace) -> int:
             logger.error(f"Run failed with exit code {rc}. Waiting for card removal before retrying.")
 
         logger.info("Remove SD card to run again.")
-        # On Raspberry Pi OS Lite, we often rely on systemd automount (e.g. /mnt/auto-import).
-        # Continuously probing vol/DCIM can keep the automount "busy". For removal detection, avoid touching
-        # the mountpoint and instead check:
-        # - mount table (/proc/mounts) for the last-detected mountpoint path (primary check)
-        # - /dev/disk/by-label/<label> (udev symlink; disappears when the partition is gone) - Linux only (secondary)
-        by_label_root = Path("/dev/disk/by-label")
-        by_label = by_label_root / cfg.sd_label
-        last_mountpoint = Path(vol)
-        
-        logger.debug(f"Waiting for card removal. Monitoring mountpoint: {last_mountpoint}")
+        logger.debug(f"Waiting for card removal. Last detected volume: {vol}")
         
         while True:
-            # Primary check: is the mountpoint still mounted?
-            mounted = _is_mounted(last_mountpoint)
+            # Re-check if the card is still present using the same detection logic
+            # This is more reliable than checking a cached mount point which might be stale
+            current_vol = pick_mount_with_dcim(cfg.mount_roots, label=cfg.sd_label)
             
-            # Check if mount is actually accessible (catches lazy unmounts)
-            accessible = _is_mount_accessible(last_mountpoint) if mounted else False
-            
-            # Most important check: can we actually access DCIM and does it have content?
-            # An empty DCIM directory from a stale mount doesn't count
-            dcim_accessible = False
-            dcim_has_content = False
-            dcim_path = last_mountpoint / "DCIM"
-            try:
-                if dcim_path.is_dir():
-                    # Try to actually list the directory - this will fail if device is gone
-                    try:
-                        # Check if DCIM has any content (files or subdirectories)
-                        # Empty DCIM from stale mount doesn't count as "card present"
-                        entries = list(dcim_path.iterdir())
-                        dcim_accessible = True
-                        dcim_has_content = len(entries) > 0
-                    except (OSError, PermissionError):
-                        dcim_accessible = False
-                        dcim_has_content = False
-            except (OSError, PermissionError):
-                dcim_accessible = False
-                dcim_has_content = False
-            
-            # Secondary check (Linux only): is the label symlink still present?
-            label_present = None
-            if by_label_root.is_dir():
-                label_present = by_label.exists()
-                logger.debug(f"Mount: {mounted}, Accessible: {accessible}, DCIM accessible: {dcim_accessible}, DCIM has content: {dcim_has_content}, Label: {label_present}")
-            else:
-                logger.debug(f"Mount: {mounted}, Accessible: {accessible}, DCIM accessible: {dcim_accessible}, DCIM has content: {dcim_has_content}")
-            
-            # Card is removed if:
-            # 1. DCIM is not accessible (most reliable - catches lazy unmounts and device removal)
-            # 2. Mount is not accessible (catches lazy unmounts)
-            # 3. Mount is not in mount table (definitive removal)
-            # We prioritize DCIM accessibility check as it's the most reliable indicator
-            is_removed = False
-            
-            if not dcim_accessible:
-                # DCIM not accessible - card is removed (most reliable check)
-                is_removed = True
-                logger.debug("Removal detected: DCIM directory not accessible")
-            elif not accessible:
-                # Mount not accessible (lazy unmount) - card is removed
-                is_removed = True
-                logger.debug("Removal detected: mount not accessible (lazy unmount)")
-            elif not mounted:
-                # Mount not in mount table - card is removed
-                is_removed = True
-                logger.debug("Removal detected: mount not in mount table")
-            # Note: We don't check dcim_has_content because an empty DCIM directory
-            # could be a valid card that was just formatted, not a removed card
-            
-            if is_removed:
+            if current_vol is None:
+                # Card is no longer detected - it's been removed
+                logger.debug("Removal detected: card no longer found by pick_mount_with_dcim")
                 break
             
+            # If we find a volume, check if it's the same one we just processed
+            # If it's a different path, the old one was removed and a new card was inserted
+            if str(current_vol) != str(vol):
+                logger.debug(f"Removal detected: different volume found ({current_vol} vs {vol})")
+                break
+            
+            # Card is still present - wait and check again
             time.sleep(cfg.poll_seconds)
         
         logger.info(f"Waiting for next '{cfg.sd_label}' card...")
