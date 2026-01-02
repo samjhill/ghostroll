@@ -22,22 +22,28 @@ apt-get update
 apt-get install -y --no-install-recommends \
   git \
   python3 python3-venv python3-pip \
+  python3-rpi.gpio python3-spidev \
   awscli \
   ca-certificates
 
 python3 -m pip install -U pip
 python3 -m pip install -e /usr/local/src/ghostroll
+# Waveshare e-ink Python driver (used by optional ghostroll-eink service)
+python3 -m pip install waveshare-epd || true
 
 # Install firstboot helper + systemd services
 install -m 0755 /usr/local/src/ghostroll/pi/scripts/ghostroll-firstboot.sh /usr/local/sbin/ghostroll-firstboot.sh
 install -m 0755 /usr/local/src/ghostroll/pi/scripts/ghostroll-update.sh /usr/local/sbin/ghostroll-update.sh
+install -m 0755 /usr/local/src/ghostroll/pi/scripts/ghostroll-eink-waveshare213v4.py /usr/local/sbin/ghostroll-eink-waveshare213v4.py
 install -m 0644 /usr/local/src/ghostroll/pi/systemd/ghostroll-firstboot.service /etc/systemd/system/ghostroll-firstboot.service
 install -m 0644 /usr/local/src/ghostroll/pi/systemd/ghostroll-watch.service /etc/systemd/system/ghostroll-watch.service
 install -m 0644 /usr/local/src/ghostroll/pi/systemd/ghostroll-update.service /etc/systemd/system/ghostroll-update.service
 install -m 0644 /usr/local/src/ghostroll/pi/systemd/ghostroll-update.timer /etc/systemd/system/ghostroll-update.timer
+install -m 0644 /usr/local/src/ghostroll/pi/systemd/ghostroll-eink.service /etc/systemd/system/ghostroll-eink.service
 
 systemctl enable ghostroll-firstboot.service
 systemctl enable ghostroll-watch.service
 systemctl enable ghostroll-update.timer
+systemctl enable ghostroll-eink.service
 
 

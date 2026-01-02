@@ -139,6 +139,25 @@ On boot (once networking is up), the status display also shows the current **SSH
 
 - `SSH: pi@<ip> (<hostname>)`
 
+## Waveshare 2.13" e‑ink HAT V4 (auto display)
+
+This repo includes a built-in systemd service that can drive the **Waveshare 2.13" e‑ink HAT V4** directly from `status.png`.
+
+To enable it:
+
+1) In your boot partition `ghostroll.env`, set:
+
+- `GHOSTROLL_EINK_ENABLE=1`
+
+2) Reboot (or start the service manually):
+
+```bash
+sudo systemctl enable --now ghostroll-eink.service
+sudo systemctl status ghostroll-eink.service --no-pager
+```
+
+It will refresh the panel when `status.png` changes (default poll interval: 5s).
+
 ## Troubleshooting (the common ones)
 
 ### “RELEASE does not match the intended option for this branch”
