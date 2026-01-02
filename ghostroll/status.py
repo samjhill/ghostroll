@@ -62,6 +62,7 @@ class Status:
     volume: str | None = None
     counts: dict[str, int] | None = None
     url: str | None = None
+    qr_path: str | None = None  # Path to QR code PNG file
     hostname: str | None = None
     ip: str | None = None
     updated_unix: float | None = None
@@ -89,6 +90,7 @@ class StatusWriter:
             "volume": status.volume,
             "counts": status.counts or {},
             "url": status.url,
+            "qr_path": status.qr_path,
             "hostname": status.hostname,
             "ip": status.ip,
             "updated_unix": status.updated_unix,
@@ -105,7 +107,7 @@ class StatusWriter:
         tmp.replace(path)
 
     def _write_status_image(self, payload: dict) -> None:
-        # Render a simple monochrome status image for e-ink displays.
+        # Render a clean, user-friendly monochrome status image for e-ink displays.
         try:
             from PIL import Image, ImageDraw, ImageFont
         except Exception:
@@ -114,98 +116,192 @@ class StatusWriter:
         w, h = self.image_size
         img = Image.new("1", (w, h), 1)  # 1-bit, white background
         draw = ImageDraw.Draw(img)
-        font = ImageFont.load_default()
-        # Try to use a larger font for headers/titles if available
-        try:
-            title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
-        except Exception:
-            title_font = font
-
-        lines: list[tuple[str, object]] = []  # (text, font) - font is ImageFont object
         
+        # Load fonts - try for larger, clearer fonts
+        try:
+            default_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 12)
+            title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16)
+            small_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 10)
+        except Exception:
+            default_font = ImageFont.load_default()
+            title_font = default_font
+            small_font = default_font
+
         state = payload.get("state", "").upper()
         step = payload.get("step", "")
         message = payload.get("message", "")
         counts = payload.get("counts") or {}
+        qr_path_str = payload.get("qr_path")
         
-        # Header: GhostRoll with state
-        header = f"GhostRoll — {state}" if state else "GhostRoll"
-        lines.append((header, title_font))
+        # Try to load QR code if available
+        qr_img = None
+        if qr_path_str:
+            try:
+                qr_path = Path(qr_path_str)
+                if qr_path.exists():
+                    qr_img = Image.open(qr_path).convert("1")
+            except Exception:
+                pass
         
-        # Most important: Status message (prominent)
-        if message:
-            # Special handling for completion - check if message contains "Remove" hint
-            if state == "DONE" and step == "done" and "Remove" in message:
-                lines.append(("✅ Complete", title_font))
-                lines.append(("Remove SD card now", font))
-            elif state == "DONE" and step == "done":
-                lines.append(("✅ Complete", title_font))
-            elif state == "ERROR":
-                lines.append((f"❌ ERROR: {message}", title_font))
-            else:
-                # Show the message prominently
-                lines.append((message, font))
+        # Determine layout based on display size
+        is_small_display = w < 400  # e-ink displays like 250x122
         
-        # Progress information (when running)
-        if state == "RUNNING":
-            step_lower = step.lower()
-            prog_pairs = [
-                ("process", "processed_done", "processed_total", "Processing"),
-                ("upload", "uploaded_done", "uploaded_total", "Uploading"),
-                ("presign", "presigned_done", "presigned_total", "Generating link"),
-            ]
-            for step_name, done_k, total_k, label in prog_pairs:
-                if step_name in step_lower and total_k in counts and done_k in counts and counts[total_k] > 0:
-                    done = int(counts[done_k])
-                    total = int(counts[total_k])
-                    pct = int((done / total) * 100)
-                    lines.append((f"{label}: {done}/{total} ({pct}%)", font))
-                    break
+        if is_small_display:
+            # Compact layout for small e-ink displays (e.g., 250x122)
+            # QR code on right, text on left
+            text_x = 8
+            text_y = 8
+            line_height = 14
             
-            # Show key counts for running operations
-            key_counts = []
-            if "discovered" in counts:
-                key_counts.append(f"Found: {counts['discovered']}")
-            if "new" in counts:
-                key_counts.append(f"New: {counts['new']}")
-            if "processed" in counts:
-                key_counts.append(f"Done: {counts['processed']}")
-            if key_counts:
-                lines.append((" ".join(key_counts), font))
+            # Header
+            header = f"GhostRoll" if not state else f"GhostRoll — {state}"
+            draw.text((text_x, text_y), header, font=title_font, fill=0)
+            text_y += line_height + 2
+            
+            # Status message
+            if message:
+                if state == "DONE" and step == "done":
+                    draw.text((text_x, text_y), "✓ Complete", font=title_font, fill=0)
+                    text_y += line_height
+                    if "Remove" in message:
+                        draw.text((text_x, text_y), "Remove SD", font=default_font, fill=0)
+                        text_y += line_height
+                elif state == "ERROR":
+                    draw.text((text_x, text_y), f"✗ {message[:20]}", font=title_font, fill=0)
+                    text_y += line_height
+                else:
+                    # Truncate long messages
+                    msg = message[:25] + "..." if len(message) > 25 else message
+                    draw.text((text_x, text_y), msg, font=default_font, fill=0)
+                    text_y += line_height
+            
+            # Progress (when running)
+            if state == "RUNNING":
+                step_lower = step.lower()
+                if "process" in step_lower and "processed_done" in counts and "processed_total" in counts:
+                    done = int(counts.get("processed_done", 0))
+                    total = int(counts.get("processed_total", 0))
+                    if total > 0:
+                        pct = int((done / total) * 100)
+                        draw.text((text_x, text_y), f"Processing: {done}/{total} ({pct}%)", font=small_font, fill=0)
+                        text_y += line_height - 2
+                elif "upload" in step_lower and "uploaded_done" in counts and "uploaded_total" in counts:
+                    done = int(counts.get("uploaded_done", 0))
+                    total = int(counts.get("uploaded_total", 0))
+                    if total > 0:
+                        pct = int((done / total) * 100)
+                        draw.text((text_x, text_y), f"Uploading: {done}/{total} ({pct}%)", font=small_font, fill=0)
+                        text_y += line_height - 2
+            
+            # QR code on the right side (if available)
+            if qr_img:
+                # Calculate available space: leave room for text on left (text_x + some margin)
+                text_area_width = 120  # Reserve space for text content
+                available_width = w - text_area_width - 8
+                available_height = h - text_y - 20  # Leave room for label below QR
+                qr_size = min(80, available_width, available_height)
+                if qr_size > 0:
+                    qr_resized = qr_img.resize((qr_size, qr_size), Image.Resampling.LANCZOS)
+                    qr_x = w - qr_size - 8
+                    qr_y = text_y
+                    img.paste(qr_resized, (qr_x, qr_y))
+                    # Label below QR
+                    draw.text((qr_x, qr_y + qr_size + 2), "Scan QR", font=small_font, fill=0)
+            
+            # SSH info (only when idle)
+            if state in ("IDLE", "") and payload.get("ip"):
+                ip = payload.get("ip", "")
+                draw.text((text_x, h - line_height - 4), f"SSH: pi@{ip}", font=small_font, fill=0)
         
-        # Session info (when available)
-        if payload.get("session_id"):
-            session_id = payload["session_id"]
-            # Truncate long session IDs for display
-            if len(session_id) > 20:
-                session_id = session_id[:17] + "..."
-            lines.append((f"Session: {session_id}", font))
-        
-        # SSH info (only when idle/waiting, not cluttering during operations)
-        if state in ("IDLE", "") and (payload.get("hostname") or payload.get("ip")):
-            hn = payload.get("hostname") or "unknown"
-            ip = payload.get("ip") or "no IP yet"
-            lines.append((f"SSH: pi@{ip}", font))
-            if hn != "unknown":
-                lines.append((f"({hn})", font))
-        
-        # URL ready (when complete)
-        if payload.get("url"):
-            lines.append(("Share URL ready", font))
-            lines.append(("(see share.txt/QR)", font))
-        
-        # Render lines with appropriate spacing
-        y = 10
-        line_height = 16
-        for line_text, line_font in lines:
-            # Truncate lines that are too long for display
-            max_width = w - 24
-            # Simple truncation - in practice PIL will handle overflow
-            draw.text((12, y), line_text, font=line_font, fill=0)
-            y += line_height
-            # Don't overflow the image
-            if y > h - line_height:
-                break
+        else:
+            # Larger display layout (e.g., 800x480)
+            # QR code prominently displayed, status info around it
+            padding = 16
+            text_x = padding
+            text_y = padding
+            line_height = 18
+            
+            # Header at top
+            header = f"GhostRoll" if not state else f"GhostRoll — {state}"
+            draw.text((text_x, text_y), header, font=title_font, fill=0)
+            text_y += line_height + 4
+            
+            # Status message
+            if message:
+                if state == "DONE" and step == "done":
+                    draw.text((text_x, text_y), "✓ Complete", font=title_font, fill=0)
+                    text_y += line_height
+                    if "Remove" in message:
+                        draw.text((text_x, text_y), "Remove SD card now", font=default_font, fill=0)
+                        text_y += line_height
+                elif state == "ERROR":
+                    draw.text((text_x, text_y), f"✗ ERROR: {message}", font=title_font, fill=0)
+                    text_y += line_height
+                else:
+                    draw.text((text_x, text_y), message, font=default_font, fill=0)
+                    text_y += line_height
+            
+            # Progress information (when running)
+            if state == "RUNNING":
+                step_lower = step.lower()
+                prog_pairs = [
+                    ("process", "processed_done", "processed_total", "Processing"),
+                    ("upload", "uploaded_done", "uploaded_total", "Uploading"),
+                    ("presign", "presigned_done", "presigned_total", "Generating link"),
+                ]
+                for step_name, done_k, total_k, label in prog_pairs:
+                    if step_name in step_lower and total_k in counts and done_k in counts and counts[total_k] > 0:
+                        done = int(counts[done_k])
+                        total = int(counts[total_k])
+                        pct = int((done / total) * 100)
+                        draw.text((text_x, text_y), f"{label}: {done}/{total} ({pct}%)", font=default_font, fill=0)
+                        text_y += line_height
+                        break
+                
+                # Key counts
+                key_counts = []
+                if "discovered" in counts:
+                    key_counts.append(f"Found: {counts['discovered']}")
+                if "new" in counts:
+                    key_counts.append(f"New: {counts['new']}")
+                if "processed" in counts:
+                    key_counts.append(f"Done: {counts['processed']}")
+                if key_counts:
+                    draw.text((text_x, text_y), "  ".join(key_counts), font=default_font, fill=0)
+                    text_y += line_height
+            
+            # QR code - prominently displayed
+            if qr_img:
+                # Position QR code: right side for larger displays
+                qr_size = min(200, h - text_y - padding - 40, w - text_x - padding - 20)
+                qr_resized = qr_img.resize((qr_size, qr_size), Image.Resampling.LANCZOS)
+                qr_x = w - qr_size - padding
+                qr_y = padding
+                img.paste(qr_resized, (qr_x, qr_y))
+                
+                # Label above QR
+                label_text = "Scan to view gallery"
+                # Measure text width to center it
+                bbox = draw.textbbox((0, 0), label_text, font=default_font)
+                label_width = bbox[2] - bbox[0]
+                label_x = qr_x + (qr_size - label_width) // 2
+                draw.text((label_x, qr_y - line_height - 4), label_text, font=default_font, fill=0)
+            
+            # Session info
+            if payload.get("session_id"):
+                session_id = payload["session_id"]
+                if len(session_id) > 30:
+                    session_id = session_id[:27] + "..."
+                draw.text((text_x, text_y), f"Session: {session_id}", font=small_font, fill=0)
+                text_y += line_height - 4
+            
+            # SSH info (only when idle)
+            if state in ("IDLE", "") and (payload.get("hostname") or payload.get("ip")):
+                hn = payload.get("hostname") or "unknown"
+                ip = payload.get("ip") or "no IP yet"
+                draw.text((text_x, h - line_height - padding), f"SSH: pi@{ip}", font=default_font, fill=0)
+                if hn != "unknown":
+                    draw.text((text_x, h - padding), f"({hn})", font=small_font, fill=0)
 
         assert self.image_path is not None
         self.image_path.parent.mkdir(parents=True, exist_ok=True)

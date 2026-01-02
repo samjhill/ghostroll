@@ -501,6 +501,7 @@ def run_pipeline(
         logger.info(f"Share URL (available immediately; expires in {cfg.presign_expiry_seconds}s): {url}")
 
         # QR code: write a PNG into the session folder and print an ASCII QR in logs.
+        qr_png = None
         try:
             qr_png = session_dir / "share-qr.png"
             write_qr_png(data=url, out_path=qr_png)
@@ -509,7 +510,7 @@ def run_pipeline(
         except QrError as e:
             logger.warning(str(e))
 
-        # Update status immediately with URL so QR code is available in status system right away.
+        # Update status immediately with URL and QR path so QR code is available in status system right away.
         if status is not None:
             status.write(
                 Status(
@@ -520,6 +521,7 @@ def run_pipeline(
                     volume=str(volume_path),
                     counts={"discovered": len(all_media), "new": len(new_files), "skipped": skipped},
                     url=url,
+                    qr_path=str(qr_png) if qr_png and qr_png.exists() else None,
                 )
             )
 
@@ -708,6 +710,7 @@ def run_pipeline(
                     volume=str(volume_path),
                     counts={"uploaded_done": uploaded_ok, "uploaded_total": 0},
                     url=url,
+                    qr_path=str(qr_png) if qr_png and qr_png.exists() else None,
                 )
             )
         # Note: prefix, uploaded_ok, upload_failures, _upload_one, and url are already defined earlier
@@ -1019,7 +1022,7 @@ def run_pipeline(
                 Status(
                     state="done",
                     step="done",
-                    message="Complete.",
+                    message="Complete. Remove SD card when ready.",
                     session_id=session_id,
                     volume=str(volume_path),
                     counts={
@@ -1030,6 +1033,7 @@ def run_pipeline(
                         "uploaded": uploaded_ok,
                     },
                     url=url,
+                    qr_path=str(qr_png) if qr_png and qr_png.exists() else None,
                 )
             )
 
