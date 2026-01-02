@@ -299,7 +299,9 @@ def cmd_watch(args: argparse.Namespace) -> int:
         if vol is None:
             cands = find_candidate_mounts(cfg.mount_roots, label=cfg.sd_label)
             if cands:
-                logger.warning(f"Volume detected ({', '.join([c.name for c in cands])}) but no DCIM directory. Waiting...")
+                logger.warning(f"Volume detected ({', '.join([str(c) for c in cands])}) but no accessible DCIM directory. Waiting...")
+            else:
+                logger.debug(f"No volume with label '{cfg.sd_label}' found. Waiting...")
             time.sleep(cfg.poll_seconds)
             continue
 

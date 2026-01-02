@@ -9,70 +9,16 @@ def _candidate_names_match(name: str, *, label: str) -> bool:
     return name == label or name.startswith(label + " ")
 
 
-def _get_mount_device(mount_point: Path) -> str | None:
-    """
-    Get the device path (e.g., /dev/sdb1) for a given mount point by reading /proc/mounts.
-    Returns None if not found or not on Linux.
-    """
-    try:
-        with open("/proc/mounts", "r") as f:
-            for line in f:
-                parts = line.split()
-                if len(parts) >= 2:
-                    device, mount_path = parts[0], parts[1]
-                    # Unescape mount paths (spaces are \040)
-                    mount_path = mount_path.replace("\\040", " ")
-                    if mount_path == str(mount_point):
-                        return device
-    except (OSError, IOError, FileNotFoundError):
-        # /proc/mounts doesn't exist (not Linux) or can't read it
-        return None
-    return None
-
-
 def _is_mount_accessible(where: Path) -> bool:
     """
-    Check if a mountpoint is actually accessible (not just in mount table).
-    This catches cases where the mount is "lazy unmounted" - still exists as a directory
-    but the device is actually gone.
-    
-    On Linux, checks /proc/mounts to verify the device exists.
-    Uses a lightweight check that will fail if the underlying device is removed.
+    Simple check if a mountpoint is accessible.
+    Just verify we can stat it and it's a directory.
     """
-    # On Linux, check /proc/mounts to verify device exists
-    device = _get_mount_device(where)
-    if device:
-        # Verify the device file actually exists
-        if not Path(device).exists():
-            return False
-    
     try:
-        # Try to stat the mountpoint itself (not its contents, to avoid triggering automount)
-        # If the mount is stale, this will fail with ENODEV or EIO
         stat_result = where.stat()
-        # Check if it's actually a directory (mountpoints should be directories)
         import stat
-        if not stat.S_ISDIR(stat_result.st_mode):
-            return False
-        
-        # Try to access the directory in a way that will fail if device is gone
-        # We use a very lightweight check: try to get one directory entry
-        # This will raise OSError with ENODEV/EIO if the device is gone
-        try:
-            # Use next() on iterator - very lightweight, doesn't read all entries
-            next(where.iterdir(), None)
-        except (OSError, IOError, PermissionError):
-            # OSError/IOError with ENODEV/EIO means device is gone
-            # PermissionError might be fine, but let's be conservative and assume it's gone
-            return False
-        except StopIteration:
-            # Empty directory is fine
-            pass
-        
-        return True
+        return stat.S_ISDIR(stat_result.st_mode)
     except (OSError, IOError, PermissionError):
-        # Can't stat or access - mount is likely gone
-        # Common errors: ENODEV (No such device), EIO (Input/output error)
         return False
 
 
@@ -162,6 +108,11 @@ def find_candidate_mounts(mount_roots: list[Path], *, label: str) -> list[Path]:
 
 
 def pick_mount_with_dcim(mount_roots: list[Path], *, label: str) -> Path | None:
+    """
+    Find a mounted volume with the given label that has a DCIM directory.
+    Returns the first accessible volume with DCIM, even if DCIM appears empty
+    (empty DCIM might be due to filesystem corruption, but we should still try to process it).
+    """
     for vol in find_candidate_mounts(mount_roots, label=label):
         try:
             dcim_path = vol / "DCIM"
@@ -169,11 +120,8 @@ def pick_mount_with_dcim(mount_roots: list[Path], *, label: str) -> Path | None:
                 # Try to actually access the DCIM directory - this will fail if it's a stale mount
                 try:
                     # Try to list the directory - this will fail if device is gone
-                    # Also check that DCIM is not empty (empty DCIM suggests filesystem issues)
-                    dcim_contents = list(dcim_path.iterdir())
-                    if not dcim_contents:
-                        # DCIM exists but is empty - likely filesystem issue, skip it
-                        continue
+                    # Don't check if empty - even empty DCIM should be processed (might have filesystem issues)
+                    list(dcim_path.iterdir())
                     return vol
                 except (OSError, IOError):
                     # DCIM directory exists but is not accessible - stale mount, skip it
