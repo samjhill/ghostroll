@@ -139,7 +139,11 @@ def pick_mount_with_dcim(mount_roots: list[Path], *, label: str) -> Path | None:
                 # Try to actually access the DCIM directory - this will fail if it's a stale mount
                 try:
                     # Try to list the directory - this will fail if device is gone
-                    list(dcim_path.iterdir())
+                    # Also check that DCIM is not empty (empty DCIM suggests filesystem issues)
+                    dcim_contents = list(dcim_path.iterdir())
+                    if not dcim_contents:
+                        # DCIM exists but is empty - likely filesystem issue, skip it
+                        continue
                     return vol
                 except (OSError, IOError):
                     # DCIM directory exists but is not accessible - stale mount, skip it
