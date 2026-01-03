@@ -63,15 +63,35 @@ git clean -q -fdx
 # --break-system-packages (acceptable for appliance images).
 PY_BIN="python3"
 PIP_ARGS=()
-if [[ -x "${REPO_DIR}/.venv/bin/python" ]]; then
+# Check for venv in /home/pi/ghostroll/.venv first (standard Raspberry Pi location)
+if [[ -x "/home/pi/ghostroll/.venv/bin/python" ]]; then
+  PY_BIN="/home/pi/ghostroll/.venv/bin/python"
+elif [[ -x "${REPO_DIR}/.venv/bin/python" ]]; then
   PY_BIN="${REPO_DIR}/.venv/bin/python"
 else
   PIP_ARGS+=(--break-system-packages)
 fi
 
-"${PY_BIN}" -m pip install -U pip "${PIP_ARGS[@]}" >/dev/null
-"${PY_BIN}" -m pip install -e "$REPO_DIR" "${PIP_ARGS[@]}" >/dev/null
+"${PY_BIN}" -m pip install -U pip "${PIP_ARGS[@]}" >/dev/null 2>&1
+"${PY_BIN}" -m pip install -e "$REPO_DIR" "${PIP_ARGS[@]}" >/dev/null 2>&1
 
-systemctl restart ghostroll-watch.service
+echo "ghostroll-update: restarting services..."
+
+# Restart all GhostRoll services (only if they're active/enabled)
+SERVICES=(
+    "ghostroll-watch.service"
+    "ghostroll-eink.service"
+)
+
+for service in "${SERVICES[@]}"; do
+    if systemctl is-enabled "$service" >/dev/null 2>&1 || systemctl is-active "$service" >/dev/null 2>&1; then
+        echo "ghostroll-update: restarting $service..."
+        systemctl restart "$service" || echo "ghostroll-update: warning: failed to restart $service" >&2
+    else
+        echo "ghostroll-update: skipping $service (not active/enabled)"
+    fi
+done
+
+echo "ghostroll-update: done"
 
 
