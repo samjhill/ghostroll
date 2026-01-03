@@ -88,15 +88,83 @@ def _nm_connected() -> bool:
         return False
 
 
-def _wifi_device() -> str | None:
+def _nm_ready() -> bool:
+    """Check if NetworkManager is running and ready."""
     try:
-        out = _run(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "device"], check=True).stdout
+        # Check if NetworkManager service is active
+        result = _run(["systemctl", "is-active", "NetworkManager"], check=False)
+        if result.returncode != 0:
+            return False
+        # Check if nmcli can communicate with NetworkManager
+        _run(["nmcli", "general", "status"], check=True)
+        return True
+    except Exception:
+        return False
+
+
+def _wifi_device() -> str | None:
+    """
+    Find a WiFi device using NetworkManager.
+    Retries with delays to handle NetworkManager initialization timing.
+    Also tries alternative detection methods as fallback.
+    """
+    max_retries = 10
+    retry_delay = 1.0
+    
+    for attempt in range(max_retries):
+        # Wait for NetworkManager to be ready
+        if not _nm_ready():
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                continue
+            else:
+                print("ghostroll-wifi-setup: NetworkManager not ready after retries", file=sys.stderr)
+        
+        try:
+            # Primary method: use nmcli device list
+            out = _run(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "device"], check=True).stdout
+            for line in out.splitlines():
+                parts = line.split(":")
+                if len(parts) >= 3 and parts[1] == "wifi":
+                    device = parts[0].strip()
+                    if device:
+                        return device
+        except subprocess.CalledProcessError as e:
+            # If nmcli fails, wait and retry
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                continue
+            else:
+                print(f"ghostroll-wifi-setup: nmcli device failed: {e}", file=sys.stderr)
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                continue
+            else:
+                print(f"ghostroll-wifi-setup: error finding wifi device: {e}", file=sys.stderr)
+    
+    # Fallback: try using nmcli device status (different output format)
+    try:
+        out = _run(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "device", "status"], check=False).stdout
         for line in out.splitlines():
             parts = line.split(":")
             if len(parts) >= 3 and parts[1] == "wifi":
-                return parts[0]
+                device = parts[0].strip()
+                if device:
+                    return device
     except Exception:
-        return None
+        pass
+    
+    # Fallback: try listing wifi devices directly
+    try:
+        out = _run(["nmcli", "-t", "-f", "DEVICE", "device", "wifi"], check=False).stdout
+        for line in out.splitlines():
+            device = line.strip()
+            if device:
+                return device
+    except Exception:
+        pass
+    
     return None
 
 
@@ -316,14 +384,41 @@ def main() -> int:
     listen_host = _env("GHOSTROLL_WIFI_PORTAL_HOST", "0.0.0.0")
     listen_port = int(_env("GHOSTROLL_WIFI_PORTAL_PORT", "8080"))
 
+    # Ensure Wi-Fi isn't blocked/disabled BEFORE trying to detect device.
+    # This is critical for hub mode or when WiFi is initially disabled.
+    _rfkill_unblock_best_effort()
+    _nm_wifi_on_best_effort()
+    
+    # Wait a bit for NetworkManager to initialize and WiFi to become available
+    # (especially important on boot or in hub mode)
+    time.sleep(2.0)
+    
     dev = _wifi_device()
     if dev is None:
         print("ghostroll-wifi-setup: no wifi device found (nmcli)", file=sys.stderr)
+        # Provide diagnostic information
+        try:
+            nm_status = _run(["systemctl", "status", "NetworkManager", "--no-pager", "-l"], check=False)
+            print(f"ghostroll-wifi-setup: NetworkManager service status (exit {nm_status.returncode}):", file=sys.stderr)
+            if nm_status.stdout:
+                print(nm_status.stdout[:500], file=sys.stderr)
+            
+            # Check for WiFi hardware
+            try:
+                radio_out = _run(["nmcli", "-t", "-f", "WIFI,WIFI-HW", "radio"], check=False).stdout.strip()
+                print(f"ghostroll-wifi-setup: WiFi radio status: {radio_out}", file=sys.stderr)
+            except Exception:
+                pass
+            
+            # List all devices
+            try:
+                all_devs = _run(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "device"], check=False).stdout.strip()
+                print(f"ghostroll-wifi-setup: All NetworkManager devices:\n{all_devs}", file=sys.stderr)
+            except Exception:
+                pass
+        except Exception:
+            pass
         return 2
-
-    # Ensure Wi-Fi isn't blocked/disabled.
-    _rfkill_unblock_best_effort()
-    _nm_wifi_on_best_effort()
 
     # Wait for normal connection
     deadline = time.time() + wait_seconds
