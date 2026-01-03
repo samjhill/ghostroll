@@ -1056,8 +1056,11 @@ def run_pipeline(
         if upload_tasks:
             logger.info(f"Uploading {len(upload_tasks)} objects with {cfg.upload_workers} workers...")
             # uploaded_ok already includes early uploads (status.json and loading index.html)
-            # so we need to include those in the total count
-            upload_total_with_early = len(upload_tasks) + uploaded_ok
+            # The total count should include all uploads: the 2 early ones + the file uploads
+            # Note: uploaded_ok may be 0, 1, or 2 depending on whether early uploads succeeded,
+            # but the total should always include both early uploads in the count
+            EARLY_UPLOADS_COUNT = 2  # status.json and loading index.html
+            upload_total_with_early = len(upload_tasks) + EARLY_UPLOADS_COUNT
             if status is not None:
                 status.write(
                     Status(
@@ -1083,10 +1086,10 @@ def run_pipeline(
                         uploaded_ok += 1
                         # Track which key was uploaded (task is (Path, s3_key))
                         uploaded_keys.add(task[1])
-                        logger.info(f"Uploaded [{uploaded_ok}/{len(upload_tasks)}]: {task[0].name} -> {task[1]}")
+                        logger.info(f"Uploaded [{uploaded_ok}/{upload_total_with_early}]: {task[0].name} -> {task[1]}")
                     if err:
                         upload_failures.append(err)
-                        logger.error(f"Upload failed [{uploaded_ok}/{len(upload_tasks)}]: {task[0].name} -> {task[1]}: {err}")
+                        logger.error(f"Upload failed [{uploaded_ok}/{upload_total_with_early}]: {task[0].name} -> {task[1]}: {err}")
 
                     # Periodic gallery refresh (every 30 seconds)
                     now = time.time()
