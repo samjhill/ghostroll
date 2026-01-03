@@ -748,27 +748,70 @@ def run_pipeline(
             rel = _safe_rel_under(dcim_dir, src)
             dst = originals_dir / "DCIM" / rel
             
-            # Hash is already computed (size-based pre-filtering disabled)
-            copied_file = _copy2_ignore_existing(src, dst)
-            return (copied_file, size if copied_file else 0, src, sha)
+            try:
+                # Hash is already computed (size-based pre-filtering disabled)
+                copied_file = _copy2_ignore_existing(src, dst)
+                return (copied_file, size if copied_file else 0, src, sha)
+            except (OSError, IOError) as e:
+                error_code = getattr(e, 'errno', None)
+                error_msg = str(e)
+                # Check if this is a device removal error
+                if error_code == 19 or "No such device" in error_msg or "no such device" in error_msg:  # ENODEV
+                    raise PipelineError(
+                        f"SD card was removed during copying: {src}\n"
+                        f"  The device became inaccessible while copying files.\n"
+                        f"  This usually means the SD card was physically removed or unmounted.\n"
+                        f"  Files already copied have been saved.\n"
+                        f"  Try: Re-insert the SD card and run again. Already-copied files will be skipped."
+                    ) from e
+                elif error_code in (5, 13) or "Input/output error" in error_msg:  # EIO or EACCES
+                    raise PipelineError(
+                        f"SD card became inaccessible during copying: {src}\n"
+                        f"  Error: {error_msg}\n"
+                        f"  The device may have been removed or the filesystem may be corrupted.\n"
+                        f"  Files already copied have been saved.\n"
+                        f"  Try: Re-insert the SD card and check filesystem health."
+                    ) from e
+                else:
+                    # Re-raise other errors
+                    raise
         
         copy_workers = min(4, max(1, cfg.process_workers))  # Use fewer workers for copying
         db_inserts: list[tuple[str, int, str]] = []  # (sha, size, source_hint)
         
-        with ThreadPoolExecutor(max_workers=copy_workers) as ex:
-            futures = {ex.submit(_copy_one, item): item for item in new_files}
-            for i, fut in enumerate(as_completed(futures), 1):
-                item = futures[fut]
-                was_copied, file_size, src, sha = fut.result()
-                if was_copied:
-                    copied += 1
-                    copied_size += file_size
-                    logger.info(f"  Copied [{i}/{len(new_files)}]: {src.name} -> {originals_dir / 'DCIM' / _safe_rel_under(dcim_dir, src)} ({file_size:,} bytes)")
-                else:
-                    logger.debug(f"  Skipped (already exists at destination): {src.name}")
-                # Always mark as ingested in database (even if already exists at destination,
-                # so we can deduplicate by hash in future runs)
-                db_inserts.append((sha, item[2], str(src)))
+        try:
+            with ThreadPoolExecutor(max_workers=copy_workers) as ex:
+                futures = {ex.submit(_copy_one, item): item for item in new_files}
+                for i, fut in enumerate(as_completed(futures), 1):
+                    try:
+                        item = futures[fut]
+                        was_copied, file_size, src, sha = fut.result()
+                        if was_copied:
+                            copied += 1
+                            copied_size += file_size
+                            logger.info(f"  Copied [{i}/{len(new_files)}]: {src.name} -> {originals_dir / 'DCIM' / _safe_rel_under(dcim_dir, src)} ({file_size:,} bytes)")
+                        else:
+                            logger.debug(f"  Skipped (already exists at destination): {src.name}")
+                        # Always mark as ingested in database (even if already exists at destination,
+                        # so we can deduplicate by hash in future runs)
+                        db_inserts.append((sha, item[2], str(src)))
+                    except PipelineError:
+                        # Device removal detected - re-raise to stop copying
+                        raise
+                    except Exception as e:
+                        # Unexpected error during copy - log and continue with other files
+                        item = futures[fut]
+                        logger.error(f"  Copy failed (unexpected error): {item[0].name}: {e}")
+                        # Don't mark as ingested if copy failed
+                        continue
+        except PipelineError:
+            # Device removal - commit what we have so far and re-raise
+            if db_inserts:
+                logger.warning(f"Device removed during copy - marking {len(db_inserts)} already-copied files in DB...")
+                for sha, size, source_hint in db_inserts:
+                    _db_mark_ingested(conn, sha256=sha, size_bytes=size, source_hint=source_hint)
+                conn.commit()
+            raise
         
         # All files are already hashed (no deferred hashing)
         new_files_with_hashes: list[tuple[Path, str, int]] = new_files
