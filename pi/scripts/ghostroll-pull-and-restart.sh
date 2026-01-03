@@ -75,7 +75,11 @@ fi
 echo "Updating Python dependencies..."
 PY_BIN="python3"
 PIP_ARGS=()
-if [[ -x "${REPO_DIR}/.venv/bin/python" ]]; then
+# Check for venv in /home/pi/ghostroll/.venv first (standard Raspberry Pi location)
+if [[ -x "/home/pi/ghostroll/.venv/bin/python" ]]; then
+    PY_BIN="/home/pi/ghostroll/.venv/bin/python"
+    echo "Using venv: $PY_BIN"
+elif [[ -x "${REPO_DIR}/.venv/bin/python" ]]; then
     PY_BIN="${REPO_DIR}/.venv/bin/python"
     echo "Using venv: $PY_BIN"
 else
