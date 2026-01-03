@@ -492,7 +492,9 @@ def cmd_watch(args: argparse.Namespace) -> int:
                 # Use verbose=False to reduce log noise when just polling
                 cands = find_candidate_mounts(cfg.mount_roots, label=cfg.sd_label, verbose=False)
                 if cands:
-                    logger.warning(f"Volume detected ({', '.join([str(c) for c in cands])}) but no accessible DCIM directory. Waiting...")
+                    # Only log at debug level during routine polling to avoid spam
+                    # The warning was causing excessive log noise during normal operation
+                    logger.debug(f"Volume detected ({', '.join([str(c) for c in cands])}) but no accessible DCIM directory. Waiting...")
                 else:
                     logger.debug(f"No volume with label '{cfg.sd_label}' found. Waiting...")
                 time.sleep(cfg.poll_seconds)

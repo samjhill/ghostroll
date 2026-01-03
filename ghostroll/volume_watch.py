@@ -285,7 +285,7 @@ def pick_mount_with_dcim(mount_roots: list[Path], *, label: str, verbose: bool =
     # Check each candidate for DCIM directory
     for vol in candidates:
         dcim_path = vol / "DCIM"
-        logger.info(f"Checking {vol} for DCIM directory at {dcim_path}")
+        log_level(f"Checking {vol} for DCIM directory at {dcim_path}")
         
         try:
             if not dcim_path.exists():
@@ -299,18 +299,26 @@ def pick_mount_with_dcim(mount_roots: list[Path], *, label: str, verbose: bool =
             # Try to access the DCIM directory to verify it's not a stale mount
             try:
                 dcim_items = list(dcim_path.iterdir())
-                logger.info(f"  ✓ DCIM directory is accessible with {len(dcim_items)} items")
-                logger.info(f"Found valid camera volume: {vol}")
+                log_level(f"  ✓ DCIM directory is accessible with {len(dcim_items)} items")
+                log_level(f"Found valid camera volume: {vol}")
                 return vol
             except (OSError, IOError) as e:
-                logger.warning(f"  ✗ DCIM directory exists but is not accessible: {e}")
+                # Only warn if verbose, otherwise debug
+                if verbose:
+                    logger.warning(f"  ✗ DCIM directory exists but is not accessible: {e}")
+                else:
+                    logger.debug(f"  ✗ DCIM directory exists but is not accessible: {e}")
                 continue
                 
         except Exception as e:
             logger.debug(f"  Error checking DCIM directory: {e}")
             continue
     
-    logger.warning(f"Found {len(candidates)} volume(s) with label '{label}' but none have accessible DCIM directory")
+    # Only warn if verbose, otherwise use the log_level
+    if verbose:
+        logger.warning(f"Found {len(candidates)} volume(s) with label '{label}' but none have accessible DCIM directory")
+    else:
+        log_level(f"Found {len(candidates)} volume(s) with label '{label}' but none have accessible DCIM directory")
     return None
 
 
