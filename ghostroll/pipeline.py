@@ -88,6 +88,60 @@ def _db_get_known_sizes(conn: sqlite3.Connection) -> set[int]:
     return {row["size_bytes"] for row in rows}
 
 
+def _db_get_failed_files(conn: sqlite3.Connection, *, dcim_dir: Path) -> set[Path]:
+    """Get set of file paths that have consistently failed to hash."""
+    # Get failed files that match files in this DCIM directory
+    failed_rows = conn.execute(
+        "SELECT file_path FROM failed_files WHERE failure_count >= 2"
+    ).fetchall()
+    failed_paths = set()
+    for row in failed_rows:
+        file_path_str = row["file_path"]
+        # Try to match against current DCIM structure
+        # file_path might be absolute or relative - try both
+        try:
+            p = Path(file_path_str)
+            if p.is_absolute():
+                # Check if it's under the current dcim_dir
+                try:
+                    rel = p.relative_to(dcim_dir)
+                    if (dcim_dir / rel).exists():
+                        failed_paths.add(dcim_dir / rel)
+                except ValueError:
+                    # Not under dcim_dir, skip
+                    pass
+            else:
+                # Relative path, try under dcim_dir
+                candidate = dcim_dir / p
+                if candidate.exists():
+                    failed_paths.add(candidate)
+        except Exception:
+            # Invalid path, skip
+            pass
+    return failed_paths
+
+
+def _db_mark_failed_file(
+    conn: sqlite3.Connection, *, file_path: Path, size_bytes: int, dcim_dir: Path
+) -> None:
+    """Mark a file as failed to hash, or increment failure count."""
+    # Store relative path for portability
+    try:
+        rel_path = str(file_path.relative_to(dcim_dir))
+    except ValueError:
+        # If not under dcim_dir, store absolute path
+        rel_path = str(file_path)
+    
+    now = _utc_now()
+    conn.execute(
+        "INSERT INTO failed_files(file_path, size_bytes, first_failed_utc, last_failed_utc, failure_count) "
+        "VALUES(?, ?, ?, ?, 1) "
+        "ON CONFLICT(file_path) DO UPDATE SET "
+        "last_failed_utc = ?, failure_count = failure_count + 1",
+        (rel_path, size_bytes, now, now, now),
+    )
+
+
 def _db_mark_ingested(
     conn: sqlite3.Connection, *, sha256: str, size_bytes: int, source_hint: str
 ) -> None:
@@ -327,7 +381,7 @@ def run_pipeline(
         jpeg_sources, raw_sources = _pair_prefer_jpeg(all_media)
         logger.info(f"File breakdown: {len(jpeg_sources)} JPEG candidates, {len(raw_sources)} RAW files")
 
-        # Get file sizes (we still need them for database records, but won't use for pre-filtering)
+        # Get file sizes and check database first to avoid unnecessary hashing
         files_with_sizes: list[tuple[Path, int]] = []
         for p in all_media:
             try:
@@ -338,22 +392,75 @@ def run_pipeline(
                 logger.debug(f"  Skipped (cannot stat): {p.name}")
                 continue
         
-        # Hash all files to check for duplicates (size-based pre-filtering disabled for reliability)
-        files_to_check: list[tuple[Path, int]] = files_with_sizes
+        # Pre-filter: check database for files we already know about (by size)
+        # Also check for files that have consistently failed to hash (skip them)
+        known_sizes = _db_get_known_sizes(conn)
+        failed_files = _db_get_failed_files(conn, dcim_dir=dcim_dir)
+        
+        # Filter out files that have consistently failed to hash
+        files_to_check: list[tuple[Path, int]] = []
+        failed_count = 0
+        for p, size in files_with_sizes:
+            if p in failed_files:
+                failed_count += 1
+                logger.debug(f"  Skipping file that consistently fails to hash: {p.name}")
+                continue
+            files_to_check.append((p, size))
+        
+        if failed_count > 0:
+            logger.info(f"Skipping {failed_count} files that consistently fail to hash (marked in database)")
+        
+        if known_sizes:
+            logger.debug(f"Database contains {len(known_sizes)} unique file sizes - will check hashes after computing")
+        
+        # Before hashing from SD card, check if files already exist in recent session originals/
+        # This prevents re-hashing if the process crashed during upload
+        # Always check recent sessions (not just when session_id is None)
+        existing_originals: dict[Path, Path] = {}  # Maps SD card path -> local originals path
+        try:
+            session_dirs = sorted(cfg.sessions_dir.glob("shoot-*"), key=lambda p: p.stat().st_mtime, reverse=True)
+            for recent_session_dir in session_dirs[:5]:  # Check last 5 sessions
+                recent_originals = recent_session_dir / "originals" / "DCIM"
+                if recent_originals.exists():
+                    logger.debug(f"Checking {recent_session_dir.name} for already-copied files...")
+                    try:
+                        for orig_file in recent_originals.rglob("*"):
+                            if orig_file.is_file():
+                                # Reconstruct the SD card path from the originals path
+                                rel_path = orig_file.relative_to(recent_originals)
+                                sd_card_path = dcim_dir / rel_path
+                                if sd_card_path.exists() and sd_card_path not in existing_originals:
+                                    existing_originals[sd_card_path] = orig_file
+                    except Exception as e:
+                        logger.debug(f"Error checking {recent_session_dir.name}: {e}")
+                        continue
+            if existing_originals:
+                logger.info(f"Found {len(existing_originals)} files already copied in recent sessions - will hash from local copies (faster)")
+        except Exception as e:
+            logger.debug(f"Error checking for existing originals: {e}")
+        
         logger.info(f"Hashing {len(files_to_check)} files to check for duplicates...")
         
         # Hash all files to check for duplicates (parallelized)
+        # Prefer hashing from local originals if available (much faster than SD card)
         def _hash_one(item: tuple[Path, int]) -> tuple[Path, str, int] | None:
             p, size = item
+            # If file exists in originals, hash that instead (faster, local disk)
+            hash_source = existing_originals.get(p, p)
             try:
-                sha, _ = sha256_file(p)
+                sha, _ = sha256_file(hash_source)
+                if hash_source != p:
+                    logger.debug(f"  Hashed from local copy (faster): {p.name}")
                 return (p, sha, size)
             except (OSError, IOError) as e:
-                # File/volume became inaccessible (e.g., SD card removed)
-                logger.debug(f"  Skipped (cannot hash, volume may be inaccessible): {p.name}: {e}")
+                # File/volume became inaccessible (e.g., SD card removed or corrupted file)
+                # Mark as failed in database so we don't keep trying
+                _db_mark_failed_file(conn, file_path=p, size_bytes=size, dcim_dir=dcim_dir)
+                logger.warning(f"  Cannot hash file (marked as failed, will skip in future): {p.name}: {e}")
                 return None
         
         hashed_files: list[tuple[Path, str, int]] = []
+        failed_hash_count = 0
         hash_workers = min(4, max(1, cfg.process_workers))
         with ThreadPoolExecutor(max_workers=hash_workers) as ex:
             futures = {ex.submit(_hash_one, item): item for item in files_to_check}
@@ -361,7 +468,8 @@ def run_pipeline(
                 try:
                     result = fut.result()
                     if result is None:
-                        # File became inaccessible, skip it
+                        # File became inaccessible, skip it (already marked in DB by _hash_one)
+                        failed_hash_count += 1
                         continue
                     p, sha, size = result
                     logger.debug(f"Hashing [{i}/{len(files_to_check)}]: {p.name}")
@@ -370,34 +478,70 @@ def run_pipeline(
                     # Handle any unexpected errors from the future
                     item = futures[fut]
                     logger.debug(f"  Skipped (error hashing): {item[0].name}: {e}")
+                    # Mark as failed
+                    _db_mark_failed_file(conn, file_path=item[0], size_bytes=item[1], dcim_dir=dcim_dir)
+                    failed_hash_count += 1
                     continue
+        
+        # Commit failed file marks if any
+        if failed_hash_count > 0:
+            conn.commit()
+            logger.info(f"Marked {failed_hash_count} files as failed in DB (will skip in future runs)")
         
         # Batch check database for duplicates (more efficient than one-by-one)
         all_shas = {sha for (_, sha, _) in hashed_files}
         existing_shas: set[str] = set()
         if all_shas:
-            logger.debug("Checking database for duplicate hashes...")
+            logger.debug(f"Checking database for {len(all_shas)} hashes...")
             placeholders = ",".join("?" * len(all_shas))
             existing_rows = conn.execute(
                 f"SELECT sha256 FROM ingested_files WHERE sha256 IN ({placeholders})",
                 tuple(all_shas)
             ).fetchall()
             existing_shas = {row["sha256"] for row in existing_rows}
+            if existing_shas:
+                logger.info(f"Found {len(existing_shas)} files already in database (will skip)")
         
         # Collect new files: all files that aren't duplicates
         new_files: list[tuple[Path, str, int]] = []  # All files are hashed, so sha is never None
         skipped = 0
         
         # Check hashed files for duplicates
+        # Also handle crash recovery: if files were already copied to originals but not yet in DB,
+        # mark them in DB immediately to prevent re-hashing on next run
+        crash_recovery_count = 0
         for p, sha, size in hashed_files:
             if sha in existing_shas:
                 skipped += 1
                 logger.debug(f"  Skipped (already ingested): {p.name} (SHA256: {sha[:16]}...)")
                 continue
+            
+            # If file was hashed from local originals (crash recovery scenario),
+            # mark it in DB immediately to prevent re-processing on next run
+            # But still include it in new_files so it gets processed/uploaded this run
+            if p in existing_originals:
+                logger.info(f"  File already copied but not in DB - marking as ingested (crash recovery): {p.name}")
+                _db_mark_ingested(conn, sha256=sha, size_bytes=size, source_hint=str(p))
+                crash_recovery_count += 1
+                # Still add to new_files so it gets processed/uploaded
+                # (the file exists in originals but may not be processed/uploaded yet)
+            
             new_files.append((p, sha, size))
             logger.info(f"  New file (not in DB): {p.name} ({size:,} bytes, SHA256: {sha[:16]}...)")
+        
+        # Commit any crash recovery marks
+        if crash_recovery_count > 0:
+            conn.commit()
+            logger.info(f"Marked {crash_recovery_count} files as ingested in DB (crash recovery - prevents re-hashing on next run)")
 
         logger.info(f"Duplicate check complete: {len(new_files)} new files, {skipped} skipped (already in DB)")
+        
+        # Log summary of what happened
+        if skipped > 0:
+            logger.info(f"  → {skipped} files were already ingested (skipped processing)")
+        if len(new_files) == 0 and skipped > 0:
+            logger.info(f"  → All files already processed - no work needed")
+        
         if not new_files and not always_create_session:
             if status is not None:
                 status.write(

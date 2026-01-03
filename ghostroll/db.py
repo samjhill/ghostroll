@@ -22,11 +22,20 @@ CREATE TABLE IF NOT EXISTS uploads (
   uploaded_utc TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS failed_files (
+  file_path TEXT PRIMARY KEY,
+  size_bytes INTEGER NOT NULL,
+  first_failed_utc TEXT NOT NULL,
+  last_failed_utc TEXT NOT NULL,
+  failure_count INTEGER NOT NULL DEFAULT 1
+);
+
 -- Indexes for query performance
 CREATE INDEX IF NOT EXISTS idx_ingested_files_size_bytes ON ingested_files(size_bytes);
 CREATE INDEX IF NOT EXISTS idx_ingested_files_first_seen_utc ON ingested_files(first_seen_utc);
 CREATE INDEX IF NOT EXISTS idx_uploads_local_sha256 ON uploads(local_sha256);
 CREATE INDEX IF NOT EXISTS idx_uploads_uploaded_utc ON uploads(uploaded_utc);
+CREATE INDEX IF NOT EXISTS idx_failed_files_size_bytes ON failed_files(size_bytes);
 """
 
 
