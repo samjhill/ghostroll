@@ -236,9 +236,32 @@ def run_pipeline(
     dcim_dir = volume_path / "DCIM"
     try:
         if not dcim_dir.is_dir():
-            raise PipelineError(f"Volume has no DCIM directory: {dcim_dir}")
+            raise PipelineError(
+                f"Volume has no DCIM directory: {dcim_dir}\n"
+                f"  This usually means the SD card is not from a camera or the card structure is different.\n"
+                f"  Expected: {volume_path}/DCIM/ directory\n"
+                f"  Tip: Make sure you're using a camera-formatted SD card, or specify the correct volume path."
+            )
     except (OSError, IOError) as e:
-        raise PipelineError(f"Volume is not accessible (may be stale mount): {dcim_dir}: {e}")
+        error_code = getattr(e, 'errno', None)
+        if error_code == 2:  # ENOENT - No such file or directory
+            raise PipelineError(
+                f"Volume path does not exist: {volume_path}\n"
+                f"  The SD card may have been removed or unmounted.\n"
+                f"  Try: Re-insert the SD card and wait for it to mount."
+            ) from e
+        elif error_code in (5, 13):  # EIO or EACCES - I/O error or Permission denied
+            raise PipelineError(
+                f"Volume is not accessible: {dcim_dir}\n"
+                f"  This may be a stale mount (device removed but mount point still exists).\n"
+                f"  Try: Unmount and re-insert the SD card, or restart the watch service."
+            ) from e
+        else:
+            raise PipelineError(
+                f"Volume is not accessible: {dcim_dir}\n"
+                f"  Error: {e}\n"
+                f"  Try: Check that the SD card is properly mounted and accessible."
+            ) from e
 
     if status is not None:
         status.write(
@@ -272,7 +295,25 @@ def run_pipeline(
             logger.debug(f"DCIM directory contains {len(dcim_listing)} items (directories/files)")
         except (OSError, IOError) as e:
             logger.warning(f"Cannot access mount/DCIM directory {dcim_dir}: {e}")
-            raise PipelineError(f"Volume or DCIM directory not accessible: {dcim_dir}: {e}")
+            error_code = getattr(e, 'errno', None)
+            if error_code == 2:  # ENOENT
+                raise PipelineError(
+                    f"DCIM directory not found: {dcim_dir}\n"
+                    f"  The directory may have been removed or the card was unmounted during processing.\n"
+                    f"  Try: Re-insert the SD card and run again."
+                ) from e
+            elif error_code in (5, 13):  # EIO or EACCES
+                raise PipelineError(
+                    f"Cannot access DCIM directory: {dcim_dir}\n"
+                    f"  The device may be disconnected or the filesystem is corrupted.\n"
+                    f"  Try: Check the SD card connection and filesystem health."
+                ) from e
+            else:
+                raise PipelineError(
+                    f"Cannot access DCIM directory: {dcim_dir}\n"
+                    f"  Error: {e}\n"
+                    f"  Try: Verify the SD card is properly mounted and readable."
+                ) from e
         
         logger.debug(f"Scanning DCIM directory: {dcim_dir}")
         all_media = _iter_media_files(dcim_dir, logger=logger)
@@ -423,9 +464,15 @@ def run_pipeline(
             try:
                 outcome, _ = _db_with_retry(cfg.db_path, do)
                 return (outcome == "uploaded", None)
+            except AwsCliError as e:
+                # AwsCliError already includes actionable guidance
+                logger.error(f"  Upload failed: {local.name} -> s3://{cfg.s3_bucket}/{key}")
+                logger.error(f"  {str(e)}")
+                return (False, f"{local.name} -> s3://{cfg.s3_bucket}/{key}: {str(e).split(chr(10))[0]}")
             except Exception as e:
-                logger.error(f"  Upload failed: {local.name} -> s3://{cfg.s3_bucket}/{key}: {e}")
-                return (False, f"{local} -> s3://{cfg.s3_bucket}/{key}: {e}")
+                error_type = type(e).__name__
+                logger.error(f"  Upload failed: {local.name} -> s3://{cfg.s3_bucket}/{key}: {error_type}: {e}")
+                return (False, f"{local.name} -> s3://{cfg.s3_bucket}/{key}: {error_type}: {e}")
 
         # Upload loading page and generate QR code early
         status_key = f"{prefix}/status.json"
@@ -488,7 +535,16 @@ def run_pipeline(
                         counts={"uploaded": uploaded_ok},
                     )
                 )
-            raise PipelineError("Failed to publish gallery link. See log for details.")
+            raise PipelineError(
+                f"Failed to publish gallery link to S3.\n"
+                f"  Failed uploads: {len(upload_failures)}\n"
+                f"  This prevents sharing the gallery URL.\n"
+                f"  Common causes:\n"
+                f"    - AWS credentials expired or invalid (run: aws sts get-caller-identity)\n"
+                f"    - Insufficient S3 permissions (need s3:PutObject)\n"
+                f"    - Network connectivity issues\n"
+                f"  See log for detailed error messages."
+            )
 
         # Presign the (loading) index now so we can share immediately.
         logger.info(f"Generating presigned share URL for gallery...")
@@ -886,7 +942,18 @@ def run_pipeline(
                         counts={"uploaded": uploaded_ok},
                     )
                 )
-            raise PipelineError(f"Upload failed for {len(upload_failures)} objects. See log for details.")
+            total_attempted = len(upload_tasks)
+            success_rate = (uploaded_ok / total_attempted * 100) if total_attempted > 0 else 0
+            raise PipelineError(
+                f"Upload failed for {len(upload_failures)} of {total_attempted} objects ({success_rate:.1f}% succeeded).\n"
+                f"  Common causes:\n"
+                f"    - Network connectivity issues (check internet connection)\n"
+                f"    - AWS credentials expired (run: aws sts get-caller-identity)\n"
+                f"    - Insufficient S3 permissions (need s3:PutObject for bucket: {cfg.s3_bucket})\n"
+                f"    - S3 bucket doesn't exist or is in a different region\n"
+                f"  Tip: You can retry by running the same command again (already uploaded files will be skipped).\n"
+                f"  See log for detailed error messages per file."
+            )
 
         # Build an S3-shareable gallery that embeds presigned URLs for assets (bucket remains private).
         # We keep the local index.html (relative paths) for offline/local browsing.
@@ -996,7 +1063,17 @@ def run_pipeline(
                         counts={"uploaded": uploaded_ok},
                     )
                 )
-            raise PipelineError("Upload failed for index.html. See log for details.")
+            raise PipelineError(
+                f"Failed to upload final gallery (index.html) to S3.\n"
+                f"  The gallery page was generated locally but couldn't be uploaded.\n"
+                f"  This means images may be uploaded but the gallery won't be accessible via the share link.\n"
+                f"  Common causes:\n"
+                f"    - Network connectivity issues\n"
+                f"    - AWS credentials or permissions issue\n"
+                f"    - S3 bucket access problem\n"
+                f"  Tip: Check AWS credentials with: aws sts get-caller-identity\n"
+                f"  See log for detailed error message."
+            )
 
         # Mark S3 status as complete so the early "loading" page auto-refreshes into the final gallery.
         logger.info("Marking upload as complete in status.json...")

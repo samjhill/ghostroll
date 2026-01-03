@@ -13,9 +13,17 @@ def write_qr_png(*, data: str, out_path: Path) -> None:
     """
     try:
         import qrcode
+    except ImportError as e:
+        raise QrError(
+            "QR code generation requires the 'qrcode' package.\n"
+            "  Install with: pip install qrcode[pil]\n"
+            "  Or reinstall GhostRoll: pip install -e .\n"
+            "  Note: QR codes are optional - the share URL will still be available in share.txt"
+        ) from e
     except Exception as e:  # noqa: BLE001
         raise QrError(
-            "QR support requires the 'qrcode' package. Install it (pip install -e .) and retry."
+            f"Failed to import qrcode package: {e}\n"
+            "  Try: pip install --upgrade qrcode[pil]"
         ) from e
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -38,9 +46,17 @@ def render_qr_ascii(data: str) -> str:
     """
     try:
         import qrcode
+    except ImportError as e:
+        raise QrError(
+            "QR code generation requires the 'qrcode' package.\n"
+            "  Install with: pip install qrcode[pil]\n"
+            "  Or reinstall GhostRoll: pip install -e .\n"
+            "  Note: QR codes are optional - the share URL will still be available in share.txt"
+        ) from e
     except Exception as e:  # noqa: BLE001
         raise QrError(
-            "QR support requires the 'qrcode' package. Install it (pip install -e .) and retry."
+            f"Failed to import qrcode package: {e}\n"
+            "  Try: pip install --upgrade qrcode[pil]"
         ) from e
 
     # Keep terminal output compact: no quiet-zone border.

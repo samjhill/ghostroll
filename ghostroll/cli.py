@@ -335,11 +335,30 @@ def cmd_run(args: argparse.Namespace) -> int:
             print(url)
         logger.info(f"Share link saved to: {sp.share_txt}")
         return 0
-    except (PipelineError, Exception) as e:
+    except PipelineError as e:
+        # PipelineError messages already include actionable guidance
         logger.error(str(e))
-        if isinstance(e, PipelineError) and "no DCIM directory" in str(e):
-            logger.error("Tip: pass the mounted volume path (example: /Volumes/auto-import on macOS, /media/pi/auto-import on Linux).")
-        status.write(Status(state="error", step="error", message=str(e), volume=str(volume)))
+        status.write(Status(state="error", step="error", message=str(e).split("\n")[0], volume=str(volume)))
+        return 2
+    except Exception as e:
+        # For unexpected errors, provide general guidance
+        error_type = type(e).__name__
+        logger.error(f"Unexpected error ({error_type}): {e}")
+        logger.error(
+            f"  This is an unexpected error. Please report this issue with:\n"
+            f"    - The full error message above\n"
+            f"    - Your GhostRoll version\n"
+            f"    - The command you ran\n"
+            f"  Tip: Run 'ghostroll doctor' to check your configuration."
+        )
+        status.write(
+            Status(
+                state="error",
+                step="error",
+                message=f"Unexpected error: {error_type}",
+                volume=str(volume),
+            )
+        )
         return 2
 
 

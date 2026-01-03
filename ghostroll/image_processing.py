@@ -47,6 +47,34 @@ def render_jpeg_derivative(
                 progressive=True,
             )
     except Exception as e:  # noqa: BLE001 - we want a clean error surface
-        raise ProcessingError(f"Failed processing {src_path} -> {dst_path}: {e}") from e
+        error_type = type(e).__name__
+        error_msg = str(e)
+        
+        # Provide more specific guidance for common errors
+        if "cannot identify image file" in error_msg.lower() or "cannot open" in error_msg.lower():
+            guidance = (
+                f"  This file may not be a valid image, or the file is corrupted.\n"
+                f"  Try: Verify the source file is a valid image format (JPEG, PNG, etc.)"
+            )
+        elif "permission denied" in error_msg.lower() or "access denied" in error_msg.lower():
+            guidance = (
+                f"  Cannot write to destination directory.\n"
+                f"  Try: Check write permissions for {dst_path.parent}"
+            )
+        elif "no space left" in error_msg.lower() or "disk full" in error_msg.lower():
+            guidance = (
+                f"  Out of disk space.\n"
+                f"  Try: Free up space or change the output directory"
+            )
+        else:
+            guidance = f"  Error type: {error_type}"
+        
+        raise ProcessingError(
+            f"Failed to process image: {src_path.name}\n"
+            f"  Source: {src_path}\n"
+            f"  Destination: {dst_path}\n"
+            f"{guidance}\n"
+            f"  Original error: {error_msg}"
+        ) from e
 
 

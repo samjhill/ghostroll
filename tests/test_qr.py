@@ -57,9 +57,9 @@ def test_qr_error_on_missing_qrcode_module(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr("builtins.__import__", mock_import)
 
-    with pytest.raises(QrError, match="QR support requires"):
+    with pytest.raises(QrError, match="QR code generation requires"):
         write_qr_png(data="test", out_path=Path("/tmp/test.png"))
 
-    with pytest.raises(QrError, match="QR support requires"):
+    with pytest.raises(QrError, match="QR code generation requires"):
         render_qr_ascii("test")
 
