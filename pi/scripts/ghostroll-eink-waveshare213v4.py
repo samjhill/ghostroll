@@ -104,10 +104,44 @@ def _fit_for_epd(img: Image.Image, *, w: int, h: int) -> Image.Image:
     # Ensure monochrome, correct aspect, and orientation.
     # Many users mount the HAT in landscape; we keep the 250x122 native resolution.
     
+    # Check if image is already 1-bit (like status images with QR codes)
+    # QR codes need sharp edges and exact patterns - preserve them carefully
+    if img.mode == "1":
+        # Already 1-bit - just resize carefully to preserve QR code sharpness
+        # Use nearest neighbor for 1-bit images to avoid anti-aliasing that breaks QR codes
+        img_resized = img.resize((w, h), Image.Resampling.NEAREST)
+        return img_resized
+    
     # Convert to grayscale first for consistent processing
     if img.mode != "L":
         img = img.convert("L")
     
+    # Detect if image likely contains a QR code by checking for high-contrast square patterns
+    # QR codes have very specific patterns - we need to preserve them exactly
+    pixels = list(img.getdata())
+    if pixels:
+        min_val = min(pixels)
+        max_val = max(pixels)
+        contrast_range = max_val - min_val
+        
+        # Check for high contrast (QR codes have pure black/white)
+        # Also check pixel distribution - QR codes have ~30-50% black pixels
+        dark_pixels = sum(1 for p in pixels if p < 128)
+        dark_pct = (dark_pixels / len(pixels)) * 100
+        
+        # If high contrast and reasonable black percentage, likely has QR code
+        # Preserve QR codes with sharp thresholding (no autocontrast)
+        has_qr_likely = contrast_range > 200 and 20 < dark_pct < 60
+        
+        if has_qr_likely:
+            # QR code detected - use sharp thresholding to preserve exact pattern
+            # Resize first with high quality, then threshold sharply
+            img = ImageOps.fit(img, (w, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+            # Use standard 128 threshold for QR codes (preserves black/white distinction)
+            img_1bit = img.point(lambda p: 0 if p < 128 else 255, mode="1")
+            return img_1bit
+    
+    # For text/images without QR codes, use the original processing
     # Enhance contrast aggressively to make sparse text more visible
     # Use a lower cutoff to preserve even faint text
     img = ImageOps.autocontrast(img, cutoff=1)
@@ -138,19 +172,6 @@ def _fit_for_epd(img: Image.Image, *, w: int, h: int) -> Image.Image:
     
     # Convert to 1-bit with the determined threshold
     img_1bit = img.point(lambda p: 0 if p < threshold else 255, mode="1")
-    
-    # Optional: Apply slight dilation to make text bolder (helps with very sparse text)
-    # This makes thin text lines slightly thicker
-    try:
-        from PIL import ImageFilter
-        # Use a small morphological operation to thicken text
-        # Create a small kernel for dilation
-        kernel = ImageFilter.Kernel((3, 3), [0, 1, 0, 1, 1, 1, 0, 1, 0], scale=1)
-        # Note: PIL doesn't have direct dilation, but we can use a workaround
-        # For now, just return the thresholded image
-        # The threshold adjustment above should help preserve sparse text
-    except Exception:
-        pass
     
     return img_1bit
 

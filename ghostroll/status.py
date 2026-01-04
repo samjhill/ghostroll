@@ -562,8 +562,13 @@ class StatusWriter:
                 qr_size = min(available_width, available_height)
                 # Ensure QR is at least 80px for reliable phone scanning
                 # QR code is always displayed when available, including in DONE state
+                # Use NEAREST resampling for 1-bit QR codes to preserve sharp edges for scanning
                 if qr_size >= 80:
-                    qr_resized = qr_img.resize((qr_size, qr_size), Image.Resampling.LANCZOS)
+                    if qr_img.mode == "1":
+                        # For 1-bit images, use nearest neighbor to preserve sharp QR code edges
+                        qr_resized = qr_img.resize((qr_size, qr_size), Image.Resampling.NEAREST)
+                    else:
+                        qr_resized = qr_img.resize((qr_size, qr_size), Image.Resampling.LANCZOS)
                     qr_x = w - qr_size - 4
                     qr_y = qr_start_y
                     img.paste(qr_resized, (qr_x, qr_y))
@@ -673,7 +678,11 @@ class StatusWriter:
                 # Make QR code larger for better phone scanning (prefer 250px+ for large displays)
                 max_qr_size = min(300, h - padding * 2, w - text_x - padding - 20)
                 qr_size = max(150, max_qr_size)  # Ensure at least 150px for large displays
-                qr_resized = qr_img.resize((qr_size, qr_size), Image.Resampling.LANCZOS)
+                # Use NEAREST resampling for 1-bit QR codes to preserve sharp edges for scanning
+                if qr_img.mode == "1":
+                    qr_resized = qr_img.resize((qr_size, qr_size), Image.Resampling.NEAREST)
+                else:
+                    qr_resized = qr_img.resize((qr_size, qr_size), Image.Resampling.LANCZOS)
                 qr_x = w - qr_size - padding
                 qr_y = padding
                 img.paste(qr_resized, (qr_x, qr_y))
