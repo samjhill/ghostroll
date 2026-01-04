@@ -104,36 +104,55 @@ def _fit_for_epd(img: Image.Image, *, w: int, h: int) -> Image.Image:
     # Ensure monochrome, correct aspect, and orientation.
     # Many users mount the HAT in landscape; we keep the 250x122 native resolution.
     
-    # If already 1-bit, we need to be careful with resizing to preserve text
-    if img.mode == "1":
-        # For 1-bit images, resize using nearest neighbor first to preserve sharp edges,
-        # then optionally apply smoothing. But for text, we want sharp edges.
-        # Convert to grayscale first for better resampling, then back to 1-bit
-        img_gray = img.convert("L")
-        # Use LANCZOS for better quality when downscaling text
-        img_resized = ImageOps.fit(img_gray, (w, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
-        # Convert back to 1-bit with threshold to preserve text
-        # Use a threshold that keeps text visible (text is typically black/0 in 1-bit)
-        threshold = 128
-        return img_resized.point(lambda p: 0 if p < threshold else 255, mode="1")
+    # Convert to grayscale first for consistent processing
+    if img.mode != "L":
+        img = img.convert("L")
     
-    # Convert to grayscale first
-    img = img.convert("L")
+    # Enhance contrast aggressively to make sparse text more visible
+    # Use a lower cutoff to preserve even faint text
+    img = ImageOps.autocontrast(img, cutoff=1)
     
-    # Enhance contrast - use a more aggressive approach for text visibility
-    # First, try to enhance contrast
-    img = ImageOps.autocontrast(img, cutoff=2)  # More aggressive contrast
-    
-    # Resize to target dimensions
+    # Resize to target dimensions using high-quality resampling
     img = ImageOps.fit(img, (w, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
     
-    # Convert to 1-bit with threshold to ensure text is visible
-    # Use a threshold that preserves text (typically text is darker)
-    # Threshold of 128 means anything darker than 50% gray becomes black
-    threshold = 128
-    img = img.point(lambda p: 0 if p < threshold else 255, mode="1")
+    # For sparse text (like 0.4% black), we need a lower threshold to preserve it
+    # Check pixel distribution to determine appropriate threshold
+    pixels = list(img.getdata())
+    if pixels:
+        min_val = min(pixels)
+        max_val = max(pixels)
+        # If image has very sparse dark content, use a more aggressive threshold
+        # to capture even faint text
+        dark_pixels = sum(1 for p in pixels if p < 200)  # Count pixels darker than ~78% gray
+        dark_pct = (dark_pixels / len(pixels)) * 100
+        
+        if dark_pct < 2.0:  # Very sparse text (< 2% dark)
+            # Use a very low threshold to capture faint text
+            threshold = 240  # Anything darker than ~94% white becomes black
+        elif dark_pct < 5.0:  # Sparse text (< 5% dark)
+            threshold = 200  # Anything darker than ~78% white becomes black
+        else:
+            threshold = 128  # Normal threshold
+    else:
+        threshold = 128
     
-    return img
+    # Convert to 1-bit with the determined threshold
+    img_1bit = img.point(lambda p: 0 if p < threshold else 255, mode="1")
+    
+    # Optional: Apply slight dilation to make text bolder (helps with very sparse text)
+    # This makes thin text lines slightly thicker
+    try:
+        from PIL import ImageFilter
+        # Use a small morphological operation to thicken text
+        # Create a small kernel for dilation
+        kernel = ImageFilter.Kernel((3, 3), [0, 1, 0, 1, 1, 1, 0, 1, 0], scale=1)
+        # Note: PIL doesn't have direct dilation, but we can use a workaround
+        # For now, just return the thresholded image
+        # The threshold adjustment above should help preserve sparse text
+    except Exception:
+        pass
+    
+    return img_1bit
 
 
 def _check_spi_setup() -> None:
