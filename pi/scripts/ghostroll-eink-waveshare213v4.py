@@ -294,62 +294,118 @@ def main() -> int:
             except Exception:
                 pass
 
-        print(f"ghostroll-eink: watching {status_png} (refresh: {refresh_seconds}s)", file=sys.stderr)
-        last_mtime = 0.0
-
-        while not STOP:
+        if test_mode:
+            # In test mode, process once and exit
+            print(f"ghostroll-eink: processing {status_png} once (test mode)", file=sys.stderr)
             try:
-                st = status_png.stat()
-                if st.st_mtime > last_mtime:
-                    last_mtime = st.st_mtime
-                    print(f"ghostroll-eink: updating display...", file=sys.stderr)
-                    with Image.open(status_png) as im:
-                        # Log original image info for debugging
-                        print(f"ghostroll-eink: source image: {im.size}, mode: {im.mode}", file=sys.stderr)
-                        
-                        # Check source image pixel distribution
-                        if im.mode == "1":
-                            src_pixels = list(im.getdata())
-                            src_black = sum(1 for p in src_pixels if p == 0)
-                            src_total = len(src_pixels)
-                            src_black_pct = (src_black / src_total * 100) if src_total > 0 else 0
-                            print(f"ghostroll-eink: source has {src_black} black pixels ({src_black_pct:.1f}%)", file=sys.stderr)
-                            if src_black == 0:
-                                print("ghostroll-eink: WARNING: source image is all white! GhostRoll may not be generating status correctly.", file=sys.stderr)
-                        
-                        frame = _fit_for_epd(im, w=epd_w, h=epd_h)
-                        
-                        # Log processed image info
-                        print(f"ghostroll-eink: processed image: {frame.size}, mode: {frame.mode}", file=sys.stderr)
-                        
-                        # Quick check: count black vs white pixels (for diagnostics)
-                        if frame.mode == "1":
-                            pixels = list(frame.getdata())
-                            # In mode "1", 0 = black, 1 = white (or 255 = white depending on implementation)
-                            black_count = sum(1 for p in pixels if p == 0)
-                            white_count = sum(1 for p in pixels if p != 0)
-                            total = len(pixels)
-                            black_pct = (black_count / total * 100) if total > 0 else 0
-                            print(f"ghostroll-eink: pixel stats: {black_count} black ({black_pct:.1f}%), {white_count} white (of {total} total)", file=sys.stderr)
-                            if black_count == 0:
-                                print("ghostroll-eink: WARNING: processed image is all white! Text may have been lost during resize.", file=sys.stderr)
-                            elif black_count < total * 0.01:  # Less than 1% black
-                                print(f"ghostroll-eink: WARNING: very few black pixels ({black_pct:.1f}%), text may not be visible", file=sys.stderr)
-                            elif black_pct > 50:
-                                print(f"ghostroll-eink: NOTE: image is mostly black ({black_pct:.1f}%), may need inversion", file=sys.stderr)
-                        
-                        # In test mode, save the processed image instead of displaying
-                        if test_mode:
-                            if test_output:
-                                output_path = Path(test_output)
-                                frame.save(output_path)
-                                print(f"ghostroll-eink: saved processed image to {output_path}", file=sys.stderr)
-                            else:
-                                # Default test output location
-                                test_output_path = status_png.parent / "status-eink-processed.png"
-                                frame.save(test_output_path)
-                                print(f"ghostroll-eink: saved processed image to {test_output_path}", file=sys.stderr)
-                        else:
+                print(f"ghostroll-eink: updating display...", file=sys.stderr)
+                with Image.open(status_png) as im:
+                    # Log original image info for debugging
+                    print(f"ghostroll-eink: source image: {im.size}, mode: {im.mode}", file=sys.stderr)
+                    
+                    # Check source image pixel distribution
+                    if im.mode == "1":
+                        src_pixels = list(im.getdata())
+                        src_black = sum(1 for p in src_pixels if p == 0)
+                        src_total = len(src_pixels)
+                        src_black_pct = (src_black / src_total * 100) if src_total > 0 else 0
+                        print(f"ghostroll-eink: source has {src_black} black pixels ({src_black_pct:.1f}%)", file=sys.stderr)
+                        if src_black == 0:
+                            print("ghostroll-eink: WARNING: source image is all white! GhostRoll may not be generating status correctly.", file=sys.stderr)
+                    
+                    frame = _fit_for_epd(im, w=epd_w, h=epd_h)
+                    
+                    # Log processed image info
+                    print(f"ghostroll-eink: processed image: {frame.size}, mode: {frame.mode}", file=sys.stderr)
+                    
+                    # Quick check: count black vs white pixels (for diagnostics)
+                    if frame.mode == "1":
+                        pixels = list(frame.getdata())
+                        # In mode "1", 0 = black, 1 = white (or 255 = white depending on implementation)
+                        black_count = sum(1 for p in pixels if p == 0)
+                        white_count = sum(1 for p in pixels if p != 0)
+                        total = len(pixels)
+                        black_pct = (black_count / total * 100) if total > 0 else 0
+                        print(f"ghostroll-eink: pixel stats: {black_count} black ({black_pct:.1f}%), {white_count} white (of {total} total)", file=sys.stderr)
+                        if black_count == 0:
+                            print("ghostroll-eink: WARNING: processed image is all white! Text may have been lost during resize.", file=sys.stderr)
+                        elif black_count < total * 0.01:  # Less than 1% black
+                            print(f"ghostroll-eink: WARNING: very few black pixels ({black_pct:.1f}%), text may not be visible", file=sys.stderr)
+                        elif black_pct > 50:
+                            print(f"ghostroll-eink: NOTE: image is mostly black ({black_pct:.1f}%), may need inversion", file=sys.stderr)
+                    
+                    # In test mode, save the processed image instead of displaying
+                    if test_output:
+                        output_path = Path(test_output)
+                        output_path.parent.mkdir(parents=True, exist_ok=True)
+                        frame.save(output_path)
+                        print(f"ghostroll-eink: saved processed image to {output_path}", file=sys.stderr)
+                    else:
+                        # Default test output location
+                        test_output_path = status_png.parent / "status-eink-processed.png"
+                        test_output_path.parent.mkdir(parents=True, exist_ok=True)
+                        frame.save(test_output_path)
+                        print(f"ghostroll-eink: saved processed image to {test_output_path}", file=sys.stderr)
+                    print("ghostroll-eink: display updated", file=sys.stderr)
+            except FileNotFoundError:
+                print("ghostroll-eink: ERROR: status.png not found", file=sys.stderr)
+                return 1
+            except Exception as e:
+                print(f"ghostroll-eink: render error: {e}", file=sys.stderr)
+                import traceback
+                traceback.print_exc(file=sys.stderr)
+                return 1
+            # Exit after processing once in test mode
+            return 0
+            if not test_mode:
+                time.sleep(refresh_seconds)
+        
+        if not test_mode:
+            # Normal mode: watch loop
+            print(f"ghostroll-eink: watching {status_png} (refresh: {refresh_seconds}s)", file=sys.stderr)
+            last_mtime = 0.0
+
+            while not STOP:
+                try:
+                    st = status_png.stat()
+                    if st.st_mtime > last_mtime:
+                        last_mtime = st.st_mtime
+                        print(f"ghostroll-eink: updating display...", file=sys.stderr)
+                        with Image.open(status_png) as im:
+                            # Log original image info for debugging
+                            print(f"ghostroll-eink: source image: {im.size}, mode: {im.mode}", file=sys.stderr)
+                            
+                            # Check source image pixel distribution
+                            if im.mode == "1":
+                                src_pixels = list(im.getdata())
+                                src_black = sum(1 for p in src_pixels if p == 0)
+                                src_total = len(src_pixels)
+                                src_black_pct = (src_black / src_total * 100) if src_total > 0 else 0
+                                print(f"ghostroll-eink: source has {src_black} black pixels ({src_black_pct:.1f}%)", file=sys.stderr)
+                                if src_black == 0:
+                                    print("ghostroll-eink: WARNING: source image is all white! GhostRoll may not be generating status correctly.", file=sys.stderr)
+                            
+                            frame = _fit_for_epd(im, w=epd_w, h=epd_h)
+                            
+                            # Log processed image info
+                            print(f"ghostroll-eink: processed image: {frame.size}, mode: {frame.mode}", file=sys.stderr)
+                            
+                            # Quick check: count black vs white pixels (for diagnostics)
+                            if frame.mode == "1":
+                                pixels = list(frame.getdata())
+                                # In mode "1", 0 = black, 1 = white (or 255 = white depending on implementation)
+                                black_count = sum(1 for p in pixels if p == 0)
+                                white_count = sum(1 for p in pixels if p != 0)
+                                total = len(pixels)
+                                black_pct = (black_count / total * 100) if total > 0 else 0
+                                print(f"ghostroll-eink: pixel stats: {black_count} black ({black_pct:.1f}%), {white_count} white (of {total} total)", file=sys.stderr)
+                                if black_count == 0:
+                                    print("ghostroll-eink: WARNING: processed image is all white! Text may have been lost during resize.", file=sys.stderr)
+                                elif black_count < total * 0.01:  # Less than 1% black
+                                    print(f"ghostroll-eink: WARNING: very few black pixels ({black_pct:.1f}%), text may not be visible", file=sys.stderr)
+                                elif black_pct > 50:
+                                    print(f"ghostroll-eink: NOTE: image is mostly black ({black_pct:.1f}%), may need inversion", file=sys.stderr)
+                            
                             # Try different display methods
                             try:
                                 # Method 1: getbuffer then display (most common)
@@ -365,13 +421,13 @@ def main() -> int:
                                     traceback.print_exc(file=sys.stderr)
                                     raise
                         print("ghostroll-eink: display updated", file=sys.stderr)
-            except FileNotFoundError:
-                pass
-            except Exception as e:
-                print(f"ghostroll-eink: render error: {e}", file=sys.stderr)
-                import traceback
-                traceback.print_exc(file=sys.stderr)
-            time.sleep(refresh_seconds)
+                except FileNotFoundError:
+                    pass
+                except Exception as e:
+                    print(f"ghostroll-eink: render error: {e}", file=sys.stderr)
+                    import traceback
+                    traceback.print_exc(file=sys.stderr)
+                time.sleep(refresh_seconds)
 
     finally:
         print("ghostroll-eink: shutting down...", file=sys.stderr)
