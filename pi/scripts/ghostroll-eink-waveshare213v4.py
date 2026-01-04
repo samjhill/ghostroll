@@ -227,7 +227,11 @@ def main() -> int:
     signal.signal(signal.SIGTERM, _on_signal)
     signal.signal(signal.SIGINT, _on_signal)
 
-    if not _env_bool("GHOSTROLL_EINK_ENABLE", False):
+    # Test mode: if GHOSTROLL_EINK_TEST_MODE is set, just process images without hardware
+    test_mode = _env_bool("GHOSTROLL_EINK_TEST_MODE", False)
+    test_output = os.environ.get("GHOSTROLL_EINK_TEST_OUTPUT")
+    
+    if not _env_bool("GHOSTROLL_EINK_ENABLE", False) and not test_mode:
         # Exit cleanly when not enabled.
         return 0
 
@@ -238,51 +242,57 @@ def main() -> int:
     epd_w = int(os.environ.get("GHOSTROLL_EINK_WIDTH", "250"))
     epd_h = int(os.environ.get("GHOSTROLL_EINK_HEIGHT", "122"))
 
-    # Check SPI setup before trying to load the driver
-    _check_spi_setup()
+    # In test mode, skip hardware initialization
+    if test_mode:
+        print("ghostroll-eink: TEST MODE - processing images without hardware", file=sys.stderr)
+        epd = None
+    else:
+        # Check SPI setup before trying to load the driver
+        _check_spi_setup()
 
-    try:
-        epd = _load_epd()
-    except Exception as e:
-        print(f"ghostroll-eink: failed to import Waveshare EPD driver: {e}", file=sys.stderr)
-        return 2
-
-    try:
-        # Init and clear
-        print("ghostroll-eink: initializing display...", file=sys.stderr)
         try:
-            epd.init()
-        except TypeError:
-            try:
-                epd.init(epd.FULL_UPDATE)  # type: ignore[attr-defined]
-            except (TypeError, AttributeError):
-                # Some versions don't need parameters
-                epd.init()
-        except OSError as e:
-            if e.errno == 9:  # Bad file descriptor
-                print("ghostroll-eink: SPI communication error (errno 9: bad file descriptor)", file=sys.stderr)
-                print("ghostroll-eink: This usually means SPI is not enabled or accessible.", file=sys.stderr)
-                print("ghostroll-eink: Enable SPI: sudo raspi-config -> Interface Options -> SPI -> Enable", file=sys.stderr)
-                print("ghostroll-eink: Then reboot: sudo reboot", file=sys.stderr)
-                return 3
-            raise
+            epd = _load_epd()
         except Exception as e:
-            print(f"ghostroll-eink: init error: {e}", file=sys.stderr)
-            import traceback
-            traceback.print_exc(file=sys.stderr)
-            # Don't continue if init fails
-            return 3
-        
-        # Clear display (try different method names)
-        try:
-            epd.Clear(0xFF)
-        except AttributeError:
+            print(f"ghostroll-eink: failed to import Waveshare EPD driver: {e}", file=sys.stderr)
+            return 2
+
+    try:
+        # Init and clear (skip in test mode)
+        if not test_mode:
+            print("ghostroll-eink: initializing display...", file=sys.stderr)
             try:
-                epd.clear(0xFF)  # lowercase
+                epd.init()
+            except TypeError:
+                try:
+                    epd.init(epd.FULL_UPDATE)  # type: ignore[attr-defined]
+                except (TypeError, AttributeError):
+                    # Some versions don't need parameters
+                    epd.init()
+            except OSError as e:
+                if e.errno == 9:  # Bad file descriptor
+                    print("ghostroll-eink: SPI communication error (errno 9: bad file descriptor)", file=sys.stderr)
+                    print("ghostroll-eink: This usually means SPI is not enabled or accessible.", file=sys.stderr)
+                    print("ghostroll-eink: Enable SPI: sudo raspi-config -> Interface Options -> SPI -> Enable", file=sys.stderr)
+                    print("ghostroll-eink: Then reboot: sudo reboot", file=sys.stderr)
+                    return 3
+                raise
+            except Exception as e:
+                print(f"ghostroll-eink: init error: {e}", file=sys.stderr)
+                import traceback
+                traceback.print_exc(file=sys.stderr)
+                # Don't continue if init fails
+                return 3
+            
+            # Clear display (try different method names)
+            try:
+                epd.Clear(0xFF)
+            except AttributeError:
+                try:
+                    epd.clear(0xFF)  # lowercase
+                except Exception:
+                    pass
             except Exception:
                 pass
-        except Exception:
-            pass
 
         print(f"ghostroll-eink: watching {status_png} (refresh: {refresh_seconds}s)", file=sys.stderr)
         last_mtime = 0.0
@@ -328,21 +338,33 @@ def main() -> int:
                             elif black_pct > 50:
                                 print(f"ghostroll-eink: NOTE: image is mostly black ({black_pct:.1f}%), may need inversion", file=sys.stderr)
                         
-                        # Try different display methods
-                        try:
-                            # Method 1: getbuffer then display (most common)
-                            buf = epd.getbuffer(frame)
-                            epd.display(buf)
-                        except (AttributeError, TypeError):
+                        # In test mode, save the processed image instead of displaying
+                        if test_mode:
+                            if test_output:
+                                output_path = Path(test_output)
+                                frame.save(output_path)
+                                print(f"ghostroll-eink: saved processed image to {output_path}", file=sys.stderr)
+                            else:
+                                # Default test output location
+                                test_output_path = status_png.parent / "status-eink-processed.png"
+                                frame.save(test_output_path)
+                                print(f"ghostroll-eink: saved processed image to {test_output_path}", file=sys.stderr)
+                        else:
+                            # Try different display methods
                             try:
-                                # Method 2: display image directly (some versions)
-                                epd.display(frame)
-                            except Exception as e:
-                                print(f"ghostroll-eink: display method error: {e}", file=sys.stderr)
-                                import traceback
-                                traceback.print_exc(file=sys.stderr)
-                                raise
-                    print("ghostroll-eink: display updated", file=sys.stderr)
+                                # Method 1: getbuffer then display (most common)
+                                buf = epd.getbuffer(frame)
+                                epd.display(buf)
+                            except (AttributeError, TypeError):
+                                try:
+                                    # Method 2: display image directly (some versions)
+                                    epd.display(frame)
+                                except Exception as e:
+                                    print(f"ghostroll-eink: display method error: {e}", file=sys.stderr)
+                                    import traceback
+                                    traceback.print_exc(file=sys.stderr)
+                                    raise
+                        print("ghostroll-eink: display updated", file=sys.stderr)
             except FileNotFoundError:
                 pass
             except Exception as e:
@@ -353,15 +375,16 @@ def main() -> int:
 
     finally:
         print("ghostroll-eink: shutting down...", file=sys.stderr)
-        try:
-            epd.sleep()
-        except AttributeError:
+        if not test_mode and epd is not None:
             try:
-                epd.Sleep()  # capitalized
+                epd.sleep()
+            except AttributeError:
+                try:
+                    epd.Sleep()  # capitalized
+                except Exception:
+                    pass
             except Exception:
                 pass
-        except Exception:
-            pass
     return 0
 
 
