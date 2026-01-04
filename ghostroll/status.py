@@ -215,7 +215,9 @@ class StatusWriter:
             # Compact layout for small e-ink displays (e.g., 250x122)
             # QR code on right, text on left
             text_x = 8
-            text_y = 8
+            # Start text lower to avoid being cut off at top
+            # For 122px height, start at ~20px to give more breathing room
+            text_y = max(16, h // 10)  # At least 16px, or 10% of height
             line_height = 14
             
             # Header
