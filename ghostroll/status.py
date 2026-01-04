@@ -213,79 +213,157 @@ class StatusWriter:
         
         if is_small_display:
             # Compact layout for small e-ink displays (e.g., 250x122)
-            # QR code on right, text on left
+            # Optimized for 250x122: text on left, QR on right (when available)
             text_x = 8
-            # Start text much lower to ensure all text is visible
-            # For 122px height display, we need to fit:
-            #   - Header (title_font ~16px) + 2px spacing = 18px
-            #   - Status message (default_font ~14px) = 14px  
-            #   - Progress line (small_font ~12px) = 12px (optional)
-            #   - SSH info at bottom (h - 14 - 4 = 104px for 122px display)
-            # Total needed: ~44-56px of content
-            # Starting at 45px gives us 77px of usable space before SSH line
-            # This ensures nothing gets cut off at the top
-            text_y = max(45, int(h * 0.37))  # Start at 45px or 37% of height
-            line_height = 14
+            # Start text lower to ensure all content is visible
+            text_y = max(40, int(h * 0.33))  # Start at 40px or 33% of height
+            line_height = 13
+            small_line_height = 11
             
-            # Header
-            header = f"GhostRoll" if not state else f"GhostRoll — {state}"
+            # Helper to format user-friendly messages
+            def _format_message(msg: str, state: str) -> str:
+                """Make messages more concise and user-friendly."""
+                # Remove trailing ellipsis if present
+                msg = msg.rstrip("…").rstrip(".")
+                
+                # Map technical messages to user-friendly ones
+                replacements = {
+                    "Scanning DCIM for media": "Scanning card",
+                    "No new files detected": "No new photos",
+                    "Copying originals": "Copying photos",
+                    "Generating share images + thumbnails": "Processing images",
+                    "Uploading photos to S3": "Uploading",
+                    "Uploading to S3": "Uploading",
+                    "Generating share link": "Creating link",
+                    "Complete. Remove SD card when ready": "Done! Remove card",
+                    "Complete. Remove SD card now": "Done! Remove card",
+                    "Waiting for SD card": "Insert SD card",
+                }
+                for old, new in replacements.items():
+                    if old in msg:
+                        msg = msg.replace(old, new)
+                        break
+                
+                # Truncate if still too long
+                if len(msg) > 22:
+                    msg = msg[:19] + "..."
+                return msg
+            
+            # Header - more compact
+            if state == "IDLE":
+                header = "GhostRoll"
+            elif state == "RUNNING":
+                header = "GhostRoll"
+            elif state == "DONE":
+                header = "✓ Done"
+            elif state == "ERROR":
+                header = "✗ Error"
+            else:
+                header = "GhostRoll"
+            
             draw.text((text_x, text_y), header, font=title_font, fill=0)
-            text_y += line_height + 2
+            text_y += line_height + 1
             
-            # Status message
+            # Status message - user-friendly formatting
             if message:
-                if state == "DONE" and step == "done":
-                    draw.text((text_x, text_y), "✓ Complete", font=title_font, fill=0)
+                friendly_msg = _format_message(message, state)
+                if state == "DONE":
+                    draw.text((text_x, text_y), friendly_msg, font=default_font, fill=0)
                     text_y += line_height
-                    if "Remove" in message:
-                        draw.text((text_x, text_y), "Remove SD", font=default_font, fill=0)
-                        text_y += line_height
+                    # Show session info if available
+                    if payload.get("session_id"):
+                        session_short = payload["session_id"][:18] + "..." if len(payload.get("session_id", "")) > 18 else payload["session_id"]
+                        draw.text((text_x, text_y), f"Session: {session_short}", font=small_font, fill=0)
+                        text_y += small_line_height
                 elif state == "ERROR":
-                    draw.text((text_x, text_y), f"✗ {message[:20]}", font=title_font, fill=0)
+                    # Show first line of error
+                    error_lines = friendly_msg.split("\n")
+                    draw.text((text_x, text_y), error_lines[0][:22], font=default_font, fill=0)
                     text_y += line_height
                 else:
-                    # Truncate long messages
-                    msg = message[:25] + "..." if len(message) > 25 else message
-                    draw.text((text_x, text_y), msg, font=default_font, fill=0)
+                    draw.text((text_x, text_y), friendly_msg, font=default_font, fill=0)
                     text_y += line_height
             
-            # Progress (when running)
+            # Progress and file counts (when running)
             if state == "RUNNING":
                 step_lower = step.lower()
+                
+                # Show file counts if available
+                if "new" in counts:
+                    new_count = int(counts.get("new", 0))
+                    if new_count > 0:
+                        draw.text((text_x, text_y), f"{new_count} new photo{'s' if new_count != 1 else ''}", font=small_font, fill=0)
+                        text_y += small_line_height
+                elif "discovered" in counts:
+                    disc_count = int(counts.get("discovered", 0))
+                    if disc_count > 0:
+                        draw.text((text_x, text_y), f"{disc_count} photo{'s' if disc_count != 1 else ''}", font=small_font, fill=0)
+                        text_y += small_line_height
+                
+                # Processing progress
                 if "process" in step_lower and "processed_done" in counts and "processed_total" in counts:
                     done = int(counts.get("processed_done", 0))
                     total = int(counts.get("processed_total", 0))
                     if total > 0:
                         pct = int((done / total) * 100)
-                        draw.text((text_x, text_y), f"Processing: {done}/{total} ({pct}%)", font=small_font, fill=0)
-                        text_y += line_height - 2
-                elif "upload" in step_lower and "uploaded_done" in counts and "uploaded_total" in counts:
+                        draw.text((text_x, text_y), f"Process: {done}/{total} ({pct}%)", font=small_font, fill=0)
+                        text_y += small_line_height
+                
+                # Upload progress
+                if "upload" in step_lower and "uploaded_done" in counts and "uploaded_total" in counts:
                     done = int(counts.get("uploaded_done", 0))
                     total = int(counts.get("uploaded_total", 0))
                     if total > 0:
                         pct = int((done / total) * 100)
-                        draw.text((text_x, text_y), f"Uploading: {done}/{total} ({pct}%)", font=small_font, fill=0)
-                        text_y += line_height - 2
+                        draw.text((text_x, text_y), f"Upload: {done}/{total} ({pct}%)", font=small_font, fill=0)
+                        text_y += small_line_height
+                
+                # Show volume name if available
+                if payload.get("volume"):
+                    vol_name = Path(payload["volume"]).name
+                    if len(vol_name) > 15:
+                        vol_name = vol_name[:12] + "..."
+                    draw.text((text_x, text_y), f"Card: {vol_name}", font=small_font, fill=0)
+                    text_y += small_line_height
             
             # QR code on the right side (if available)
             if qr_img:
-                # Calculate available space: leave room for text on left (text_x + some margin)
-                text_area_width = 120  # Reserve space for text content
+                # Calculate available space: leave room for text on left
+                text_area_width = 130  # Reserve space for text content
                 available_width = w - text_area_width - 8
-                available_height = h - text_y - 20  # Leave room for label below QR
-                qr_size = min(80, available_width, available_height)
+                available_height = h - text_y - 16  # Leave room for label below QR
+                qr_size = min(70, available_width, available_height)
                 if qr_size > 0:
                     qr_resized = qr_img.resize((qr_size, qr_size), Image.Resampling.LANCZOS)
-                    qr_x = w - qr_size - 8
-                    qr_y = text_y
+                    qr_x = w - qr_size - 6
+                    qr_y = text_y - 2  # Align with text start
                     img.paste(qr_resized, (qr_x, qr_y))
                     # Label below QR
-                    draw.text((qr_x, qr_y + qr_size + 2), "Scan QR", font=small_font, fill=0)
+                    draw.text((qr_x, qr_y + qr_size + 1), "Scan", font=small_font, fill=0)
             
-            # SSH info (only when idle)
-            if state in ("IDLE", "") and payload.get("ip"):
+            # Bottom info bar
+            bottom_y = h - small_line_height - 2
+            bottom_info_parts = []
+            
+            # SSH info (when idle or done)
+            if state in ("IDLE", "DONE", "") and payload.get("ip"):
                 ip = payload.get("ip", "")
-                draw.text((text_x, h - line_height - 4), f"SSH: pi@{ip}", font=small_font, fill=0)
+                # Shorten IP if needed
+                if len(ip) > 12:
+                    ip = ip[:9] + "..."
+                bottom_info_parts.append(f"SSH: {ip}")
+            
+            # Session ID when done (if no IP or space available)
+            if state == "DONE" and payload.get("session_id") and not payload.get("ip"):
+                session_short = payload["session_id"][:15] + "..." if len(payload.get("session_id", "")) > 15 else payload["session_id"]
+                bottom_info_parts.append(session_short)
+            
+            # Show bottom info
+            if bottom_info_parts:
+                bottom_text = " | ".join(bottom_info_parts)
+                if len(bottom_text) > 30:
+                    bottom_text = bottom_text[:27] + "..."
+                draw.text((text_x, bottom_y), bottom_text, font=small_font, fill=0)
         
         else:
             # Larger display layout (e.g., 800x480)
