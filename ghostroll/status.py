@@ -78,6 +78,115 @@ def get_ip_address() -> str | None:
     return None
 
 
+def get_pisugar_battery() -> dict[str, int | bool] | None:
+    """
+    Get battery status from PiSugar 2 via the PiSugar Power Manager socket API.
+    
+    Returns a dict with:
+    - percentage: int (0-100)
+    - is_charging: bool
+    - voltage: int (millivolts, optional)
+    
+    Returns None if PiSugar is not available or if there's an error.
+    """
+    pisugar_socket = Path("/tmp/pisugar-server.sock")
+    
+    # Check if PiSugar Power Manager is available
+    if not pisugar_socket.exists():
+        return None
+    
+    try:
+        # Try using Python socket first (more portable)
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(2.0)
+            sock.connect(str(pisugar_socket))
+            sock.sendall(b"get battery\n")
+            
+            # Read response
+            response_bytes = b""
+            while True:
+                chunk = sock.recv(1024)
+                if not chunk:
+                    break
+                response_bytes += chunk
+                # Stop if we have a reasonable amount of data
+                if len(response_bytes) > 512:
+                    break
+            
+            sock.close()
+            response = response_bytes.decode("utf-8", errors="ignore").strip()
+        except (OSError, socket.error, Exception):
+            # Fallback to netcat if socket library fails
+            try:
+                result = subprocess.run(
+                    ["nc", "-U", "/tmp/pisugar-server.sock"],
+                    input="get battery\n",
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+                if result.returncode != 0:
+                    return None
+                response = result.stdout.strip()
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError, Exception):
+                return None
+        
+        if not response:
+            return None
+        
+        # Try to parse as JSON first
+        try:
+            data = json.loads(response)
+            percentage = data.get("percentage") or data.get("battery") or data.get("level")
+            is_charging = data.get("charging") or data.get("is_charging") or False
+            voltage = data.get("voltage") or data.get("voltage_mv")
+            
+            if percentage is not None:
+                return {
+                    "percentage": int(percentage),
+                    "is_charging": bool(is_charging),
+                    "voltage": int(voltage) if voltage is not None else None,
+                }
+        except (json.JSONDecodeError, ValueError, TypeError):
+            # Try parsing key-value format
+            # Example: "battery: 85\ncharging: false"
+            percentage = None
+            is_charging = False
+            voltage = None
+            
+            for line in response.splitlines():
+                if ":" in line:
+                    key, value = line.split(":", 1)
+                    key = key.strip().lower()
+                    value = value.strip()
+                    
+                    if "battery" in key or "percentage" in key or "level" in key:
+                        try:
+                            percentage = int(float(value))
+                        except (ValueError, TypeError):
+                            pass
+                    elif "charging" in key:
+                        is_charging = value.lower() in ("true", "1", "yes", "on")
+                    elif "voltage" in key:
+                        try:
+                            voltage = int(float(value))
+                        except (ValueError, TypeError):
+                            pass
+            
+            if percentage is not None:
+                return {
+                    "percentage": percentage,
+                    "is_charging": is_charging,
+                    "voltage": voltage,
+                }
+        
+        return None
+    except Exception:
+        # PiSugar not available or error reading
+        return None
+
+
 @dataclass
 class Status:
     state: str  # idle|running|error|done
@@ -91,6 +200,8 @@ class Status:
     hostname: str | None = None
     ip: str | None = None
     updated_unix: float | None = None
+    battery_percentage: int | None = None  # 0-100
+    battery_charging: bool | None = None
 
 
 class StatusWriter:
@@ -107,6 +218,14 @@ class StatusWriter:
 
     def write(self, status: Status) -> None:
         status.updated_unix = time.time()
+        
+        # Try to get battery status if not already set
+        if status.battery_percentage is None:
+            battery_info = get_pisugar_battery()
+            if battery_info:
+                status.battery_percentage = battery_info.get("percentage")
+                status.battery_charging = battery_info.get("is_charging")
+        
         payload = {
             "state": status.state,
             "step": status.step,
@@ -119,6 +238,8 @@ class StatusWriter:
             "hostname": status.hostname,
             "ip": status.ip,
             "updated_unix": status.updated_unix,
+            "battery_percentage": status.battery_percentage,
+            "battery_charging": status.battery_charging,
         }
         self._atomic_write_json(self.json_path, payload)
         if self.image_path is not None:
@@ -197,6 +318,60 @@ class StatusWriter:
         message = payload.get("message", "")
         counts = payload.get("counts") or {}
         qr_path_str = payload.get("qr_path")
+        battery_percentage = payload.get("battery_percentage")
+        battery_charging = payload.get("battery_charging", False)
+        
+        # Helper function to draw battery indicator
+        def _draw_battery_indicator(x: int, y: int, percentage: int | None, charging: bool, size: int = 20) -> None:
+            """Draw a battery icon with percentage and charging indicator."""
+            if percentage is None:
+                return
+            
+            # Battery outline: rectangle with a small tab on the right
+            # Outer rectangle
+            battery_w = size
+            battery_h = int(size * 0.6)
+            tab_w = 2
+            tab_h = int(size * 0.3)
+            
+            # Draw battery body
+            draw.rectangle([x, y, x + battery_w, y + battery_h], outline=0, width=1)
+            # Draw battery tab (right side)
+            tab_x = x + battery_w
+            tab_y = y + (battery_h - tab_h) // 2
+            draw.rectangle([tab_x, tab_y, tab_x + tab_w, tab_y + tab_h], fill=0, outline=0)
+            
+            # Draw battery fill based on percentage
+            if percentage > 0:
+                fill_w = max(1, int((battery_w - 2) * (percentage / 100)))
+                fill_x = x + 1
+                fill_y = y + 1
+                fill_h = battery_h - 2
+                
+                # Color coding: red < 20%, normal otherwise
+                # For monochrome, we'll use different fill patterns
+                if percentage < 20:
+                    # Low battery: use diagonal lines pattern
+                    for i in range(0, fill_w, 2):
+                        draw.line([fill_x + i, fill_y, fill_x + i, fill_y + fill_h], fill=0, width=1)
+                else:
+                    # Normal: solid fill
+                    draw.rectangle([fill_x, fill_y, fill_x + fill_w, fill_y + fill_h], fill=0)
+            
+            # Draw charging indicator (lightning bolt) if charging
+            if charging:
+                # Small lightning bolt in center
+                bolt_x = x + battery_w // 2
+                bolt_y = y + battery_h // 2
+                # Simple lightning: two diagonal lines
+                draw.line([bolt_x - 2, bolt_y - 3, bolt_x, bolt_y], fill=1, width=1)
+                draw.line([bolt_x, bolt_y, bolt_x + 2, bolt_y + 3], fill=1, width=1)
+            
+            # Draw percentage text next to battery (small font)
+            pct_text = f"{percentage}%"
+            text_x = x + battery_w + tab_w + 3
+            text_y = y + (battery_h - 8) // 2  # Center vertically
+            draw.text((text_x, text_y), pct_text, font=small_font, fill=0)
         
         # Try to load QR code if available
         qr_img = None
@@ -248,6 +423,12 @@ class StatusWriter:
                 if len(msg) > 22:
                     msg = msg[:19] + "..."
                 return msg
+            
+            # Battery indicator in top-right corner
+            if battery_percentage is not None:
+                battery_x = w - 50  # Position from right edge
+                battery_y = 4  # Top margin
+                _draw_battery_indicator(battery_x, battery_y, battery_percentage, battery_charging, size=18)
             
             # Header - more compact
             if state == "IDLE":
@@ -384,6 +565,12 @@ class StatusWriter:
             text_x = padding
             text_y = padding
             line_height = 18
+            
+            # Battery indicator in top-right corner
+            if battery_percentage is not None:
+                battery_x = w - 60  # Position from right edge
+                battery_y = padding
+                _draw_battery_indicator(battery_x, battery_y, battery_percentage, battery_charging, size=24)
             
             # Header at top
             header = f"GhostRoll" if not state else f"GhostRoll — {state}"
