@@ -27,19 +27,77 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 def _load_epd():
-    # Provided by Waveshare's Python lib (usually module `waveshare_epd`)
-    # Try different possible import paths
+    # Provided by Waveshare's Python lib
+    # Try different possible import paths depending on installation method
+    import sys
+    from pathlib import Path
+    
+    errors = []
+    
+    # Method 1: waveshare-epd pip package (standard structure)
     try:
         from waveshare_epd import epd2in13_V4  # type: ignore
         return epd2in13_V4.EPD()
-    except ImportError:
-        try:
-            from waveshare_epd import epd2in13v4  # type: ignore
-            return epd2in13v4.EPD()
-        except ImportError:
-            # Try direct import
-            import epd2in13_V4  # type: ignore
-            return epd2in13_V4.EPD()
+    except ImportError as e:
+        errors.append(f"waveshare_epd.epd2in13_V4: {e}")
+    
+    # Method 2: waveshare-epd with lowercase v
+    try:
+        from waveshare_epd import epd2in13v4  # type: ignore
+        return epd2in13v4.EPD()
+    except ImportError as e:
+        errors.append(f"waveshare_epd.epd2in13v4: {e}")
+    
+    # Method 3: Direct import (if installed from GitHub repo)
+    try:
+        import epd2in13_V4  # type: ignore
+        return epd2in13_V4.EPD()
+    except ImportError as e:
+        errors.append(f"epd2in13_V4: {e}")
+    
+    # Method 4: From waveshare_epd subdirectory structure
+    try:
+        from waveshare_epd.epd2in13_V4 import EPD  # type: ignore
+        return EPD()
+    except ImportError as e:
+        errors.append(f"waveshare_epd.epd2in13_V4.EPD: {e}")
+    
+    # Method 5: Try alternative package name
+    try:
+        import waveshare_epd.epd2in13v4 as epd_module  # type: ignore
+        return epd_module.EPD()
+    except ImportError as e:
+        errors.append(f"waveshare_epd.epd2in13v4 (alt): {e}")
+    
+    # Method 6: From local lib directory (if repo cloned)
+    lib_paths = [
+        Path("/usr/local/src/e-Paper/RaspberryPi_JetsonNano/python/lib"),
+        Path("/home/pi/e-Paper/RaspberryPi_JetsonNano/python/lib"),
+        Path(__file__).parent.parent.parent / "lib",
+    ]
+    for lib_path in lib_paths:
+        if lib_path.exists():
+            sys.path.insert(0, str(lib_path))
+            try:
+                import epd2in13_V4  # type: ignore
+                return epd2in13_V4.EPD()
+            except ImportError:
+                continue
+    
+    # If all methods fail, raise a helpful error with diagnostics
+    error_msg = "Could not import epd2in13_V4 module.\n\n"
+    error_msg += "Tried import paths:\n"
+    for err in errors[:3]:  # Show first 3 errors
+        error_msg += f"  - {err}\n"
+    error_msg += "\nTo fix, try one of these:\n"
+    error_msg += "  1. Install via pip: pip3 install waveshare-epd\n"
+    error_msg += "  2. Or clone the repo and copy lib files:\n"
+    error_msg += "     git clone https://github.com/waveshare/e-Paper.git\n"
+    error_msg += "     cp -r e-Paper/RaspberryPi_JetsonNano/python/lib/* /usr/local/lib/python3.*/site-packages/\n"
+    error_msg += "  3. Or install system packages:\n"
+    error_msg += "     sudo apt-get install python3-rpi.gpio python3-spidev\n"
+    
+    raise ImportError(error_msg)
 
 
 def _fit_for_epd(img: Image.Image, *, w: int, h: int) -> Image.Image:
