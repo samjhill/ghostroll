@@ -729,10 +729,16 @@ def run_pipeline(
             write_qr_png(data=url, out_path=qr_png)
             logger.info(f"QR code written: {qr_png}")
             logger.info("\n" + render_qr_ascii(url))
+            # Verify the QR code file is readable before proceeding
+            # This ensures the e-ink display can load it immediately
+            if not qr_png.exists() or qr_png.stat().st_size == 0:
+                logger.warning(f"QR code file {qr_png} appears to be empty or missing after write")
+                qr_png = None
         except QrError as e:
             logger.warning(str(e))
 
         # Update status immediately with URL and QR path so QR code is available in status system right away.
+        # This ensures the QR code shows up on the e-ink display as soon as it's generated.
         if status is not None:
             status.write(
                 Status(
@@ -743,7 +749,7 @@ def run_pipeline(
                     volume=str(volume_path),
                     counts={"discovered": len(all_media), "new": len(new_files), "skipped": skipped},
                     url=url,
-                    qr_path=str(qr_png) if qr_png and qr_png.exists() else None,
+                    qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,
                 )
             )
 
@@ -981,7 +987,7 @@ def run_pipeline(
                     volume=str(volume_path),
                     counts={"uploaded_done": uploaded_ok, "uploaded_total": 0},
                     url=url,
-                    qr_path=str(qr_png) if qr_png and qr_png.exists() else None,
+                    qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,
                 )
             )
         # Note: prefix, uploaded_ok, upload_failures, _upload_one, and url are already defined earlier
@@ -1328,7 +1334,7 @@ def run_pipeline(
                         "uploaded": uploaded_ok,
                     },
                     url=url,
-                    qr_path=str(qr_png) if qr_png and qr_png.exists() else None,
+                    qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,
                 )
             )
 

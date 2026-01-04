@@ -38,6 +38,19 @@ def write_qr_png(*, data: str, out_path: Path) -> None:
     qr.make(fit=True)
     img = qr.make_image(fill_color="black", back_color="white").convert("1")
     img.save(out_path)
+    # Ensure file is fully written and synced to disk before returning
+    # This is critical for e-ink display to pick up the QR code immediately
+    try:
+        import os
+        fd = os.open(str(out_path), os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except Exception:
+        # If sync fails, at least ensure the file handle is closed
+        # The file should still be written, just not guaranteed synced
+        pass
 
 
 def render_qr_ascii(data: str) -> str:

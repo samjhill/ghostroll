@@ -677,6 +677,27 @@ class StatusWriter:
         # Ensure temp file still ends with .png so PIL knows the format.
         tmp = self.image_path.with_suffix(".tmp.png")
         img.save(tmp, format="PNG")
+        # Sync the temp file to disk before atomic replace
+        # This ensures the e-ink display script picks up changes immediately
+        try:
+            fd = os.open(str(tmp), os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except Exception:
+            # If sync fails, continue anyway - file should still be written
+            pass
         tmp.replace(self.image_path)
+        # Also sync the final file to ensure it's visible to the e-ink watcher
+        try:
+            fd = os.open(str(self.image_path), os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except Exception:
+            # If sync fails, continue anyway
+            pass
 
 
