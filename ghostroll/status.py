@@ -327,19 +327,31 @@ class StatusWriter:
                     text_y += small_line_height
             
             # QR code on the right side (if available)
+            # Always show QR code when done (it should always be available then)
             if qr_img:
-                # Calculate available space: leave room for text on left
-                text_area_width = 130  # Reserve space for text content
+                # Calculate QR position - use fixed position from top for better visibility
+                # Reserve space for text on left (130px) and QR on right
+                text_area_width = 130
                 available_width = w - text_area_width - 8
-                available_height = h - text_y - 16  # Leave room for label below QR
-                qr_size = min(70, available_width, available_height)
-                if qr_size > 0:
+                
+                # Position QR code starting at the same Y as text (header area)
+                # This ensures it's always visible regardless of how much text is below
+                qr_start_y = max(40, int(h * 0.33))  # Same as text_y start
+                
+                # Calculate available height - leave room for label and bottom info
+                bottom_space = 20  # Space for "Scan QR" label + bottom info bar
+                available_height = h - qr_start_y - bottom_space
+                
+                # Make QR code as large as possible but ensure it's scannable (min 50px)
+                qr_size = min(75, available_width, available_height)
+                if qr_size >= 50:  # Ensure QR is large enough to scan
                     qr_resized = qr_img.resize((qr_size, qr_size), Image.Resampling.LANCZOS)
                     qr_x = w - qr_size - 6
-                    qr_y = text_y - 2  # Align with text start
+                    qr_y = qr_start_y
                     img.paste(qr_resized, (qr_x, qr_y))
-                    # Label below QR
-                    draw.text((qr_x, qr_y + qr_size + 1), "Scan", font=small_font, fill=0)
+                    # Label below QR, centered
+                    label_x = qr_x + (qr_size // 2) - 12
+                    draw.text((label_x, qr_y + qr_size + 1), "Scan QR", font=small_font, fill=0)
             
             # Bottom info bar
             bottom_y = h - small_line_height - 2
