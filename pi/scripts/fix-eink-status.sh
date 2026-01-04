@@ -52,9 +52,38 @@ echo "ghostroll-eink.service logs (last 20 lines):"
 journalctl -u ghostroll-eink.service -n 20 --no-pager | tail -20 || echo "No logs found"
 
 echo ""
+echo "=== Force Regeneration ==="
+if [[ "${IMAGE_SIZE_CONFIG}" == "250x122" ]] && [[ "${IMAGE_SIZE}" != *"250 x 122"* ]]; then
+    echo "⚠️  Config is 250x122 but image is ${IMAGE_SIZE}"
+    echo ""
+    read -p "Force regenerate status.png? (y/n) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        echo "Deleting old status.png to force regeneration..."
+        rm -f "${STATUS_PNG}"
+        echo "Restarting ghostroll-watch.service..."
+        systemctl restart ghostroll-watch.service
+        echo "Waiting 3 seconds for image generation..."
+        sleep 3
+        if [[ -f "${STATUS_PNG}" ]]; then
+            NEW_SIZE=$(file "${STATUS_PNG}" | grep -oE '[0-9]+ x [0-9]+' || echo "unknown")
+            echo "✓ New image generated: ${NEW_SIZE}"
+            if [[ "${NEW_SIZE}" == *"250 x 122"* ]]; then
+                echo "✓ Image size is correct!"
+            else
+                echo "⚠️  Image size is still wrong. Check ghostroll-watch logs."
+            fi
+        else
+            echo "❌ Image not generated. Check ghostroll-watch.service logs."
+        fi
+    fi
+fi
+
+echo ""
 echo "=== Next Steps ==="
 echo "1. Check pixel statistics in logs above"
-echo "2. If image size is not 250x122, update config and restart ghostroll-watch"
+echo "2. If image size is not 250x122, the script above can force regeneration"
 echo "3. If pixel stats show 0% black, status.png needs to be regenerated"
 echo "4. View full logs: sudo journalctl -u ghostroll-eink.service -f"
+echo "5. Manually regenerate: sudo rm /home/pi/ghostroll/status.png && sudo systemctl restart ghostroll-watch.service"
 
