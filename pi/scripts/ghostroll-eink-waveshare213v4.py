@@ -104,9 +104,18 @@ def _fit_for_epd(img: Image.Image, *, w: int, h: int) -> Image.Image:
     # Ensure monochrome, correct aspect, and orientation.
     # Many users mount the HAT in landscape; we keep the 250x122 native resolution.
     
-    # If already 1-bit, resize directly
+    # If already 1-bit, we need to be careful with resizing to preserve text
     if img.mode == "1":
-        return ImageOps.fit(img, (w, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+        # For 1-bit images, resize using nearest neighbor first to preserve sharp edges,
+        # then optionally apply smoothing. But for text, we want sharp edges.
+        # Convert to grayscale first for better resampling, then back to 1-bit
+        img_gray = img.convert("L")
+        # Use LANCZOS for better quality when downscaling text
+        img_resized = ImageOps.fit(img_gray, (w, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+        # Convert back to 1-bit with threshold to preserve text
+        # Use a threshold that keeps text visible (text is typically black/0 in 1-bit)
+        threshold = 128
+        return img_resized.point(lambda p: 0 if p < threshold else 255, mode="1")
     
     # Convert to grayscale first
     img = img.convert("L")
@@ -269,6 +278,16 @@ def main() -> int:
                         # Log original image info for debugging
                         print(f"ghostroll-eink: source image: {im.size}, mode: {im.mode}", file=sys.stderr)
                         
+                        # Check source image pixel distribution
+                        if im.mode == "1":
+                            src_pixels = list(im.getdata())
+                            src_black = sum(1 for p in src_pixels if p == 0)
+                            src_total = len(src_pixels)
+                            src_black_pct = (src_black / src_total * 100) if src_total > 0 else 0
+                            print(f"ghostroll-eink: source has {src_black} black pixels ({src_black_pct:.1f}%)", file=sys.stderr)
+                            if src_black == 0:
+                                print("ghostroll-eink: WARNING: source image is all white! GhostRoll may not be generating status correctly.", file=sys.stderr)
+                        
                         frame = _fit_for_epd(im, w=epd_w, h=epd_h)
                         
                         # Log processed image info
@@ -284,9 +303,11 @@ def main() -> int:
                             black_pct = (black_count / total * 100) if total > 0 else 0
                             print(f"ghostroll-eink: pixel stats: {black_count} black ({black_pct:.1f}%), {white_count} white (of {total} total)", file=sys.stderr)
                             if black_count == 0:
-                                print("ghostroll-eink: WARNING: image appears to be all white! Check status.png source.", file=sys.stderr)
+                                print("ghostroll-eink: WARNING: processed image is all white! Text may have been lost during resize.", file=sys.stderr)
                             elif black_count < total * 0.01:  # Less than 1% black
-                                print("ghostroll-eink: WARNING: very few black pixels ({:.1f}%), text may not be visible", file=sys.stderr)
+                                print(f"ghostroll-eink: WARNING: very few black pixels ({black_pct:.1f}%), text may not be visible", file=sys.stderr)
+                            elif black_pct > 50:
+                                print(f"ghostroll-eink: NOTE: image is mostly black ({black_pct:.1f}%), may need inversion", file=sys.stderr)
                         
                         # Try different display methods
                         try:
