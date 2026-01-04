@@ -442,15 +442,15 @@ def run_pipeline(
         logger.info(f"Hashing {len(files_to_check)} files to check for duplicates...")
         
         # Hash all files to check for duplicates (parallelized)
-        # Prefer hashing from local originals if available (much faster than SD card)
+        # Always hash from SD card to ensure we detect new/changed files correctly
+        # (even if a local copy exists, the SD card file might be different/new)
         def _hash_one(item: tuple[Path, int]) -> tuple[Path, str, int] | None:
             p, size = item
-            # If file exists in originals, hash that instead (faster, local disk)
-            hash_source = existing_originals.get(p, p)
+            # Always hash from SD card to detect new/changed files
+            # Note: We could optimize by checking if local copy SHA matches SD card,
+            # but for correctness, we always hash from SD card to detect changes
             try:
-                sha, _ = sha256_file(hash_source)
-                if hash_source != p:
-                    logger.debug(f"  Hashed from local copy (faster): {p.name}")
+                sha, _ = sha256_file(p)
                 return (p, sha, size)
             except (OSError, IOError) as e:
                 # File/volume became inaccessible (e.g., SD card removed or corrupted file)
@@ -501,6 +501,8 @@ def run_pipeline(
             existing_shas = {row["sha256"] for row in existing_rows}
             if existing_shas:
                 logger.info(f"Found {len(existing_shas)} files already in database (will skip)")
+            else:
+                logger.debug(f"No files found in database (all {len(all_shas)} are new)")
         
         # Collect new files: all files that aren't duplicates
         new_files: list[tuple[Path, str, int]] = []  # All files are hashed, so sha is never None
@@ -516,15 +518,26 @@ def run_pipeline(
                 logger.debug(f"  Skipped (already ingested): {p.name} (SHA256: {sha[:16]}...)")
                 continue
             
-            # If file was hashed from local originals (crash recovery scenario),
-            # mark it in DB immediately to prevent re-processing on next run
-            # But still include it in new_files so it gets processed/uploaded this run
+            # Check if file was already copied to originals but not in DB (crash recovery scenario)
+            # Only mark as ingested if the local copy has the same SHA as the SD card file
+            # This handles the case where the process crashed after copying but before DB update
             if p in existing_originals:
-                logger.info(f"  File already copied but not in DB - marking as ingested (crash recovery): {p.name}")
-                _db_mark_ingested(conn, sha256=sha, size_bytes=size, source_hint=str(p))
-                crash_recovery_count += 1
-                # Still add to new_files so it gets processed/uploaded
-                # (the file exists in originals but may not be processed/uploaded yet)
+                local_copy = existing_originals[p]
+                try:
+                    local_sha, _ = sha256_file(local_copy)
+                    if local_sha == sha:
+                        # Local copy matches SD card - this is crash recovery
+                        logger.info(f"  File already copied but not in DB - marking as ingested (crash recovery): {p.name}")
+                        _db_mark_ingested(conn, sha256=sha, size_bytes=size, source_hint=str(p))
+                        crash_recovery_count += 1
+                        # Still add to new_files so it gets processed/uploaded
+                        # (the file exists in originals but may not be processed/uploaded yet)
+                    else:
+                        # Local copy differs from SD card - SD card file is new/changed
+                        logger.debug(f"  File in originals but SHA differs - treating SD card file as new: {p.name}")
+                except (OSError, IOError):
+                    # Can't hash local copy - treat SD card file as new
+                    logger.debug(f"  Cannot hash local copy - treating SD card file as new: {p.name}")
             
             new_files.append((p, sha, size))
             logger.info(f"  New file (not in DB): {p.name} ({size:,} bytes, SHA256: {sha[:16]}...)")
@@ -535,12 +548,18 @@ def run_pipeline(
             logger.info(f"Marked {crash_recovery_count} files as ingested in DB (crash recovery - prevents re-hashing on next run)")
 
         logger.info(f"Duplicate check complete: {len(new_files)} new files, {skipped} skipped (already in DB)")
+        logger.debug(f"  Total hashed files: {len(hashed_files)}")
+        logger.debug(f"  Files in database (existing_shas): {len(existing_shas)}")
+        logger.debug(f"  New files to process: {len(new_files)}")
+        logger.debug(f"  Skipped files: {skipped}")
         
         # Log summary of what happened
         if skipped > 0:
             logger.info(f"  → {skipped} files were already ingested (skipped processing)")
         if len(new_files) == 0 and skipped > 0:
             logger.info(f"  → All files already processed - no work needed")
+        elif len(new_files) == 0 and skipped == 0:
+            logger.warning(f"  → No new files detected, but also no skipped files - this is unexpected!")
         
         if not new_files and not always_create_session:
             if status is not None:
