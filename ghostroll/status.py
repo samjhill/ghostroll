@@ -216,11 +216,15 @@ class StatusWriter:
             # QR code on right, text on left
             text_x = 8
             # Start text much lower to ensure all text is visible
-            # For 122px height display, start at ~40-45px from top
-            # This ensures header + 2-3 lines of content + SSH info all fit
-            # Calculate: header (16px) + spacing + 2-3 lines (28-42px) + SSH (14px) = ~70-85px needed
-            # Starting at 40px gives us 82px of usable space (122 - 40 = 82px)
-            text_y = max(40, int(h * 0.33))  # Start at 40px or 33% of height
+            # For 122px height display, we need to fit:
+            #   - Header (title_font ~16px) + 2px spacing = 18px
+            #   - Status message (default_font ~14px) = 14px  
+            #   - Progress line (small_font ~12px) = 12px (optional)
+            #   - SSH info at bottom (h - 14 - 4 = 104px for 122px display)
+            # Total needed: ~44-56px of content
+            # Starting at 45px gives us 77px of usable space before SSH line
+            # This ensures nothing gets cut off at the top
+            text_y = max(45, int(h * 0.37))  # Start at 45px or 37% of height
             line_height = 14
             
             # Header
