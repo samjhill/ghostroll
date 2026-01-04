@@ -508,7 +508,18 @@ def cmd_watch(args: argparse.Namespace) -> int:
                 )
             )
             if rc != 0:
-                logger.error(f"Run failed with exit code {rc}. Waiting for card removal before retrying.")
+                logger.error(f"Run failed with exit code {rc}.")
+                # Check if the volume is still accessible - if not, it's a stale mount
+                # Don't mark it as processed if it's stale, so we don't loop
+                if not _is_mount_accessible(vol):
+                    logger.warning(f"Volume {vol} is no longer accessible (stale mount) - will skip on next check")
+                    # Don't mark as processed, so we don't get stuck in a loop
+                    last_processed_volume = None
+                    last_processed_time = None
+                    # Try to unmount the stale mount
+                    _try_unmount(vol, logger)
+                else:
+                    logger.error(f"Waiting for card removal before retrying.")
             else:
                 logger.info("✅ Image offloading complete. You may remove the SD card now.")
                 # Update status to show completion message on e-ink
