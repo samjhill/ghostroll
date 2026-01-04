@@ -444,6 +444,7 @@ def run_pipeline(
         # Hash all files to check for duplicates (parallelized)
         # Always hash from SD card to ensure we detect new/changed files correctly
         # (even if a local copy exists, the SD card file might be different/new)
+        # Note: Don't use database connection in threads - collect failures and mark them after
         def _hash_one(item: tuple[Path, int]) -> tuple[Path, str, int] | None:
             p, size = item
             # Always hash from SD card to detect new/changed files
@@ -454,13 +455,13 @@ def run_pipeline(
                 return (p, sha, size)
             except (OSError, IOError) as e:
                 # File/volume became inaccessible (e.g., SD card removed or corrupted file)
-                # Mark as failed in database so we don't keep trying
-                _db_mark_failed_file(conn, file_path=p, size_bytes=size, dcim_dir=dcim_dir)
-                logger.warning(f"  Cannot hash file (marked as failed, will skip in future): {p.name}: {e}")
+                # Return None to indicate failure - we'll mark as failed in main thread
+                # Don't use conn here - SQLite connections are not thread-safe
+                logger.warning(f"  Cannot hash file (will mark as failed): {p.name}: {e}")
                 return None
         
         hashed_files: list[tuple[Path, str, int]] = []
-        failed_hash_count = 0
+        failed_files: list[tuple[Path, int]] = []  # Files that failed to hash
         hash_workers = min(4, max(1, cfg.process_workers))
         with ThreadPoolExecutor(max_workers=hash_workers) as ex:
             futures = {ex.submit(_hash_one, item): item for item in files_to_check}
@@ -468,8 +469,9 @@ def run_pipeline(
                 try:
                     result = fut.result()
                     if result is None:
-                        # File became inaccessible, skip it (already marked in DB by _hash_one)
-                        failed_hash_count += 1
+                        # File became inaccessible - collect for marking as failed
+                        item = futures[fut]
+                        failed_files.append((item[0], item[1]))
                         continue
                     p, sha, size = result
                     logger.debug(f"Hashing [{i}/{len(files_to_check)}]: {p.name}")
@@ -478,15 +480,16 @@ def run_pipeline(
                     # Handle any unexpected errors from the future
                     item = futures[fut]
                     logger.debug(f"  Skipped (error hashing): {item[0].name}: {e}")
-                    # Mark as failed
-                    _db_mark_failed_file(conn, file_path=item[0], size_bytes=item[1], dcim_dir=dcim_dir)
-                    failed_hash_count += 1
+                    failed_files.append((item[0], item[1]))
                     continue
         
-        # Commit failed file marks if any
-        if failed_hash_count > 0:
+        # Mark failed files in database (in main thread, not in worker threads)
+        # SQLite connections are not thread-safe and must be used in the thread where created
+        if failed_files:
+            for p, size in failed_files:
+                _db_mark_failed_file(conn, file_path=p, size_bytes=size, dcim_dir=dcim_dir)
             conn.commit()
-            logger.info(f"Marked {failed_hash_count} files as failed in DB (will skip in future runs)")
+            logger.info(f"Marked {len(failed_files)} files as failed in DB (will skip in future runs)")
         
         # Batch check database for duplicates (more efficient than one-by-one)
         all_shas = {sha for (_, sha, _) in hashed_files}
