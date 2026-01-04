@@ -18,12 +18,31 @@ echo "Installing Waveshare e-Paper library..."
 # Clean up any existing temp directory
 rm -rf "${TEMP_DIR}"
 
-# Clone the repository
-echo "Cloning Waveshare e-Paper repository..."
-git clone --depth 1 "${REPO_URL}" "${TEMP_DIR}" || {
-  echo "Failed to clone repository. Check internet connection." >&2
-  exit 1
-}
+# Clone the repository with sparse checkout to only get what we need
+echo "Cloning Waveshare e-Paper repository (Raspberry Pi Python lib only)..."
+mkdir -p "${TEMP_DIR}"
+(
+  cd "${TEMP_DIR}"
+  git init -q
+  git remote add origin "${REPO_URL}"
+  git config core.sparseCheckout true
+  # Use sparse checkout to only get the Python lib directory
+  mkdir -p .git/info
+  echo "RaspberryPi_JetsonNano/python/lib/*" > .git/info/sparse-checkout
+  # Try different branch names (master or main)
+  if ! git pull --depth 1 origin master 2>/dev/null; then
+    if ! git pull --depth 1 origin main 2>/dev/null; then
+      echo "Sparse checkout failed, trying full shallow clone..." >&2
+      cd /
+      rm -rf "${TEMP_DIR}"
+      # Fallback: full shallow clone but we'll only use what we need
+      git clone --depth 1 "${REPO_URL}" "${TEMP_DIR}" || {
+        echo "Failed to clone repository. Check internet connection and disk space." >&2
+        exit 1
+      }
+    fi
+  fi
+)
 
 # Find Python site-packages directory
 PYTHON_VERSION=$(python3 --version | grep -oP '\d+\.\d+' | head -1)

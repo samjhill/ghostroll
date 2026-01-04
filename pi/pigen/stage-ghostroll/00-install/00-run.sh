@@ -35,9 +35,17 @@ python3 -m pip install --break-system-packages -e /usr/local/src/ghostroll
 # Waveshare e-ink Python driver (used by optional ghostroll-eink service)
 # Try pip first, fallback to GitHub repo if that fails
 python3 -m pip install --break-system-packages waveshare-epd || {
-  echo "pip install failed, installing from GitHub repo..."
+  echo "pip install failed, installing from GitHub repo (sparse checkout)..."
   TEMP_DIR=$(mktemp -d)
-  git clone --depth 1 https://github.com/waveshareteam/e-Paper.git "${TEMP_DIR}" || true
+  (
+    cd "${TEMP_DIR}"
+    git init -q
+    git remote add origin https://github.com/waveshareteam/e-Paper.git
+    git config core.sparseCheckout true
+    mkdir -p .git/info
+    echo "RaspberryPi_JetsonNano/python/lib/*" > .git/info/sparse-checkout
+    git pull --depth 1 origin master 2>/dev/null || git pull --depth 1 origin main 2>/dev/null || true
+  )
   if [[ -d "${TEMP_DIR}/RaspberryPi_JetsonNano/python/lib" ]]; then
     PYTHON_VERSION=$(python3 --version | grep -oP '\d+\.\d+' | head -1)
     SITE_PACKAGES="/usr/local/lib/python${PYTHON_VERSION}/site-packages"
