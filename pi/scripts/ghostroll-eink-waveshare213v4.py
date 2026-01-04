@@ -110,6 +110,74 @@ def _fit_for_epd(img: Image.Image, *, w: int, h: int) -> Image.Image:
     return img.convert("1")
 
 
+def _check_spi_setup() -> None:
+    """Check if SPI is enabled and accessible."""
+    import subprocess
+    from pathlib import Path
+    
+    errors = []
+    
+    # Check if SPI is enabled in config
+    config_paths = [
+        Path("/boot/firmware/config.txt"),
+        Path("/boot/config.txt"),
+    ]
+    spi_enabled = False
+    for config_path in config_paths:
+        if config_path.exists():
+            try:
+                config_content = config_path.read_text()
+                if "dtparam=spi=on" in config_content or "dtoverlay=spi" in config_content:
+                    spi_enabled = True
+                    break
+            except Exception:
+                pass
+    
+    if not spi_enabled:
+        errors.append("SPI is not enabled in /boot/config.txt (add: dtparam=spi=on)")
+    
+    # Check if SPI device files exist
+    spi_devices = [
+        Path("/dev/spidev0.0"),
+        Path("/dev/spidev0.1"),
+    ]
+    spi_devices_exist = any(dev.exists() for dev in spi_devices)
+    if not spi_devices_exist:
+        errors.append("SPI device files not found (/dev/spidev0.0 or /dev/spidev0.1)")
+    
+    # Check if user has permission (or running as root)
+    if os.geteuid() != 0:
+        # Check if user is in spi group
+        try:
+            import grp
+            import pwd
+            current_user = pwd.getpwuid(os.getuid()).pw_name
+            try:
+                spi_group = grp.getgrnam("spi")
+                if current_user not in spi_group.gr_mem:
+                    errors.append(f"User '{current_user}' not in 'spi' group (run: sudo usermod -a -G spi {current_user}, then logout/login)")
+            except KeyError:
+                # spi group doesn't exist
+                errors.append("'spi' group not found (SPI may not be properly configured)")
+        except ImportError:
+            # grp/pwd not available (unlikely on Linux, but handle gracefully)
+            pass
+        except Exception:
+            pass
+    
+    if errors:
+        error_msg = "SPI setup issues detected:\n"
+        for err in errors:
+            error_msg += f"  - {err}\n"
+        error_msg += "\nTo fix:\n"
+        error_msg += "  1. Enable SPI: sudo raspi-config -> Interface Options -> SPI -> Enable\n"
+        error_msg += "  2. Or edit /boot/config.txt and add: dtparam=spi=on\n"
+        error_msg += "  3. Reboot after enabling SPI\n"
+        error_msg += "  4. If not running as root, add user to spi group: sudo usermod -a -G spi $USER\n"
+        print(f"ghostroll-eink: {error_msg}", file=sys.stderr)
+        # Don't exit - let it try and fail with a clearer error
+
+
 def main() -> int:
     signal.signal(signal.SIGTERM, _on_signal)
     signal.signal(signal.SIGINT, _on_signal)
@@ -124,6 +192,9 @@ def main() -> int:
     # Waveshare 2.13" V4 (B/W) is 250x122
     epd_w = int(os.environ.get("GHOSTROLL_EINK_WIDTH", "250"))
     epd_h = int(os.environ.get("GHOSTROLL_EINK_HEIGHT", "122"))
+
+    # Check SPI setup before trying to load the driver
+    _check_spi_setup()
 
     try:
         epd = _load_epd()
@@ -142,8 +213,20 @@ def main() -> int:
             except (TypeError, AttributeError):
                 # Some versions don't need parameters
                 epd.init()
+        except OSError as e:
+            if e.errno == 9:  # Bad file descriptor
+                print("ghostroll-eink: SPI communication error (errno 9: bad file descriptor)", file=sys.stderr)
+                print("ghostroll-eink: This usually means SPI is not enabled or accessible.", file=sys.stderr)
+                print("ghostroll-eink: Enable SPI: sudo raspi-config -> Interface Options -> SPI -> Enable", file=sys.stderr)
+                print("ghostroll-eink: Then reboot: sudo reboot", file=sys.stderr)
+                return 3
+            raise
         except Exception as e:
-            print(f"ghostroll-eink: init error (continuing): {e}", file=sys.stderr)
+            print(f"ghostroll-eink: init error: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            # Don't continue if init fails
+            return 3
         
         # Clear display (try different method names)
         try:

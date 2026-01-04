@@ -8,6 +8,8 @@ EnvironmentFile=-/etc/ghostroll.env
 ExecStart=/usr/local/sbin/ghostroll-eink-waveshare213v4.py
 Restart=on-failure
 RestartSec=3
+# Run as root to ensure SPI access (SPI devices require root or spi group membership)
+# Alternative: add User=pi and SupplementaryGroups=spi if running as non-root user
 
 [Install]
 WantedBy=multi-user.target
