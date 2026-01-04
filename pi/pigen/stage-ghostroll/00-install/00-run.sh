@@ -33,7 +33,20 @@ python3 -m pip install -U pip
 # For the appliance image, allow pip to install system-wide.
 python3 -m pip install --break-system-packages -e /usr/local/src/ghostroll
 # Waveshare e-ink Python driver (used by optional ghostroll-eink service)
-python3 -m pip install waveshare-epd || true
+# Try pip first, fallback to GitHub repo if that fails
+python3 -m pip install --break-system-packages waveshare-epd || {
+  echo "pip install failed, installing from GitHub repo..."
+  TEMP_DIR=$(mktemp -d)
+  git clone --depth 1 https://github.com/waveshare/e-Paper.git "${TEMP_DIR}" || true
+  if [[ -d "${TEMP_DIR}/RaspberryPi_JetsonNano/python/lib" ]]; then
+    PYTHON_VERSION=$(python3 --version | grep -oP '\d+\.\d+' | head -1)
+    SITE_PACKAGES="/usr/local/lib/python${PYTHON_VERSION}/site-packages"
+    if [[ -d "${SITE_PACKAGES}" ]]; then
+      cp -r "${TEMP_DIR}/RaspberryPi_JetsonNano/python/lib"/* "${SITE_PACKAGES}/" || true
+    fi
+  fi
+  rm -rf "${TEMP_DIR}" || true
+}
 
 # Install firstboot helper + systemd services
 install -m 0755 /usr/local/src/ghostroll/pi/scripts/ghostroll-firstboot.sh /usr/local/sbin/ghostroll-firstboot.sh
