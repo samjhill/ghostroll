@@ -416,8 +416,8 @@ class StatusWriter:
             # Compact layout for small e-ink displays (e.g., 250x122)
             # Optimized for 250x122: text on left, QR on right (when available)
             text_x = 8
-            # Start text lower to ensure all content is visible
-            text_y = max(40, int(h * 0.33))  # Start at 40px or 33% of height
+            # Start text lower to ensure all content is visible, but leave room for larger QR
+            text_y = max(30, int(h * 0.25))  # Start at 30px or 25% of height (moved up for QR space)
             line_height = 13
             small_line_height = 11
             
@@ -542,29 +542,30 @@ class StatusWriter:
             # Show QR code whenever it's available (not just when done)
             # This ensures it appears as soon as it's generated in the pipeline
             if qr_img:
-                # Calculate QR position - use fixed position from top for better visibility
-                # Reserve space for text on left (130px) and QR on right
-                text_area_width = 130
-                available_width = w - text_area_width - 8
+                # Optimize layout to maximize QR code size for better phone scanning
+                # Reduce text area width to give more space to QR code
+                text_area_width = 110  # Reduced from 130 to give more space for QR
+                available_width = w - text_area_width - 6
                 
-                # Position QR code starting at the same Y as text (header area)
-                # This ensures it's always visible regardless of how much text is below
-                qr_start_y = max(40, int(h * 0.33))  # Same as text_y start
+                # Position QR code starting near the top for maximum size
+                qr_start_y = 8  # Start closer to top to maximize vertical space
                 
-                # Calculate available height - leave room for label and bottom info
-                bottom_space = 20  # Space for "Scan QR" label + bottom info bar
+                # Calculate available height - leave minimal room for label
+                bottom_space = 12  # Reduced space for label
                 available_height = h - qr_start_y - bottom_space
                 
-                # Make QR code as large as possible but ensure it's scannable (min 50px)
-                qr_size = min(75, available_width, available_height)
-                if qr_size >= 50:  # Ensure QR is large enough to scan
+                # Make QR code as large as possible for better scanning (min 80px, prefer 100px+)
+                # For 250x122 display: max width ~134px, max height ~102px
+                qr_size = min(available_width, available_height)
+                # Ensure QR is at least 80px for reliable phone scanning
+                if qr_size >= 80:
                     qr_resized = qr_img.resize((qr_size, qr_size), Image.Resampling.LANCZOS)
-                    qr_x = w - qr_size - 6
+                    qr_x = w - qr_size - 4
                     qr_y = qr_start_y
                     img.paste(qr_resized, (qr_x, qr_y))
-                    # Label below QR, centered
-                    label_x = qr_x + (qr_size // 2) - 12
-                    draw.text((label_x, qr_y + qr_size + 1), "Scan QR", font=small_font, fill=0)
+                    # Label below QR, centered (smaller font to save space)
+                    label_x = qr_x + (qr_size // 2) - 10
+                    draw.text((label_x, qr_y + qr_size + 1), "Scan", font=small_font, fill=0)
             elif qr_path_str:
                 # QR path was provided but image failed to load - log for debugging
                 import sys
@@ -664,7 +665,9 @@ class StatusWriter:
             # QR code - prominently displayed
             if qr_img:
                 # Position QR code: right side for larger displays
-                qr_size = min(200, h - text_y - padding - 40, w - text_x - padding - 20)
+                # Make QR code larger for better phone scanning (prefer 250px+ for large displays)
+                max_qr_size = min(300, h - padding * 2, w - text_x - padding - 20)
+                qr_size = max(150, max_qr_size)  # Ensure at least 150px for large displays
                 qr_resized = qr_img.resize((qr_size, qr_size), Image.Resampling.LANCZOS)
                 qr_x = w - qr_size - padding
                 qr_y = padding
