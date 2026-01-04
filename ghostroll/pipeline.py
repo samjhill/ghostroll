@@ -1337,6 +1337,29 @@ def run_pipeline(
             logger.warning(f"Failed to update S3 status.json to complete: {err}")
 
         if status is not None:
+            # Ensure QR code path is valid for done state
+            # Re-verify the QR code file exists and is readable
+            # If qr_png is None or missing, try to reconstruct the path from session_dir
+            final_qr_path = None
+            if qr_png:
+                try:
+                    if qr_png.exists() and qr_png.stat().st_size > 0:
+                        final_qr_path = str(qr_png)
+                    else:
+                        logger.warning(f"QR code file {qr_png} not found or empty in done state")
+                except Exception as e:
+                    logger.warning(f"Error checking QR code file in done state: {e}")
+            
+            # Fallback: if QR code path is missing but we have a session, try to find it
+            if not final_qr_path and session_id and sp:
+                try:
+                    fallback_qr = sp.session_dir / "share-qr.png"
+                    if fallback_qr.exists() and fallback_qr.stat().st_size > 0:
+                        final_qr_path = str(fallback_qr)
+                        logger.info(f"Found QR code at fallback path: {final_qr_path}")
+                except Exception as e:
+                    logger.debug(f"Could not find QR code at fallback path: {e}")
+            
             status.write(
                 Status(
                     state="done",
@@ -1352,7 +1375,7 @@ def run_pipeline(
                         "uploaded": uploaded_ok,
                     },
                     url=url,
-                    qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,
+                    qr_path=final_qr_path,  # Always include QR path if available
                 )
             )
 

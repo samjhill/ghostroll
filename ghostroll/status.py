@@ -383,31 +383,46 @@ class StatusWriter:
             draw.text((text_x, text_y), pct_text, font=small_font, fill=0)
         
         # Try to load QR code if available
+        # CRITICAL: QR code must be loaded for DONE state - ensure it's always attempted
         qr_img = None
         if qr_path_str:
             try:
                 qr_path = Path(qr_path_str)
+                # Try to load the QR code - this is especially important in DONE state
                 if qr_path.exists():
                     # Verify file is readable and has content
-                    file_size = qr_path.stat().st_size
-                    if file_size > 0:
-                        qr_img = Image.open(qr_path).convert("1")
-                        # Verify image was loaded successfully
-                        qr_img.load()  # Force load to catch any errors
-                    else:
-                        # File exists but is empty - log for debugging
+                    try:
+                        file_size = qr_path.stat().st_size
+                        if file_size > 0:
+                            qr_img = Image.open(qr_path).convert("1")
+                            # Verify image was loaded successfully
+                            qr_img.load()  # Force load to catch any errors
+                            # Log success for debugging (especially in DONE state)
+                            import sys
+                            print(f"ghostroll-status: QR code loaded successfully from {qr_path} ({file_size} bytes)", file=sys.stderr)
+                        else:
+                            # File exists but is empty - log for debugging
+                            import sys
+                            print(f"ghostroll-status: QR code file {qr_path} exists but is empty ({file_size} bytes)", file=sys.stderr)
+                    except OSError as e:
+                        # File might have been deleted or is inaccessible
                         import sys
-                        print(f"ghostroll-status: QR code file {qr_path} exists but is empty ({file_size} bytes)", file=sys.stderr)
+                        print(f"ghostroll-status: Cannot access QR code file {qr_path}: {e}", file=sys.stderr)
                 else:
-                    # File doesn't exist - log for debugging
+                    # File doesn't exist - log for debugging (critical in DONE state)
                     import sys
-                    print(f"ghostroll-status: QR code file {qr_path} does not exist", file=sys.stderr)
+                    print(f"ghostroll-status: QR code file {qr_path} does not exist (state: {state})", file=sys.stderr)
             except Exception as e:
                 # Log the error so we can debug why QR code isn't loading
                 import sys
-                print(f"ghostroll-status: Failed to load QR code from {qr_path_str}: {e}", file=sys.stderr)
+                print(f"ghostroll-status: Failed to load QR code from {qr_path_str} (state: {state}): {e}", file=sys.stderr)
                 import traceback
                 traceback.print_exc(file=sys.stderr)
+        else:
+            # No QR path provided - log this especially in DONE state
+            if state == "DONE":
+                import sys
+                print(f"ghostroll-status: WARNING: No QR code path provided in DONE state", file=sys.stderr)
         
         # Determine layout based on display size
         is_small_display = w < 400  # e-ink displays like 250x122
