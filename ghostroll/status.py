@@ -539,8 +539,9 @@ class StatusWriter:
                     text_y += small_line_height
             
             # QR code on the right side (if available)
-            # Show QR code whenever it's available (not just when done)
-            # This ensures it appears as soon as it's generated in the pipeline
+            # Show QR code whenever it's available, including in DONE state
+            # This ensures it appears as soon as it's generated and remains visible throughout
+            # Priority: QR code is always shown when available, regardless of state
             if qr_img:
                 # Optimize layout to maximize QR code size for better phone scanning
                 # Reduce text area width to give more space to QR code
@@ -548,9 +549,11 @@ class StatusWriter:
                 available_width = w - text_area_width - 6
                 
                 # Position QR code starting near the top for maximum size
+                # Fixed position ensures QR code is always visible, even in DONE state with extra text
                 qr_start_y = 8  # Start closer to top to maximize vertical space
                 
                 # Calculate available height - leave minimal room for label
+                # In DONE state, text may be longer, but QR code position is fixed at top
                 bottom_space = 12  # Reduced space for label
                 available_height = h - qr_start_y - bottom_space
                 
@@ -558,6 +561,7 @@ class StatusWriter:
                 # For 250x122 display: max width ~134px, max height ~102px
                 qr_size = min(available_width, available_height)
                 # Ensure QR is at least 80px for reliable phone scanning
+                # QR code is always displayed when available, including in DONE state
                 if qr_size >= 80:
                     qr_resized = qr_img.resize((qr_size, qr_size), Image.Resampling.LANCZOS)
                     qr_x = w - qr_size - 4
@@ -663,6 +667,7 @@ class StatusWriter:
                     text_y += line_height
             
             # QR code - prominently displayed
+            # Always shown when available, including in DONE state
             if qr_img:
                 # Position QR code: right side for larger displays
                 # Make QR code larger for better phone scanning (prefer 250px+ for large displays)
