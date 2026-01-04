@@ -328,31 +328,34 @@ class StatusWriter:
                 return
             
             # Battery outline: rectangle with a small tab on the right
-            # Outer rectangle
+            # Make it more visible with thicker lines
             battery_w = size
-            battery_h = int(size * 0.6)
-            tab_w = 2
-            tab_h = int(size * 0.3)
+            battery_h = int(size * 0.65)  # Slightly taller for better visibility
+            tab_w = 3  # Wider tab
+            tab_h = int(size * 0.35)
+            outline_width = 2  # Thicker outline for e-ink visibility
             
-            # Draw battery body
-            draw.rectangle([x, y, x + battery_w, y + battery_h], outline=0, width=1)
-            # Draw battery tab (right side)
+            # Draw battery body with thicker outline
+            draw.rectangle([x, y, x + battery_w, y + battery_h], outline=0, width=outline_width)
+            # Draw battery tab (right side) - make it more visible
             tab_x = x + battery_w
             tab_y = y + (battery_h - tab_h) // 2
             draw.rectangle([tab_x, tab_y, tab_x + tab_w, tab_y + tab_h], fill=0, outline=0)
             
             # Draw battery fill based on percentage
             if percentage > 0:
-                fill_w = max(1, int((battery_w - 2) * (percentage / 100)))
-                fill_x = x + 1
-                fill_y = y + 1
-                fill_h = battery_h - 2
+                # Account for thicker outline
+                padding = outline_width
+                fill_w = max(1, int((battery_w - (padding * 2)) * (percentage / 100)))
+                fill_x = x + padding
+                fill_y = y + padding
+                fill_h = battery_h - (padding * 2)
                 
                 # Color coding: red < 20%, normal otherwise
                 # For monochrome, we'll use different fill patterns
                 if percentage < 20:
-                    # Low battery: use diagonal lines pattern
-                    for i in range(0, fill_w, 2):
+                    # Low battery: use diagonal lines pattern for visibility
+                    for i in range(0, fill_w, 3):
                         draw.line([fill_x + i, fill_y, fill_x + i, fill_y + fill_h], fill=0, width=1)
                 else:
                     # Normal: solid fill
@@ -360,17 +363,23 @@ class StatusWriter:
             
             # Draw charging indicator (lightning bolt) if charging
             if charging:
-                # Small lightning bolt in center
+                # More visible lightning bolt in center
                 bolt_x = x + battery_w // 2
                 bolt_y = y + battery_h // 2
-                # Simple lightning: two diagonal lines
-                draw.line([bolt_x - 2, bolt_y - 3, bolt_x, bolt_y], fill=1, width=1)
-                draw.line([bolt_x, bolt_y, bolt_x + 2, bolt_y + 3], fill=1, width=1)
+                # Draw inverted lightning (white on black fill) for visibility
+                if percentage > 0:
+                    # White lightning on black fill
+                    draw.line([bolt_x - 2, bolt_y - 3, bolt_x, bolt_y], fill=1, width=2)
+                    draw.line([bolt_x, bolt_y, bolt_x + 2, bolt_y + 3], fill=1, width=2)
+                else:
+                    # Black lightning on white background
+                    draw.line([bolt_x - 2, bolt_y - 3, bolt_x, bolt_y], fill=0, width=2)
+                    draw.line([bolt_x, bolt_y, bolt_x + 2, bolt_y + 3], fill=0, width=2)
             
             # Draw percentage text next to battery (small font)
             pct_text = f"{percentage}%"
-            text_x = x + battery_w + tab_w + 3
-            text_y = y + (battery_h - 8) // 2  # Center vertically
+            text_x = x + battery_w + tab_w + 4  # More spacing
+            text_y = y + (battery_h // 2) - 4  # Better vertical centering
             draw.text((text_x, text_y), pct_text, font=small_font, fill=0)
         
         # Try to load QR code if available
@@ -425,10 +434,15 @@ class StatusWriter:
                 return msg
             
             # Battery indicator in top-right corner
+            # Calculate position to ensure it fits: battery (24px) + tab (3px) + text (~20px) + margin (5px) = ~52px
             if battery_percentage is not None:
-                battery_x = w - 50  # Position from right edge
-                battery_y = 4  # Top margin
-                _draw_battery_indicator(battery_x, battery_y, battery_percentage, battery_charging, size=18)
+                battery_size = 24  # Larger for better visibility on e-ink
+                # Estimate text width (percentage can be 1-3 digits + %)
+                text_width = 20 if battery_percentage < 100 else 25
+                total_width = battery_size + 3 + 4 + text_width  # battery + tab + spacing + text
+                battery_x = w - total_width - 4  # Position from right with margin
+                battery_y = 2  # Top margin
+                _draw_battery_indicator(battery_x, battery_y, battery_percentage, battery_charging, size=battery_size)
             
             # Header - more compact
             if state == "IDLE":
@@ -568,9 +582,13 @@ class StatusWriter:
             
             # Battery indicator in top-right corner
             if battery_percentage is not None:
-                battery_x = w - 60  # Position from right edge
+                battery_size = 28  # Larger for better visibility
+                # Estimate text width
+                text_width = 25 if battery_percentage < 100 else 30
+                total_width = battery_size + 3 + 4 + text_width
+                battery_x = w - total_width - padding
                 battery_y = padding
-                _draw_battery_indicator(battery_x, battery_y, battery_percentage, battery_charging, size=24)
+                _draw_battery_indicator(battery_x, battery_y, battery_percentage, battery_charging, size=battery_size)
             
             # Header at top
             header = f"GhostRoll" if not state else f"GhostRoll — {state}"
