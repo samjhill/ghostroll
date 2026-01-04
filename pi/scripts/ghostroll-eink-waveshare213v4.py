@@ -103,11 +103,28 @@ def _load_epd():
 def _fit_for_epd(img: Image.Image, *, w: int, h: int) -> Image.Image:
     # Ensure monochrome, correct aspect, and orientation.
     # Many users mount the HAT in landscape; we keep the 250x122 native resolution.
+    
+    # If already 1-bit, resize directly
+    if img.mode == "1":
+        return ImageOps.fit(img, (w, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+    
+    # Convert to grayscale first
     img = img.convert("L")
-    img = ImageOps.autocontrast(img)
+    
+    # Enhance contrast - use a more aggressive approach for text visibility
+    # First, try to enhance contrast
+    img = ImageOps.autocontrast(img, cutoff=2)  # More aggressive contrast
+    
+    # Resize to target dimensions
     img = ImageOps.fit(img, (w, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
-    # Convert to 1-bit (black/white)
-    return img.convert("1")
+    
+    # Convert to 1-bit with threshold to ensure text is visible
+    # Use a threshold that preserves text (typically text is darker)
+    # Threshold of 128 means anything darker than 50% gray becomes black
+    threshold = 128
+    img = img.point(lambda p: 0 if p < threshold else 255, mode="1")
+    
+    return img
 
 
 def _check_spi_setup() -> None:
@@ -249,7 +266,28 @@ def main() -> int:
                     last_mtime = st.st_mtime
                     print(f"ghostroll-eink: updating display...", file=sys.stderr)
                     with Image.open(status_png) as im:
+                        # Log original image info for debugging
+                        print(f"ghostroll-eink: source image: {im.size}, mode: {im.mode}", file=sys.stderr)
+                        
                         frame = _fit_for_epd(im, w=epd_w, h=epd_h)
+                        
+                        # Log processed image info
+                        print(f"ghostroll-eink: processed image: {frame.size}, mode: {frame.mode}", file=sys.stderr)
+                        
+                        # Quick check: count black vs white pixels (for diagnostics)
+                        if frame.mode == "1":
+                            pixels = list(frame.getdata())
+                            # In mode "1", 0 = black, 1 = white (or 255 = white depending on implementation)
+                            black_count = sum(1 for p in pixels if p == 0)
+                            white_count = sum(1 for p in pixels if p != 0)
+                            total = len(pixels)
+                            black_pct = (black_count / total * 100) if total > 0 else 0
+                            print(f"ghostroll-eink: pixel stats: {black_count} black ({black_pct:.1f}%), {white_count} white (of {total} total)", file=sys.stderr)
+                            if black_count == 0:
+                                print("ghostroll-eink: WARNING: image appears to be all white! Check status.png source.", file=sys.stderr)
+                            elif black_count < total * 0.01:  # Less than 1% black
+                                print("ghostroll-eink: WARNING: very few black pixels ({:.1f}%), text may not be visible", file=sys.stderr)
+                        
                         # Try different display methods
                         try:
                             # Method 1: getbuffer then display (most common)
