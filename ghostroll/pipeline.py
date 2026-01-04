@@ -921,12 +921,18 @@ def run_pipeline(
                 futures = [ex.submit(_process_one, t) for t in proc_tasks]
                 last_ui = time.time()
                 for fut in as_completed(futures):
-                    rel_posix, sort_ts, title, subtitle = fut.result()
-                    thumb_href = f"derived/thumbs/{rel_posix}"
-                    share_href = f"derived/share/{rel_posix}"
-                    gallery_items_local.append((thumb_href, share_href, title, subtitle, sort_ts))
-                    processed += 1
-                    logger.debug(f"Processed [{processed}/{len(proc_tasks)}]: {rel_posix}")
+                    try:
+                        rel_posix, sort_ts, title, subtitle = fut.result()
+                        thumb_href = f"derived/thumbs/{rel_posix}"
+                        share_href = f"derived/share/{rel_posix}"
+                        gallery_items_local.append((thumb_href, share_href, title, subtitle, sort_ts))
+                        processed += 1
+                        logger.debug(f"Processed [{processed}/{len(proc_tasks)}]: {rel_posix}")
+                    except Exception as e:
+                        # Handle processing errors for individual files gracefully
+                        # Don't fail the entire pipeline if one file is corrupted
+                        logger.warning(f"Failed to process one image file (skipping): {e}")
+                        continue
                     if status is not None and (time.time() - last_ui) > 0.75:
                         last_ui = time.time()
                         status.write(

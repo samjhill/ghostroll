@@ -196,20 +196,6 @@ def pick_mount_with_dcim(mount_roots: list[Path], *, label: str) -> Path | None:
         logger.info(f"Checking {vol} for DCIM directory at {dcim_path}")
         
         try:
-            # First check if the volume itself is accessible (not a stale mount)
-            # This will catch stale mounts before we try to access DCIM
-            try:
-                # Try to stat the volume root - will fail with ENODEV/EIO if device is gone
-                vol.stat()
-                # Try to get one directory entry - lightweight check for accessibility
-                next(vol.iterdir(), None)
-            except (OSError, IOError) as e:
-                error_code = getattr(e, 'errno', None)
-                if error_code in (5, 19):  # EIO or ENODEV - device is gone (stale mount)
-                    logger.warning(f"  ✗ Volume {vol} appears to be a stale mount (device gone): {e}")
-                    continue
-                # Other errors might be okay, continue
-            
             if not dcim_path.exists():
                 logger.debug(f"  DCIM directory does not exist at {dcim_path}")
                 continue
@@ -219,17 +205,14 @@ def pick_mount_with_dcim(mount_roots: list[Path], *, label: str) -> Path | None:
                 continue
             
             # Try to access the DCIM directory to verify it's not a stale mount
+            # This matches 0.2.0 behavior - simple check, let the pipeline handle errors
             try:
                 dcim_items = list(dcim_path.iterdir())
                 logger.info(f"  ✓ DCIM directory is accessible with {len(dcim_items)} items")
                 logger.info(f"Found valid camera volume: {vol}")
                 return vol
             except (OSError, IOError) as e:
-                error_code = getattr(e, 'errno', None)
-                if error_code in (5, 19):  # EIO or ENODEV - device is gone
-                    logger.warning(f"  ✗ DCIM directory exists but device is gone (stale mount): {e}")
-                else:
-                    logger.warning(f"  ✗ DCIM directory exists but is not accessible: {e}")
+                logger.warning(f"  ✗ DCIM directory exists but is not accessible: {e}")
                 continue
                 
         except Exception as e:

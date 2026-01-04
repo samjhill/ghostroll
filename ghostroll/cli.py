@@ -413,7 +413,6 @@ def cmd_watch(args: argparse.Namespace) -> int:
     )
 
     last_processed_volume: Path | None = None
-    last_processed_time: float | None = None
     card_detected_event = threading.Event()
     detected_volume: Path | None = None
     
@@ -461,7 +460,6 @@ def cmd_watch(args: argparse.Namespace) -> int:
                 if last_processed_volume is not None:
                     logger.debug("No card detected, resetting last processed volume")
                     last_processed_volume = None
-                    last_processed_time = None
                 cands = find_candidate_mounts(cfg.mount_roots, label=cfg.sd_label)
                 if cands:
                     logger.warning(f"Volume detected ({', '.join([str(c) for c in cands])}) but no accessible DCIM directory. Waiting...")
@@ -470,20 +468,12 @@ def cmd_watch(args: argparse.Namespace) -> int:
                 time.sleep(cfg.poll_seconds)
                 continue
 
-            # Skip if this is the same volume we just processed very recently (prevents infinite loop)
-            # But allow re-processing after a short cooldown to detect new files added to the card
-            MIN_REPROCESS_COOLDOWN_SECONDS = 30.0  # Wait 30 seconds before re-processing same volume
-            now = time.time()
+            # Skip if this is the same volume we just processed (prevents infinite loop)
+            # Original 0.2.0 behavior: always skip if same volume, wait for removal
             if last_processed_volume is not None and str(vol) == str(last_processed_volume):
-                if last_processed_time is not None and (now - last_processed_time) < MIN_REPROCESS_COOLDOWN_SECONDS:
-                    logger.debug(f"Skipping {vol} - processed {now - last_processed_time:.1f}s ago (cooldown: {MIN_REPROCESS_COOLDOWN_SECONDS}s). Waiting...")
-                    time.sleep(cfg.poll_seconds)
-                    continue
-                else:
-                    # Cooldown expired - allow re-processing to detect new files
-                    logger.info(f"Re-processing {vol} after cooldown to check for new files...")
-                    last_processed_volume = None
-                    last_processed_time = None
+                logger.debug(f"Skipping {vol} - already processed. Waiting for card removal...")
+                time.sleep(cfg.poll_seconds)
+                continue
 
             logger.info(f"Detected camera volume: {vol}")
             logger.debug(f"Volume path: {vol}")
@@ -508,18 +498,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
                 )
             )
             if rc != 0:
-                logger.error(f"Run failed with exit code {rc}.")
-                # Check if the volume is still accessible - if not, it's a stale mount
-                # Don't mark it as processed if it's stale, so we don't loop
-                if not _is_mount_accessible(vol):
-                    logger.warning(f"Volume {vol} is no longer accessible (stale mount) - will skip on next check")
-                    # Don't mark as processed, so we don't get stuck in a loop
-                    last_processed_volume = None
-                    last_processed_time = None
-                    # Try to unmount the stale mount
-                    _try_unmount(vol, logger)
-                else:
-                    logger.error(f"Waiting for card removal before retrying.")
+                logger.error(f"Run failed with exit code {rc}. Waiting for card removal before retrying.")
             else:
                 logger.info("✅ Image offloading complete. You may remove the SD card now.")
                 # Update status to show completion message on e-ink
@@ -534,9 +513,9 @@ def cmd_watch(args: argparse.Namespace) -> int:
                 )
             
             # Mark this volume as processed to prevent immediate re-processing
+            # This matches 0.2.0 behavior - always mark as processed regardless of success/failure
             last_processed_volume = vol
-            last_processed_time = time.time()
-            logger.debug(f"Marked {vol} as processed at {last_processed_time}")
+            logger.debug(f"Marked {vol} as processed")
             
             # Unmount the volume after processing (whether successful or not)
             logger.debug(f"Unmounting {vol} after processing")
@@ -572,7 +551,6 @@ def cmd_watch(args: argparse.Namespace) -> int:
             
             # Reset last processed volume so we can detect a new card
             last_processed_volume = None
-            last_processed_time = None
             logger.info(f"Waiting for next '{cfg.sd_label}' card...")
             status.write(
                 Status(
