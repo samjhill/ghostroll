@@ -388,9 +388,26 @@ class StatusWriter:
             try:
                 qr_path = Path(qr_path_str)
                 if qr_path.exists():
-                    qr_img = Image.open(qr_path).convert("1")
-            except Exception:
-                pass
+                    # Verify file is readable and has content
+                    file_size = qr_path.stat().st_size
+                    if file_size > 0:
+                        qr_img = Image.open(qr_path).convert("1")
+                        # Verify image was loaded successfully
+                        qr_img.load()  # Force load to catch any errors
+                    else:
+                        # File exists but is empty - log for debugging
+                        import sys
+                        print(f"ghostroll-status: QR code file {qr_path} exists but is empty ({file_size} bytes)", file=sys.stderr)
+                else:
+                    # File doesn't exist - log for debugging
+                    import sys
+                    print(f"ghostroll-status: QR code file {qr_path} does not exist", file=sys.stderr)
+            except Exception as e:
+                # Log the error so we can debug why QR code isn't loading
+                import sys
+                print(f"ghostroll-status: Failed to load QR code from {qr_path_str}: {e}", file=sys.stderr)
+                import traceback
+                traceback.print_exc(file=sys.stderr)
         
         # Determine layout based on display size
         is_small_display = w < 400  # e-ink displays like 250x122
@@ -522,7 +539,8 @@ class StatusWriter:
                     text_y += small_line_height
             
             # QR code on the right side (if available)
-            # Always show QR code when done (it should always be available then)
+            # Show QR code whenever it's available (not just when done)
+            # This ensures it appears as soon as it's generated in the pipeline
             if qr_img:
                 # Calculate QR position - use fixed position from top for better visibility
                 # Reserve space for text on left (130px) and QR on right
@@ -547,6 +565,10 @@ class StatusWriter:
                     # Label below QR, centered
                     label_x = qr_x + (qr_size // 2) - 12
                     draw.text((label_x, qr_y + qr_size + 1), "Scan QR", font=small_font, fill=0)
+            elif qr_path_str:
+                # QR path was provided but image failed to load - log for debugging
+                import sys
+                print(f"ghostroll-status: QR code path provided ({qr_path_str}) but image not loaded - check logs above", file=sys.stderr)
             
             # Bottom info bar
             bottom_y = h - small_line_height - 2
@@ -655,6 +677,10 @@ class StatusWriter:
                 label_width = bbox[2] - bbox[0]
                 label_x = qr_x + (qr_size - label_width) // 2
                 draw.text((label_x, qr_y - line_height - 4), label_text, font=default_font, fill=0)
+            elif qr_path_str:
+                # QR path was provided but image failed to load - log for debugging
+                import sys
+                print(f"ghostroll-status: QR code path provided ({qr_path_str}) but image not loaded - check logs above", file=sys.stderr)
             
             # Session info
             if payload.get("session_id"):

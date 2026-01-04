@@ -763,6 +763,8 @@ def run_pipeline(
                     session_id=session_id,
                     volume=str(volume_path),
                     counts={"discovered": len(all_media), "new": len(new_files), "skipped": skipped},
+                    url=url,  # Include URL so QR code remains visible
+                    qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,  # Include QR path so QR code remains visible
                 )
             )
         copied = 0
@@ -861,6 +863,8 @@ def run_pipeline(
                     session_id=session_id,
                     volume=str(volume_path),
                     counts={"new": len(new_files_with_hashes), "skipped": skipped, "processed_done": 0, "processed_total": 0},
+                    url=url,  # Include URL so QR code remains visible
+                    qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,  # Include QR path so QR code remains visible
                 )
             )
         new_sha_set = {sha for (_p, sha, _s) in new_files_with_hashes}
@@ -921,6 +925,8 @@ def run_pipeline(
                         session_id=session_id,
                         volume=str(volume_path),
                         counts={"new": len(new_files_with_hashes), "skipped": skipped, "processed_done": 0, "processed_total": len(proc_tasks)},
+                        url=url,  # Include URL so QR code remains visible
+                        qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,  # Include QR path so QR code remains visible
                     )
                 )
             with ThreadPoolExecutor(max_workers=max(1, cfg.process_workers)) as ex:
@@ -954,6 +960,8 @@ def run_pipeline(
                                     "processed_done": processed,
                                     "processed_total": len(proc_tasks),
                                 },
+                                url=url,  # Include URL so QR code remains visible
+                                qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,  # Include QR path so QR code remains visible
                             )
                         )
         logger.info(f"Processed JPEGs (share+thumb): {processed}")
@@ -1104,6 +1112,8 @@ def run_pipeline(
                         session_id=session_id,
                         volume=str(volume_path),
                         counts={"uploaded_done": uploaded_ok, "uploaded_total": upload_total_with_early},
+                        url=url,  # Include URL so QR code remains visible
+                        qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,  # Include QR path so QR code remains visible
                     )
                 )
             uploaded_keys: set[str] = set()
@@ -1144,6 +1154,8 @@ def run_pipeline(
                                 session_id=session_id,
                                 volume=str(volume_path),
                                 counts={"uploaded_done": uploaded_ok, "uploaded_total": upload_total_with_early},
+                                url=url,  # Include URL so QR code remains visible
+                                qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,  # Include QR path so QR code remains visible
                             )
                         )
 
@@ -1193,6 +1205,8 @@ def run_pipeline(
                     session_id=session_id,
                     volume=str(volume_path),
                     counts={"presigned_done": 0, "presigned_total": len(thumb_files) + 1},  # +1 for share.zip
+                    url=url,  # Include URL so QR code remains visible
+                    qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,  # Include QR path so QR code remains visible
                 )
             )
 
@@ -1234,6 +1248,8 @@ def run_pipeline(
                                 session_id=session_id,
                                 volume=str(volume_path),
                                 counts={"presigned_done": done, "presigned_total": len(thumb_files) + 1},
+                                url=url,  # Include URL so QR code remains visible
+                                qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,  # Include QR path so QR code remains visible
                             )
                         )
 
@@ -1254,6 +1270,8 @@ def run_pipeline(
                     session_id=session_id,
                     volume=str(volume_path),
                     counts={"presigned_done": len(thumb_files) + 1, "presigned_total": len(thumb_files) + 1},
+                    url=url,  # Include URL so QR code remains visible
+                    qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,  # Include QR path so QR code remains visible
                 )
             )
 
