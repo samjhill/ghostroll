@@ -197,6 +197,14 @@ GhostRoll runs on Linux and writes status outputs that work well for e‑ink:
 - `status.json` (machine-readable)
 - `status.png` (monochrome "now doing X" image)
 
+![Exploded view of components](images/exploded-components.png)
+
+Components:
+- Waveshare 2.13inch E-Ink Display HAT V4 Version Compatible with Raspberry Pi
+- Raspberry Pi 4B
+- SD card reader
+- PiSugar battery
+
 ![Raspberry Pi running GhostRoll with gallery link QR code on e-ink display](images/inprogress.jpg)
 
 Raspberry Pi running this software and uploading images with a gallery link QR code on the e-ink screen.
