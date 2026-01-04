@@ -37,7 +37,7 @@ python3 -m pip install --break-system-packages -e /usr/local/src/ghostroll
 python3 -m pip install --break-system-packages waveshare-epd || {
   echo "pip install failed, installing from GitHub repo..."
   TEMP_DIR=$(mktemp -d)
-  git clone --depth 1 https://github.com/waveshare/e-Paper.git "${TEMP_DIR}" || true
+  git clone --depth 1 https://github.com/waveshareteam/e-Paper.git "${TEMP_DIR}" || true
   if [[ -d "${TEMP_DIR}/RaspberryPi_JetsonNano/python/lib" ]]; then
     PYTHON_VERSION=$(python3 --version | grep -oP '\d+\.\d+' | head -1)
     SITE_PACKAGES="/usr/local/lib/python${PYTHON_VERSION}/site-packages"

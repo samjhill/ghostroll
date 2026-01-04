@@ -9,7 +9,7 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 2
 fi
 
-REPO_URL="https://github.com/waveshare/e-Paper.git"
+REPO_URL="https://github.com/waveshareteam/e-Paper.git"
 TEMP_DIR="/tmp/waveshare-epaper-install"
 LIB_SOURCE="${TEMP_DIR}/RaspberryPi_JetsonNano/python/lib"
 

@@ -92,7 +92,7 @@ def _load_epd():
     error_msg += "\nTo fix, try one of these:\n"
     error_msg += "  1. Install via pip: pip3 install waveshare-epd\n"
     error_msg += "  2. Or clone the repo and copy lib files:\n"
-    error_msg += "     git clone https://github.com/waveshare/e-Paper.git\n"
+    error_msg += "     git clone https://github.com/waveshareteam/e-Paper.git\n"
     error_msg += "     cp -r e-Paper/RaspberryPi_JetsonNano/python/lib/* /usr/local/lib/python3.*/site-packages/\n"
     error_msg += "  3. Or install system packages:\n"
     error_msg += "     sudo apt-get install python3-rpi.gpio python3-spidev\n"
