@@ -195,9 +195,13 @@ Image settings:
 GhostRoll runs on Linux and writes status outputs that work well for e‑ink:
 
 - `status.json` (machine-readable)
-- `status.png` (monochrome “now doing X” image)
+- `status.png` (monochrome "now doing X" image)
 
-If you want a “flash once, boot, and it runs” image with systemd + boot-partition config, follow:
+![Raspberry Pi running GhostRoll with gallery link QR code on e-ink display](images/inprogress.jpg)
+
+Raspberry Pi running this software and uploading images with a gallery link QR code on the e-ink screen.
+
+If you want a "flash once, boot, and it runs" image with systemd + boot-partition config, follow:
 
 - `pi/README.md`
 
