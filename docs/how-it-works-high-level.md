@@ -4,7 +4,7 @@ This document is intended as input to an LLM to generate a visual (architecture 
 
 ## What GhostRoll does (one sentence)
 
-**GhostRoll watches for a camera SD card mount, dedupes and copies new media into a local “session” folder, generates share-friendly JPEG derivatives + a static HTML gallery, uploads assets to a private S3 bucket, then produces a single presigned share URL (and QR) for the session.**
+**GhostRoll watches for a camera SD card mount, dedupes and copies new media into a local "session" folder, generates share-friendly JPEG derivatives + a static HTML gallery, uploads assets to a private S3 bucket, automatically enhances images via AWS Lambda (optional), then produces a single presigned share URL (and QR) for the session with a toggle to view original or enhanced images.**
 
 ## Primary components (diagram “boxes”)
 
@@ -22,6 +22,11 @@ This document is intended as input to an LLM to generate a visual (architecture 
 - **AWS CLI / S3**:
   - Uploads session assets into a **private** bucket/prefix.
   - Generates **presigned URLs** so the bucket can remain private while links work.
+- **AWS Lambda (optional, for enhanced images)**:
+  - Automatically triggered by S3 EventBridge when images are uploaded to `share/` prefix.
+  - Applies automatic lighting enhancements (exposure, contrast, highlights, shadows).
+  - Uploads enhanced versions to `enhanced/` prefix.
+  - Cost-optimized with idempotency checks and early exits.
 - **Status outputs (optional, especially for Raspberry Pi / e-ink)**:
   - `status.json` (machine-readable)
   - `status.png` (simple display image showing current step/progress)
@@ -35,12 +40,20 @@ Typical session contents:
 - `originals/` (copied from card; preserves DCIM structure)
 - `derived/share/` (share-friendly JPEGs)
 - `derived/thumbs/` (small thumbnails)
-- `share.zip` (zip of share images for “download all”)
+- `share.zip` (zip of share images for "download all")
 - `index.html` (local gallery using relative paths)
 - `index.s3.html` (temporary file used to upload an S3-friendly `index.html` embedding presigned URLs)
 - `share.txt` (the final presigned URL to share)
 - `share-qr.png` (QR code for the share link)
 - `ghostroll.log` (session log)
+
+S3 bucket structure (after upload and optional enhancement):
+
+- `sessions/<SESSION_ID>/share/` (original share images)
+- `sessions/<SESSION_ID>/enhanced/` (automatically enhanced versions, if Lambda is enabled)
+- `sessions/<SESSION_ID>/thumbs/` (thumbnails)
+- `sessions/<SESSION_ID>/index.html` (gallery with toggle for original/enhanced)
+- `sessions/<SESSION_ID>/share.zip` (download all)
 
 ## End-to-end flow (sequence-diagram friendly)
 
@@ -98,35 +111,147 @@ Typical session contents:
 18. Generate presigned URLs for:
    - every thumbnail object
    - every share image object
+   - every enhanced image object (if available)
    - `share.zip`
 19. Build `index.s3.html` that embeds those presigned URLs (so the bucket can remain private).
+   - If enhanced images exist, includes toggle button and enhanced URLs as data attributes.
 20. Upload `index.s3.html` to S3 as `.../index.html`.
 
-### 8) Produce the final share link + QR
+### 8) Automatic image enhancement (optional, via AWS Lambda)
 
-21. Generate a presigned URL for the uploaded `.../index.html`.
-22. Write it to `share.txt` and optionally render:
+21. When images are uploaded to `sessions/<SESSION_ID>/share/*.jpg`, S3 EventBridge automatically triggers the Lambda function.
+22. Lambda function:
+   - Downloads the share image from S3.
+   - Applies automatic lighting enhancements (exposure, contrast, highlights, shadows).
+   - Uploads enhanced version to `sessions/<SESSION_ID>/enhanced/*.jpg`.
+   - Includes idempotency check to prevent duplicate processing.
+23. Enhancement happens asynchronously after upload; gallery detects and uses enhanced images when available.
+
+### 9) Produce the final share link + QR
+
+24. Generate a presigned URL for the uploaded `.../index.html`.
+25. Write it to `share.txt` and optionally render:
    - `share-qr.png`
    - an ASCII QR in logs
-23. Write status outputs: **state=done**, **step=done**, including counts and the final URL.
-24. `watch` then waits for SD card removal before returning to idle.
+26. Write status outputs: **state=done**, **step=done**, including counts and the final URL.
+27. `watch` then waits for SD card removal before returning to idle.
+
+### 10) Gallery with enhanced images
+
+28. When users open the gallery:
+   - Gallery automatically detects if enhanced images are available.
+   - If enhanced images exist, a toggle button appears: "✨ Enhanced" / "📷 Original".
+   - Users can switch between views; preference is saved in browser localStorage.
+   - Lightbox displays the selected version (enhanced or original).
 
 ## External dependencies / integrations (for the diagram)
 
 - **AWS CLI** is used for:
   - `s3 cp` uploads
   - `s3 presign` URL generation
+- **AWS Lambda** (optional, for enhanced images):
+  - Automatically triggered by S3 EventBridge on image uploads
+  - Processes images with automatic lighting enhancements
+  - Uses Pillow (PIL) and NumPy for image processing
+  - Cost-optimized with idempotency and early exits
 - **S3 bucket is private**; access is via **presigned URLs** embedded into the generated gallery page.
+- **S3 EventBridge** (optional):
+  - Enables automatic Lambda triggers on S3 object creation
+  - Filters for `sessions/*/share/*.jpg` uploads
 - **SQLite** provides:
   - cross-session file dedupe (by file-content hash)
   - upload idempotency per S3 key (by local file hash)
 
+## Architecture Diagram
+
+```mermaid
+flowchart TB
+    subgraph "Local Processing"
+        A[SD Card Mount] --> B[GhostRoll Watch]
+        B --> C[Pipeline: Scan & Dedupe]
+        C --> D[Copy Originals]
+        D --> E[Generate Share/Thumbs]
+        E --> F[Build Gallery HTML]
+    end
+    
+    subgraph "AWS Services"
+        G[S3 Bucket<br/>Private] 
+        H[Lambda Function<br/>Enhance Images]
+        I[EventBridge<br/>S3 Events]
+    end
+    
+    subgraph "User Experience"
+        J[Share Link<br/>Presigned URL]
+        K[Gallery<br/>with Toggle]
+    end
+    
+    F --> G
+    G -->|Upload share images| I
+    I -->|Triggers| H
+    H -->|Downloads| G
+    H -->|Enhances| H
+    H -->|Uploads enhanced| G
+    G -->|Presigned URLs| J
+    J --> K
+    K -->|Toggle| L[Original View]
+    K -->|Toggle| M[Enhanced View]
+    
+    style H fill:#fff3e0,color:#000
+    style I fill:#e3f2fd,color:#000
+    style K fill:#e8f5e9,color:#000
+```
+
+## Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Watch as GhostRoll Watch
+    participant Pipeline
+    participant DB as SQLite DB
+    participant LocalFS as Local Session
+    participant S3 as S3 Bucket
+    participant EventBridge as S3 EventBridge
+    participant Lambda as Lambda Function
+    participant Gallery as Gallery Browser
+    
+    User->>Watch: Insert SD Card
+    Watch->>Pipeline: Detect & Start
+    Pipeline->>DB: Check for duplicates
+    DB-->>Pipeline: New files list
+    Pipeline->>LocalFS: Copy originals
+    Pipeline->>LocalFS: Generate share/thumbs
+    Pipeline->>LocalFS: Build gallery HTML
+    Pipeline->>S3: Upload share images
+    Pipeline->>S3: Upload thumbs
+    Pipeline->>S3: Upload gallery HTML
+    Pipeline->>S3: Generate presigned URLs
+    Pipeline->>User: Share link + QR code
+    
+    Note over S3,EventBridge: Automatic Enhancement (Optional)
+    S3->>EventBridge: Image uploaded to share/
+    EventBridge->>Lambda: Trigger enhancement
+    Lambda->>S3: Download share image
+    Lambda->>Lambda: Apply enhancements
+    Lambda->>S3: Upload enhanced image
+    
+    User->>Gallery: Open share link
+    Gallery->>S3: Load gallery HTML
+    Gallery->>S3: Check for enhanced images
+    S3-->>Gallery: Enhanced images available
+    Gallery->>User: Show toggle button
+    User->>Gallery: Toggle Enhanced/Original
+    Gallery->>S3: Load selected version
+    S3-->>Gallery: Display image
+```
+
 ## Suggested visuals to request from ChatGPT
 
 - **Architecture diagram (boxes + arrows)**:
-  - SD Card Mount → GhostRoll Watch/Run → Local Session Folder + SQLite DB → AWS CLI → S3 (private) → Presigned URL → Viewer Browser
+  - SD Card Mount → GhostRoll Watch/Run → Local Session Folder + SQLite DB → AWS CLI → S3 (private) → S3 EventBridge → Lambda Function → Enhanced Images → Presigned URL → Viewer Browser (with toggle)
 - **Sequence diagram (swimlanes)**:
-  - Lanes: User, OS Mount, GhostRoll Watch, Pipeline, SQLite, Local FS, AWS CLI, S3
-  - Steps: detect → scan/hash → copy originals → process → build gallery → upload → presign → upload index → presign index → write share.txt/QR
+  - Lanes: User, OS Mount, GhostRoll Watch, Pipeline, SQLite, Local FS, AWS CLI, S3, EventBridge, Lambda, Gallery Browser
+  - Steps: detect → scan/hash → copy originals → process → build gallery → upload → EventBridge trigger → Lambda enhance → upload enhanced → presign → upload index → presign index → write share.txt/QR → gallery with toggle
+
 
 

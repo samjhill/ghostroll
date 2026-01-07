@@ -2,7 +2,7 @@
 
 GhostRoll is a “drop the SD card in and it just works” ingest pipeline:
 
-**SD card → local session → share-friendly JPEGs + thumbnails + gallery → private S3 → one share link**
+**SD card → local session → share-friendly JPEGs + thumbnails + gallery → private S3 → automatic enhancement (optional) → one share link**
 
 It's designed to be:
 
@@ -33,11 +33,19 @@ flowchart TD
     F --> G[Generate share images & thumbnails]
     G --> H[Build HTML gallery]
     H --> I[Upload to private S3 bucket]
-    I --> J[Generate presigned URLs]
-    J --> K[Create share link + QR code]
-    K --> L[Share URL with others]
-    E --> M[Wait for next card]
-    L --> M
+    I --> J[S3 EventBridge triggers Lambda]
+    J --> K[Lambda enhances images automatically]
+    K --> L[Enhanced images stored in enhanced/]
+    L --> M[Generate presigned URLs]
+    M --> N[Create share link + QR code]
+    N --> O[Share URL with others]
+    O --> P[Gallery with toggle: Original/Enhanced]
+    E --> Q[Wait for next card]
+    P --> Q
+    style J fill:#e3f2fd,color:#000
+    style K fill:#fff3e0,color:#000
+    style L fill:#f3e5f5,color:#000
+    style P fill:#e8f5e9,color:#000
 ```
 
 ![GhostRoll device](images/header.png)

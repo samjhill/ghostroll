@@ -7,7 +7,44 @@
 ## High-Level Architecture
 
 ```
-SD Card → Detection → Deduplication → Local Processing → S3 Upload → Share Link
+SD Card → Detection → Deduplication → Local Processing → S3 Upload → [Automatic Enhancement] → Share Link → Gallery with Toggle
+```
+
+```mermaid
+flowchart TB
+    subgraph "Local Processing"
+        A[SD Card] --> B[GhostRoll Watch]
+        B --> C[Scan & Dedupe]
+        C --> D[Copy Originals]
+        D --> E[Generate Share/Thumbs]
+        E --> F[Build Gallery]
+    end
+    
+    subgraph "AWS Services"
+        G[S3 Upload] 
+        H[EventBridge]
+        I[Lambda Function]
+        J[Enhanced Images]
+    end
+    
+    subgraph "User Experience"
+        K[Share Link]
+        L[Gallery]
+        M[Toggle: Original/Enhanced]
+    end
+    
+    F --> G
+    G --> H
+    H -->|Triggers| I
+    I -->|Enhances| J
+    J --> G
+    G --> K
+    K --> L
+    L --> M
+    
+    style I fill:#fff3e0,color:#000
+    style H fill:#e3f2fd,color:#000
+    style M fill:#e8f5e9,color:#000
 ```
 
 ### Key Components
@@ -41,11 +78,18 @@ SD Card → Detection → Deduplication → Local Processing → S3 Upload → S
    - Builds responsive HTML galleries
    - Supports both local (relative paths) and S3 (presigned URLs) versions
 
-7. **AWS Integration** (`ghostroll/aws_cli.py`)
+7. **AWS Integration** (`ghostroll/aws_cli.py`, `ghostroll/aws_boto3.py`)
    - Uses AWS CLI for S3 operations
    - Generates presigned URLs for private bucket access
+   - Checks for enhanced image availability
 
-8. **Status System** (`ghostroll/status.py`)
+8. **Image Enhancement (Optional)** (`aws-lambda/enhance-images/`)
+   - AWS Lambda function for automatic lighting enhancements
+   - Triggered by S3 EventBridge on image uploads
+   - Applies automatic exposure, contrast, highlights, shadows adjustments
+   - Cost-optimized with idempotency and early exits
+
+9. **Status System** (`ghostroll/status.py`)
    - Machine-readable JSON status (`status.json`)
    - E-ink friendly PNG status images (`status.png`)
    - Includes battery monitoring (PiSugar integration)
@@ -248,9 +292,12 @@ SD Card → Detection → Deduplication → Local Processing → S3 Upload → S
 
 1. **S3 Gallery Construction**
    - Builds `index.s3.html` with all presigned URLs embedded
+   - Checks for enhanced images availability (if Lambda is enabled)
+   - Includes enhanced image URLs as data attributes when available
    - Sorts items by capture timestamp
    - Includes "Download all" link (presigned share.zip URL)
    - Gallery works with **private S3 bucket** (access via presigned URLs only)
+   - If enhanced images exist, includes toggle button for switching views
 
 2. **Final Upload**
    - Uploads `index.s3.html` to S3 as `index.html` (replaces loading page)
@@ -261,7 +308,67 @@ SD Card → Detection → Deduplication → Local Processing → S3 Upload → S
    - Includes final counts (discovered, new, skipped, processed, uploaded)
    - QR code path included for e-ink display
 
-### Phase 10: Card Removal Detection
+### Phase 9.5: Automatic Image Enhancement (Optional, Asynchronous)
+
+**Note**: This phase runs automatically in parallel after Phase 7 (S3 Upload), triggered by S3 EventBridge.
+
+1. **S3 EventBridge Trigger**
+   - When images are uploaded to `sessions/<SESSION_ID>/share/*.jpg`, S3 EventBridge automatically triggers Lambda function
+   - EventBridge is configured at bucket level (one-time setup)
+
+2. **Lambda Function Execution**
+   - Function: `ghostroll-enhance-images`
+   - Downloads share image from S3
+   - Validates file is JPEG and in correct prefix
+   - Checks if enhanced version already exists (idempotency)
+
+3. **Image Enhancement**
+   - Applies automatic lighting adjustments:
+     - Auto exposure (histogram-based brightness adjustment)
+     - Auto contrast (optimal black/white points)
+     - Highlights adjustment (recover bright areas)
+     - Shadows adjustment (lift dark areas)
+     - Whites/Blacks adjustment (fine-tune endpoints)
+   - Uses Pillow (PIL) and NumPy for processing
+   - Maintains original image dimensions and quality settings
+
+4. **Enhanced Image Upload**
+   - Uploads enhanced version to `sessions/<SESSION_ID>/enhanced/<filename>.jpg`
+   - Sets appropriate Content-Type and metadata
+   - Includes idempotency check to prevent duplicate processing
+
+5. **Cost Optimizations**
+   - Early exit for non-JPEG files (saves compute)
+   - Early exit for files not in `share/` prefix (filtering)
+   - Idempotency check prevents re-processing (saves ~10% on duplicates)
+   - Efficient error handling prevents wasted processing
+
+6. **Gallery Integration**
+   - Gallery automatically detects enhanced images when presigning URLs
+   - Enhanced images included as data attributes in gallery HTML
+   - Toggle button appears when enhanced versions are available
+   - JavaScript handles switching between original/enhanced views
+   - User preference saved in browser localStorage
+
+### Phase 10: Gallery with Enhanced Images
+
+1. **Enhanced Image Detection**
+   - When gallery loads, checks for enhanced images in S3
+   - Compares available share images with enhanced versions
+   - Marks images with `data-enhanced` attribute when available
+
+2. **Toggle Functionality**
+   - Toggle button appears in gallery header when enhanced images exist
+   - Button states: "✨ Enhanced" / "📷 Original"
+   - Clicking toggles between views
+   - Preference saved in browser localStorage
+
+3. **Lightbox Integration**
+   - Lightbox displays selected version (enhanced or original)
+   - Navigation (arrow keys) maintains selected view
+   - Smooth transitions between images
+
+### Phase 11: Card Removal Detection
 
 1. **Unmount Attempt**
    - After processing completes, attempts to unmount the volume
