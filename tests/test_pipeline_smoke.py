@@ -1,44 +1,14 @@
 from __future__ import annotations
 
 import os
-import stat
-import textwrap
 import zipfile
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 from PIL import Image
 
 from ghostroll.cli import main as ghostroll_main
-
-
-def _write_fake_aws(bin_dir: Path) -> None:
-    aws = bin_dir / "aws"
-    aws.write_text(
-        textwrap.dedent(
-            """\
-            #!/usr/bin/env bash
-            set -euo pipefail
-            if [[ "$1" == "s3" && "$2" == "cp" ]]; then
-              exit 0
-            fi
-            if [[ "$1" == "s3" && "$2" == "presign" ]]; then
-              uri="$3"
-              key="${uri#s3://}"
-              echo "https://example.invalid/presigned?obj=${key}&X-Amz-Signature=fake"
-              exit 0
-            fi
-            if [[ "$1" == "sts" && "$2" == "get-caller-identity" ]]; then
-              echo '{"UserId":"FAKE","Account":"000000000000","Arn":"arn:aws:iam::000000000000:user/fake"}'
-              exit 0
-            fi
-            echo "fake aws: unsupported args: $*" >&2
-            exit 2
-            """
-        ),
-        encoding="utf-8",
-    )
-    aws.chmod(aws.stat().st_mode | stat.S_IEXEC)
 
 
 def _make_jpeg(path: Path) -> None:
@@ -56,11 +26,36 @@ def test_end_to_end_offline_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     dcim = vol / "DCIM" / "100CANON"
     _make_jpeg(dcim / "IMG_0001.JPG")
 
-    # Fake aws CLI
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    _write_fake_aws(bin_dir)
-    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH','')}")
+    # Mock boto3 availability and client
+    monkeypatch.setattr('ghostroll.aws_boto3.BOTO3_AVAILABLE', True)
+    
+    mock_s3_client = MagicMock()
+    
+    # Mock upload_file to succeed (no-op)
+    mock_s3_client.upload_file = MagicMock()
+    
+    # Mock generate_presigned_url to return fake URLs
+    def fake_presign(operation, Params, ExpiresIn):
+        bucket = Params.get('Bucket', '')
+        key = Params.get('Key', '')
+        return f"https://example.invalid/presigned?obj={bucket}/{key}&X-Amz-Signature=fake"
+    
+    mock_s3_client.generate_presigned_url = fake_presign
+    
+    # Mock boto3 module with proper Config and TransferConfig
+    mock_config_class = MagicMock()
+    mock_transfer_config_class = MagicMock()
+    
+    mock_boto3_module = MagicMock()
+    mock_boto3_module.client.return_value = mock_s3_client
+    mock_boto3_module.Config = mock_config_class
+    mock_boto3_module.s3 = MagicMock()
+    mock_boto3_module.s3.transfer = MagicMock()
+    mock_boto3_module.s3.transfer.TransferConfig = mock_transfer_config_class
+    
+    monkeypatch.setattr('ghostroll.aws_boto3.boto3', mock_boto3_module)
+    monkeypatch.setattr('ghostroll.aws_boto3.Config', mock_config_class)
+    monkeypatch.setattr('ghostroll.aws_boto3.TransferConfig', mock_transfer_config_class)
 
     out = tmp_path / "out"
     monkeypatch.setenv("GHOSTROLL_BASE_DIR", str(out))

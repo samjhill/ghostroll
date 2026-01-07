@@ -13,7 +13,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from . import media
-from .aws_cli import AwsCliError, s3_cp, s3_presign
+from .aws_boto3 import AwsBoto3Error, s3_upload_file, s3_presign_url
 from .config import Config
 from .db import connect
 from .exif_utils import extract_basic_exif
@@ -644,7 +644,7 @@ def run_pipeline(
                     logger.debug(f"  Skipped (already uploaded): {local.name}")
                     return ("skipped", None)
                 logger.debug(f"  Uploading {local.name} to s3://{cfg.s3_bucket}/{key}...")
-                s3_cp(local, bucket=cfg.s3_bucket, key=key, retries=3)
+                s3_upload_file(local, bucket=cfg.s3_bucket, key=key, retries=3)
                 _db_mark_uploaded(conn2, s3_key=key, local_sha256=sha, size_bytes=size)
                 conn2.commit()
                 logger.debug(f"  Uploaded: {local.name}")
@@ -653,8 +653,8 @@ def run_pipeline(
             try:
                 outcome, _ = _db_with_retry(cfg.db_path, do)
                 return (outcome == "uploaded", None)
-            except AwsCliError as e:
-                # AwsCliError already includes actionable guidance
+            except AwsBoto3Error as e:
+                # AwsBoto3Error already includes actionable guidance
                 logger.error(f"  Upload failed: {local.name} -> s3://{cfg.s3_bucket}/{key}")
                 logger.error(f"  {str(e)}")
                 return (False, f"{local.name} -> s3://{cfg.s3_bucket}/{key}: {str(e).split(chr(10))[0]}")
@@ -689,7 +689,7 @@ def run_pipeline(
             upload_failures.append(err)
 
         logger.debug(f"Generating presigned URL for status.json...")
-        status_url = s3_presign(
+        status_url = s3_presign_url(
             bucket=cfg.s3_bucket,
             key=status_key,
             expires_in_seconds=cfg.presign_expiry_seconds,
@@ -737,7 +737,7 @@ def run_pipeline(
 
         # Presign the (loading) index now so we can share immediately.
         logger.info(f"Generating presigned share URL for gallery...")
-        url = s3_presign(
+        url = s3_presign_url(
             bucket=cfg.s3_bucket,
             key=s3_index_key,
             expires_in_seconds=cfg.presign_expiry_seconds,
@@ -1075,12 +1075,12 @@ def run_pipeline(
                 thumb_key = f"{prefix}/thumbs/{thumb_rel}"
                 share_key = f"{prefix}/share/{share_rel}"
                 try:
-                    thumb_url = s3_presign(
+                    thumb_url = s3_presign_url(
                         bucket=cfg.s3_bucket,
                         key=thumb_key,
                         expires_in_seconds=cfg.presign_expiry_seconds,
                     )
-                    share_url = s3_presign(
+                    share_url = s3_presign_url(
                         bucket=cfg.s3_bucket,
                         key=share_key,
                         expires_in_seconds=cfg.presign_expiry_seconds,
@@ -1097,7 +1097,7 @@ def run_pipeline(
             download_href = None
             if f"{prefix}/share.zip" in uploaded_keys:
                 try:
-                    download_href = s3_presign(
+                    download_href = s3_presign_url(
                         bucket=cfg.s3_bucket,
                         key=f"{prefix}/share.zip",
                         expires_in_seconds=cfg.presign_expiry_seconds,
@@ -1240,12 +1240,12 @@ def run_pipeline(
             thumb_key = f"{prefix}/thumbs/{rel.as_posix()}"
             logger.debug(f"Presigning: {rel.as_posix()}")
             share_key = f"{prefix}/share/{rel.with_suffix('.jpg').as_posix()}"
-            thumb_url = s3_presign(
+            thumb_url = s3_presign_url(
                 bucket=cfg.s3_bucket,
                 key=thumb_key,
                 expires_in_seconds=cfg.presign_expiry_seconds,
             )
-            share_url = s3_presign(
+            share_url = s3_presign_url(
                 bucket=cfg.s3_bucket,
                 key=share_key,
                 expires_in_seconds=cfg.presign_expiry_seconds,
@@ -1280,7 +1280,7 @@ def run_pipeline(
 
         # Presign the download zip
         logger.debug(f"Presigning share.zip...")
-        download_zip_url = s3_presign(
+        download_zip_url = s3_presign_url(
             bucket=cfg.s3_bucket,
             key=f"{prefix}/share.zip",
             expires_in_seconds=cfg.presign_expiry_seconds,
