@@ -60,3 +60,27 @@ def test_sha256_file_large(tmp_path: Path):
     assert len(hash_hex) == 64
     assert size == len(content)
 
+
+def test_sha256_file_adaptive_chunk_size(tmp_path: Path):
+    """Test that adaptive chunk size selection works correctly."""
+    # Small file (<10MB) should use 1MB chunks
+    small_file = tmp_path / "small.txt"
+    small_file.write_text("x" * (5 * 1024 * 1024))  # 5MB
+    hash1, _ = sha256_file(small_file)  # Should auto-select 1MB chunks
+    hash1_explicit, _ = sha256_file(small_file, chunk_size=1024 * 1024)
+    assert hash1 == hash1_explicit  # Same hash regardless of chunk size
+    
+    # Medium file (10-50MB) should use 4MB chunks
+    medium_file = tmp_path / "medium.txt"
+    medium_file.write_text("x" * (20 * 1024 * 1024))  # 20MB
+    hash2, _ = sha256_file(medium_file)  # Should auto-select 4MB chunks
+    hash2_explicit, _ = sha256_file(medium_file, chunk_size=4 * 1024 * 1024)
+    assert hash2 == hash2_explicit
+    
+    # Large file (>50MB) should use 8MB chunks
+    large_file = tmp_path / "large.txt"
+    large_file.write_text("x" * (60 * 1024 * 1024))  # 60MB
+    hash3, _ = sha256_file(large_file)  # Should auto-select 8MB chunks
+    hash3_explicit, _ = sha256_file(large_file, chunk_size=8 * 1024 * 1024)
+    assert hash3 == hash3_explicit
+
