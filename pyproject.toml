@@ -28,4 +28,11 @@ ghostroll = "ghostroll.cli:main"
 where = ["."]
 include = ["ghostroll*"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["aws-lambda", ".venv", "venv", "__pycache__", ".git"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
 
