@@ -462,7 +462,9 @@ def run_pipeline(
         
         hashed_files: list[tuple[Path, str, int]] = []
         failed_files: list[tuple[Path, int]] = []  # Files that failed to hash
-        hash_workers = min(4, max(1, cfg.process_workers))
+        # Use dedicated hash workers (default 8) for better I/O parallelism
+        # Adaptive: scale down for small batches to avoid overhead
+        hash_workers = min(cfg.hash_workers, max(1, len(files_to_check) // 5))
         with ThreadPoolExecutor(max_workers=hash_workers) as ex:
             futures = {ex.submit(_hash_one, item): item for item in files_to_check}
             for i, fut in enumerate(as_completed(futures), 1):

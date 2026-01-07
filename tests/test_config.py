@@ -111,3 +111,20 @@ def test_config_creates_directories(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert db_dir.exists()
     assert status_dir.exists()
 
+
+def test_hash_workers_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Test that hash_workers is configurable via environment variable."""
+    # Default should be 8
+    monkeypatch.delenv("GHOSTROLL_HASH_WORKERS", raising=False)
+    cfg = load_config()
+    assert cfg.hash_workers == 8
+    
+    # Should respect environment variable
+    monkeypatch.setenv("GHOSTROLL_HASH_WORKERS", "12")
+    cfg = load_config()
+    assert cfg.hash_workers == 12
+    
+    # Should respect function argument override
+    cfg = load_config(hash_workers=16)
+    assert cfg.hash_workers == 16
+

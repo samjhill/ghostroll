@@ -60,6 +60,7 @@ class Config:
     process_workers: int
     upload_workers: int
     presign_workers: int
+    hash_workers: int
 
     @property
     def sessions_dir(self) -> Path:
@@ -91,6 +92,7 @@ def load_config(
     process_workers: int | None = None,
     upload_workers: int | None = None,
     presign_workers: int | None = None,
+    hash_workers: int | None = None,
 ) -> Config:
     env = os.environ
 
@@ -150,6 +152,11 @@ def load_config(
     presign_workers = int(
         presign_workers if presign_workers is not None else env.get("GHOSTROLL_PRESIGN_WORKERS", "8")
     )
+    
+    # Hash workers: default to 8 for better I/O parallelism, but allow override
+    hash_workers = int(
+        hash_workers if hash_workers is not None else env.get("GHOSTROLL_HASH_WORKERS", "8")
+    )
 
     cfg = Config(
         sd_label=sd_label,
@@ -170,6 +177,7 @@ def load_config(
         process_workers=process_workers,
         upload_workers=upload_workers,
         presign_workers=presign_workers,
+        hash_workers=hash_workers,
     )
 
     cfg.base_output_dir.mkdir(parents=True, exist_ok=True)
