@@ -128,3 +128,20 @@ def test_hash_workers_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     cfg = load_config(hash_workers=16)
     assert cfg.hash_workers == 16
 
+
+def test_copy_workers_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Test that copy_workers is configurable via environment variable."""
+    # Default should be 6
+    monkeypatch.delenv("GHOSTROLL_COPY_WORKERS", raising=False)
+    cfg = load_config()
+    assert cfg.copy_workers == 6
+    
+    # Should respect environment variable
+    monkeypatch.setenv("GHOSTROLL_COPY_WORKERS", "10")
+    cfg = load_config()
+    assert cfg.copy_workers == 10
+    
+    # Should respect function argument override
+    cfg = load_config(copy_workers=12)
+    assert cfg.copy_workers == 12
+

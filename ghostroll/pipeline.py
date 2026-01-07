@@ -829,7 +829,9 @@ def run_pipeline(
                     # Re-raise other errors
                     raise
         
-        copy_workers = min(4, max(1, cfg.process_workers))  # Use fewer workers for copying
+        # Use dedicated copy workers (default 6) for better I/O parallelism
+        # Adaptive: scale down for small batches to avoid overhead
+        copy_workers = min(cfg.copy_workers, max(1, len(new_files) // 3))
         db_inserts: list[tuple[str, int, str]] = []  # (sha, size, source_hint)
         
         try:
