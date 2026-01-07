@@ -145,10 +145,31 @@ def _db_mark_failed_file(
 def _db_mark_ingested(
     conn: sqlite3.Connection, *, sha256: str, size_bytes: int, source_hint: str
 ) -> None:
+    """Mark a single file as ingested (for individual inserts)."""
     conn.execute(
         "INSERT OR IGNORE INTO ingested_files(sha256,size_bytes,first_seen_utc,source_hint) "
         "VALUES(?,?,?,?)",
         (sha256, size_bytes, _utc_now(), source_hint),
+    )
+
+
+def _db_mark_ingested_batch(
+    conn: sqlite3.Connection, *, items: list[tuple[str, int, str]]
+) -> None:
+    """Batch insert multiple files as ingested (more efficient than individual inserts).
+    
+    Args:
+        conn: Database connection
+        items: List of (sha256, size_bytes, source_hint) tuples
+    """
+    if not items:
+        return
+    
+    now = _utc_now()
+    conn.executemany(
+        "INSERT OR IGNORE INTO ingested_files(sha256,size_bytes,first_seen_utc,source_hint) "
+        "VALUES(?,?,?,?)",
+        [(sha, size, now, hint) for sha, size, hint in items],
     )
 
 
@@ -516,7 +537,7 @@ def run_pipeline(
         # Check hashed files for duplicates
         # Also handle crash recovery: if files were already copied to originals but not yet in DB,
         # mark them in DB immediately to prevent re-hashing on next run
-        crash_recovery_count = 0
+        crash_recovery_items: list[tuple[str, int, str]] = []
         for p, sha, size in hashed_files:
             if sha in existing_shas:
                 skipped += 1
@@ -533,8 +554,7 @@ def run_pipeline(
                     if local_sha == sha:
                         # Local copy matches SD card - this is crash recovery
                         logger.info(f"  File already copied but not in DB - marking as ingested (crash recovery): {p.name}")
-                        _db_mark_ingested(conn, sha256=sha, size_bytes=size, source_hint=str(p))
-                        crash_recovery_count += 1
+                        crash_recovery_items.append((sha, size, str(p)))
                         # Still add to new_files so it gets processed/uploaded
                         # (the file exists in originals but may not be processed/uploaded yet)
                     else:
@@ -547,10 +567,11 @@ def run_pipeline(
             new_files.append((p, sha, size))
             logger.info(f"  New file (not in DB): {p.name} ({size:,} bytes, SHA256: {sha[:16]}...)")
         
-        # Commit any crash recovery marks
-        if crash_recovery_count > 0:
+        # Batch commit crash recovery marks
+        if crash_recovery_items:
+            _db_mark_ingested_batch(conn, items=crash_recovery_items)
             conn.commit()
-            logger.info(f"Marked {crash_recovery_count} files as ingested in DB (crash recovery - prevents re-hashing on next run)")
+            logger.info(f"Marked {len(crash_recovery_items)} files as ingested in DB (crash recovery - prevents re-hashing on next run)")
 
         logger.info(f"Duplicate check complete: {len(new_files)} new files, {skipped} skipped (already in DB)")
         logger.debug(f"  Total hashed files: {len(hashed_files)}")
@@ -850,9 +871,9 @@ def run_pipeline(
         
         # Batch insert into database (more efficient than one-by-one)
         logger.debug(f"Marking {len(db_inserts)} files as ingested in database...")
-        for sha, size, source_hint in db_inserts:
-            _db_mark_ingested(conn, sha256=sha, size_bytes=size, source_hint=source_hint)
-        conn.commit()
+        if db_inserts:
+            _db_mark_ingested_batch(conn, items=db_inserts)
+            conn.commit()
         logger.info(f"Ingested originals: {copied} files copied ({copied_size:,} bytes), {len(db_inserts)} marked in DB -> {originals_dir}")
 
         # Process: only JPEGs that are newly ingested this run (fast + matches "new since last time" UX).

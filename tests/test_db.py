@@ -77,3 +77,44 @@ def test_db_indexes_created(tmp_path: Path):
 
     conn.close()
 
+
+def test_db_batch_insert(tmp_path: Path):
+    """Test batch insert functionality for better performance."""
+    from ghostroll.pipeline import _db_mark_ingested_batch
+    
+    db_path = tmp_path / "test.db"
+    conn = connect(db_path)
+    
+    # Test batch insert
+    items = [
+        ("sha1", 100, "hint1"),
+        ("sha2", 200, "hint2"),
+        ("sha3", 300, "hint3"),
+    ]
+    _db_mark_ingested_batch(conn, items=items)
+    conn.commit()
+    
+    # Verify all items were inserted
+    cursor = conn.cursor()
+    cursor.execute("SELECT sha256, size_bytes, source_hint FROM ingested_files ORDER BY sha256")
+    rows = cursor.fetchall()
+    assert len(rows) == 3
+    
+    # Verify data integrity
+    assert rows[0]["sha256"] == "sha1"
+    assert rows[0]["size_bytes"] == 100
+    assert rows[0]["source_hint"] == "hint1"
+    
+    # Test empty batch (should not error)
+    _db_mark_ingested_batch(conn, items=[])
+    conn.commit()
+    
+    # Verify no duplicates on re-insert (INSERT OR IGNORE)
+    _db_mark_ingested_batch(conn, items=items)  # Same items again
+    conn.commit()
+    cursor.execute("SELECT COUNT(*) FROM ingested_files")
+    count = cursor.fetchone()[0]
+    assert count == 3  # Still 3, not 6
+    
+    conn.close()
+
