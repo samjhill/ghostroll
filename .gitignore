@@ -10,3 +10,7 @@ incoming/
 .pytest_cache/
 htmlcov/
 
+# AWS SAM build artifacts
+.aws-sam/
+aws-lambda/lambda-deployment.zip
+
