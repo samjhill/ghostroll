@@ -86,3 +86,53 @@ def test_render_jpeg_derivative_error_on_missing_file(tmp_path: Path):
     with pytest.raises(ProcessingError):
         render_jpeg_derivative(src, dst_path=dst, max_long_edge=2048, quality=90)
 
+
+def test_render_jpeg_derivative_resampling_selection(tmp_path: Path):
+    """Test that resampling algorithm is automatically selected based on size."""
+    from PIL import Image
+    
+    src = tmp_path / "src.jpg"
+    
+    # Create a large image
+    img = Image.new("RGB", (4000, 3000), (120, 160, 200))
+    img.save(src, format="JPEG", quality=92)
+    
+    # Thumbnail (<=512px) should use BILINEAR (faster)
+    thumb_dst = tmp_path / "thumb.jpg"
+    render_jpeg_derivative(src, dst_path=thumb_dst, max_long_edge=512, quality=85)
+    assert thumb_dst.exists()
+    
+    # Share image (>512px) should use LANCZOS (high quality)
+    share_dst = tmp_path / "share.jpg"
+    render_jpeg_derivative(src, dst_path=share_dst, max_long_edge=2048, quality=90)
+    assert share_dst.exists()
+    
+    # Both should be valid images
+    with Image.open(thumb_dst) as thumb:
+        assert max(thumb.size) <= 512
+    with Image.open(share_dst) as share:
+        assert max(share.size) == 2048
+
+
+def test_render_jpeg_derivative_explicit_resampling(tmp_path: Path):
+    """Test that explicit resampling parameter is respected."""
+    from PIL import Image
+    
+    src = tmp_path / "src.jpg"
+    img = Image.new("RGB", (4000, 3000), (120, 160, 200))
+    img.save(src, format="JPEG", quality=92)
+    
+    # Explicitly request LANCZOS even for small output
+    dst = tmp_path / "explicit.jpg"
+    render_jpeg_derivative(
+        src, 
+        dst_path=dst, 
+        max_long_edge=512, 
+        quality=85,
+        resampling=Image.Resampling.LANCZOS
+    )
+    assert dst.exists()
+    
+    with Image.open(dst) as result:
+        assert max(result.size) <= 512
+

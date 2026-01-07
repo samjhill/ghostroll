@@ -15,13 +15,29 @@ def render_jpeg_derivative(
     dst_path: Path,
     max_long_edge: int,
     quality: int,
+    resampling: Image.Resampling | None = None,
 ) -> None:
     """
     - Auto-orient using EXIF orientation
     - Resize to max long edge (only shrink)
     - Strip metadata (save without EXIF)
+    
+    Args:
+        src_path: Source image path
+        dst_path: Destination JPEG path
+        max_long_edge: Maximum long edge in pixels (only shrink, never enlarge)
+        quality: JPEG quality (1-100)
+        resampling: Resampling algorithm (default: BILINEAR for thumbnails <=512px, LANCZOS for larger)
     """
     dst_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Choose resampling algorithm: faster BILINEAR for small outputs, high-quality LANCZOS for larger
+    if resampling is None:
+        if max_long_edge <= 512:
+            resampling = Image.Resampling.BILINEAR  # Faster for thumbnails, minimal quality loss
+        else:
+            resampling = Image.Resampling.LANCZOS  # High quality for share images
+    
     try:
         with Image.open(src_path) as im:
             im = ImageOps.exif_transpose(im)
@@ -37,7 +53,7 @@ def render_jpeg_derivative(
             if long_edge > max_long_edge:
                 scale = max_long_edge / float(long_edge)
                 new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
-                im = im.resize(new_size, Image.Resampling.LANCZOS)
+                im = im.resize(new_size, resampling)
 
             im.save(
                 dst_path,
