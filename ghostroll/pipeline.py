@@ -910,26 +910,40 @@ def run_pipeline(
         def _process_one(task: tuple[Path, Path, Path, Path]) -> tuple[str, float, str, str]:
             src, rel, share_out, thumb_out = task
             logger.debug(f"Processing image: {src.name}")
-            if not share_out.exists():
-                logger.debug(f"  Generating share image: {share_out.name} (max {cfg.share_max_long_edge}px, quality {cfg.share_quality})")
-                render_jpeg_derivative(
-                    src,
-                    dst_path=share_out,
-                    max_long_edge=cfg.share_max_long_edge,
-                    quality=cfg.share_quality,
-                )
-            else:
-                logger.debug(f"  Share image exists, skipping: {share_out.name}")
-            if not thumb_out.exists():
-                logger.debug(f"  Generating thumbnail: {thumb_out.name} (max {cfg.thumb_max_long_edge}px, quality {cfg.thumb_quality})")
-                render_jpeg_derivative(
-                    src,
-                    dst_path=thumb_out,
-                    max_long_edge=cfg.thumb_max_long_edge,
-                    quality=cfg.thumb_quality,
-                )
-            else:
-                logger.debug(f"  Thumbnail exists, skipping: {thumb_out.name}")
+            
+            # Generate share and thumb in parallel for better performance
+            def gen_share():
+                if not share_out.exists():
+                    logger.debug(f"  Generating share image: {share_out.name} (max {cfg.share_max_long_edge}px, quality {cfg.share_quality})")
+                    render_jpeg_derivative(
+                        src,
+                        dst_path=share_out,
+                        max_long_edge=cfg.share_max_long_edge,
+                        quality=cfg.share_quality,
+                    )
+                else:
+                    logger.debug(f"  Share image exists, skipping: {share_out.name}")
+            
+            def gen_thumb():
+                if not thumb_out.exists():
+                    logger.debug(f"  Generating thumbnail: {thumb_out.name} (max {cfg.thumb_max_long_edge}px, quality {cfg.thumb_quality})")
+                    render_jpeg_derivative(
+                        src,
+                        dst_path=thumb_out,
+                        max_long_edge=cfg.thumb_max_long_edge,
+                        quality=cfg.thumb_quality,
+                    )
+                else:
+                    logger.debug(f"  Thumbnail exists, skipping: {thumb_out.name}")
+            
+            # Generate both in parallel (2 workers for share + thumb)
+            with ThreadPoolExecutor(max_workers=2) as inner_ex:
+                share_future = inner_ex.submit(gen_share)
+                thumb_future = inner_ex.submit(gen_thumb)
+                # Wait for both to complete
+                share_future.result()
+                thumb_future.result()
+            
             ex = extract_basic_exif(src)
             sort_ts = ex.captured_at.timestamp() if ex.captured_at is not None else 9e18
             title = rel.as_posix()
