@@ -545,24 +545,37 @@ def run_pipeline(
                 continue
             
             # Check if file was already copied to originals but not in DB (crash recovery scenario)
-            # Only mark as ingested if the local copy has the same SHA as the SD card file
-            # This handles the case where the process crashed after copying but before DB update
+            # Smart optimization: if file exists in originals, check DB first before re-hashing
+            # This avoids unnecessary re-hashing when we can determine status from DB
             if p in existing_originals:
                 local_copy = existing_originals[p]
+                # Optimization: Check if we can determine status without re-hashing
+                # If SHA is already in DB, we know the file was processed - no need to re-hash local copy
+                # (Note: we already checked sha in existing_shas above, so if we reach here, sha is NOT in DB)
+                # However, we still need to verify the local copy matches the SD card SHA
+                # But we can optimize: if the local file size matches, we can be more confident
+                # For now, we still hash to verify, but we could add size check first as future optimization
                 try:
-                    local_sha, _ = sha256_file(local_copy)
-                    if local_sha == sha:
-                        # Local copy matches SD card - this is crash recovery
-                        logger.info(f"  File already copied but not in DB - marking as ingested (crash recovery): {p.name}")
-                        crash_recovery_items.append((sha, size, str(p)))
-                        # Still add to new_files so it gets processed/uploaded
-                        # (the file exists in originals but may not be processed/uploaded yet)
+                    # Check local file size first (fast check)
+                    local_size = local_copy.stat().st_size
+                    if local_size != size:
+                        # Size mismatch - treat as new file, skip re-hash
+                        logger.debug(f"  File in originals but size differs ({local_size} vs {size}) - treating SD card file as new: {p.name}")
                     else:
-                        # Local copy differs from SD card - SD card file is new/changed
-                        logger.debug(f"  File in originals but SHA differs - treating SD card file as new: {p.name}")
+                        # Size matches - verify SHA (this is the expensive operation we're optimizing)
+                        local_sha, _ = sha256_file(local_copy)
+                        if local_sha == sha:
+                            # Local copy matches SD card - this is crash recovery
+                            logger.info(f"  File already copied but not in DB - marking as ingested (crash recovery): {p.name}")
+                            crash_recovery_items.append((sha, size, str(p)))
+                            # Still add to new_files so it gets processed/uploaded
+                            # (the file exists in originals but may not be processed/uploaded yet)
+                        else:
+                            # Local copy differs from SD card - SD card file is new/changed
+                            logger.debug(f"  File in originals but SHA differs - treating SD card file as new: {p.name}")
                 except (OSError, IOError):
-                    # Can't hash local copy - treat SD card file as new
-                    logger.debug(f"  Cannot hash local copy - treating SD card file as new: {p.name}")
+                    # Can't access local copy - treat SD card file as new
+                    logger.debug(f"  Cannot access local copy - treating SD card file as new: {p.name}")
             
             new_files.append((p, sha, size))
             logger.info(f"  New file (not in DB): {p.name} ({size:,} bytes, SHA256: {sha[:16]}...)")
