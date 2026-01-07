@@ -1,0 +1,11 @@
+# Files to exclude from Lambda deployment
+*.pyc
+__pycache__/
+*.git*
+events/
+*.md
+.gitignore
+test_*.py
+cost_analysis.py
+*.test.*
+

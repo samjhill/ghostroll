@@ -12,8 +12,9 @@ def _posix(p: Path) -> str:
 def _write_gallery_html(
     *,
     session_id: str,
-    # list of (thumb_src, full_href, title, subtitle)
-    items: list[tuple[str, str, str, str]],
+    # list of (thumb_src, full_href, title, subtitle, enhanced_href)
+    # enhanced_href can be None if not available
+    items: list[tuple[str, str, str, str, str | None]],
     download_href: str | None = None,
     out_path: Path,
 ) -> None:
@@ -97,6 +98,14 @@ def _write_gallery_html(
             f.write(
                 f" · <a class=\"btn\" href=\"{html.escape(download_href)}\">Download all</a>"
             )
+        # Check if any images have enhanced versions
+        has_enhanced = any(item[4] for item in items if len(item) > 4)
+        if has_enhanced:
+            f.write(
+                ' · <button class="btn" id="enhanceToggle" type="button" aria-label="Toggle enhanced images">'
+                '<span id="enhanceToggleText">✨ Enhanced</span>'
+                '</button>'
+            )
         f.write("</div>")
         f.write("</div>\n")
 
@@ -104,15 +113,29 @@ def _write_gallery_html(
             f.write("<div class=\"empty\">No shareable images found.</div>\n")
         else:
             f.write("<div class=\"grid\" id=\"grid\">\n")
-            for i, (thumb_src, full_href, title, subtitle) in enumerate(items):
+            for i, item in enumerate(items):
+                # Handle both old format (4 items) and new format (5 items with enhanced)
+                if len(item) >= 5:
+                    thumb_src, full_href, title, subtitle, enhanced_href = item
+                else:
+                    thumb_src, full_href, title, subtitle = item[:4]
+                    enhanced_href = None
+                
                 # Generate better alt text: use subtitle if available, otherwise descriptive text
                 alt_text = subtitle if subtitle else (f"Gallery image {i + 1}" if not title or "/" in title or "\\" in title else title)
+                
+                # Build data attributes - include both normal and enhanced URLs
+                data_attrs = f'data-full="{html.escape(full_href)}"'
+                if enhanced_href:
+                    data_attrs += f' data-enhanced="{html.escape(enhanced_href)}"'
+                
                 f.write(
-                    "<a class=\"tile\" href=\"{full}\" data-full=\"{full}\" data-cap=\"{cap}\" data-sub=\"{sub}\" "
+                    "<a class=\"tile\" href=\"{full}\" {data_attrs} data-cap=\"{cap}\" data-sub=\"{sub}\" "
                     "data-idx=\"{idx}\" aria-label=\"Open image {num}\">"
                     "<img src=\"{thumb}\" loading=\"lazy\" decoding=\"async\" alt=\"{alt}\">"
                     "</a>\n".format(
                         full=html.escape(full_href),
+                        data_attrs=data_attrs,
                         thumb=html.escape(thumb_src),
                         cap=html.escape(title),
                         sub=html.escape(subtitle),
@@ -161,7 +184,30 @@ def _write_gallery_html(
             "const tiles=[...document.querySelectorAll('#grid .tile')];"
             "let idx=-1;"
             "let lastFocusedElement=null;"
+            "let useEnhanced=false;"
+            "const enhanceToggle=document.getElementById('enhanceToggle');"
+            "const enhanceToggleText=document.getElementById('enhanceToggleText');"
             "if(!lb||!img||!cap||!sub||!counter||!loading) return;"
+            "if(enhanceToggle&&enhanceToggleText){"
+            "  const saved=localStorage.getItem('ghostrollUseEnhanced');"
+            "  useEnhanced=saved==='true';"
+            "  updateEnhanceToggle();"
+            "  enhanceToggle.addEventListener('click',()=>{"
+            "    useEnhanced=!useEnhanced;"
+            "    localStorage.setItem('ghostrollUseEnhanced',useEnhanced.toString());"
+            "    updateEnhanceToggle();"
+            "    if(lb.classList.contains('open')){openAt(idx);}"
+            "  });"
+            "}"
+            "function updateEnhanceToggle(){"
+            "  if(!enhanceToggleText) return;"
+            "  enhanceToggleText.textContent=useEnhanced?'✨ Enhanced':'📷 Original';"
+            "  enhanceToggle.setAttribute('aria-pressed',useEnhanced.toString());"
+            "}"
+            "function getImageUrl(tile){"
+            "  if(useEnhanced&&tile.dataset.enhanced){return tile.dataset.enhanced;}"
+            "  return tile.dataset.full;"
+            "}"
             "function preloadAdjacent(){"
             "if(idx+1<tiles.length){const nextImg=new Image();nextImg.src=tiles[idx+1].dataset.full;}"
             "if(idx-1>=0){const prevImg=new Image();prevImg.src=tiles[idx-1].dataset.full;}"
@@ -179,12 +225,12 @@ def _write_gallery_html(
             "showLoading();"
             "img.onload=function(){hideLoading();img.classList.remove('error');}"
             "img.onerror=function(){hideLoading();img.classList.add('error');img.alt='Failed to load image';}"
-            "img.src=t.dataset.full;"
+            "img.src=getImageUrl(t);"
             "img.alt=t.dataset.cap||'';"
             "cap.textContent=t.dataset.cap||'';"
             "sub.textContent=t.dataset.sub||'';"
             "updateCounter();"
-            "if(downloadBtn){downloadBtn.style.display='inline-flex';downloadBtn.href=t.dataset.full;downloadBtn.download='';}"
+            "if(downloadBtn){downloadBtn.style.display='inline-flex';downloadBtn.href=getImageUrl(t);downloadBtn.download='';}"
             "lb.classList.add('open');"
             "document.body.style.overflow='hidden';"
             "preloadAdjacent();"
@@ -273,12 +319,13 @@ def build_index_html_from_items(
 def build_index_html_presigned(
     *,
     session_id: str,
-    items: list[tuple[str, str, str, str]],
+    items: list[tuple[str, str, str, str, str | None]],
     download_href: str | None = None,
     out_path: Path,
 ) -> None:
     """
-    items: list of (thumb_url, share_url, title, subtitle) — URLs should be fully-qualified.
+    items: list of (thumb_url, share_url, title, subtitle, enhanced_url) — URLs should be fully-qualified.
+    enhanced_url can be None if enhanced version doesn't exist.
     """
     _write_gallery_html(session_id=session_id, items=items, download_href=download_href, out_path=out_path)
 

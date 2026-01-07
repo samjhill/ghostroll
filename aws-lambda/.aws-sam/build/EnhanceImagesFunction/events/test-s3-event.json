@@ -1,0 +1,21 @@
+{
+  "Records": [
+    {
+      "eventVersion": "2.1",
+      "eventSource": "aws:s3",
+      "awsRegion": "us-east-1",
+      "eventTime": "2024-01-01T12:00:00.000Z",
+      "eventName": "ObjectCreated:Put",
+      "s3": {
+        "bucket": {
+          "name": "photo-ingest-project"
+        },
+        "object": {
+          "key": "sessions/shoot-2024-01-01_120000/share/100CANON/IMG_0001.jpg",
+          "size": 1234567
+        }
+      }
+    }
+  ]
+}
+

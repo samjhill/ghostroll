@@ -156,7 +156,18 @@ Contents:
 
 The uploaded `index.html` is generated to work with a **private** bucket: it embeds presigned URLs for the images.
 The gallery includes a responsive grid and a lightbox (click to open, Esc to close, ←/→ to navigate).
-It also includes a **Download all** link for the session’s share images.
+It also includes a **Download all** link for the session's share images.
+
+### Enhanced Images (Optional)
+
+GhostRoll can automatically enhance images with automatic lighting adjustments (similar to Lightroom's auto-settings). When enabled:
+
+- Images are automatically enhanced after upload via AWS Lambda
+- Enhanced versions are stored in `enhanced/` prefix
+- Gallery includes a toggle button to switch between original and enhanced views
+- User preference is saved in browser localStorage
+
+See `aws-lambda/README.md` for deployment instructions.
 
 ## Dedupe / incremental behavior
 

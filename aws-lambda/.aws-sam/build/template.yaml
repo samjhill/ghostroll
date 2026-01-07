@@ -1,0 +1,65 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: GhostRoll post-upload image enhancement Lambda function
+Parameters:
+  S3Bucket:
+    Type: String
+    Description: S3 bucket name where images are stored
+    Default: photo-ingest-project
+  EnhancedPrefix:
+    Type: String
+    Description: S3 prefix for enhanced images (relative to session path)
+    Default: enhanced
+  EnhancementQuality:
+    Type: Number
+    Description: JPEG quality for enhanced images (1-100)
+    Default: 92
+    MinValue: 1
+    MaxValue: 100
+Globals:
+  Function:
+    Timeout: 300
+    MemorySize: 1024
+    Runtime: python3.11
+    Environment:
+      Variables:
+        S3_BUCKET:
+          Ref: S3Bucket
+        ENHANCED_PREFIX:
+          Ref: EnhancedPrefix
+        ENHANCEMENT_QUALITY:
+          Ref: EnhancementQuality
+Resources:
+  EnhanceImagesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: ghostroll-enhance-images
+      CodeUri: EnhanceImagesFunction
+      Handler: lambda_function.lambda_handler
+      Description: Automatically enhance lighting of uploaded GhostRoll images
+      Policies:
+      - S3ReadPolicy:
+          BucketName:
+            Ref: S3Bucket
+      - S3WritePolicy:
+          BucketName:
+            Ref: S3Bucket
+    Metadata:
+      SamResourceId: EnhanceImagesFunction
+Outputs:
+  EnhanceImagesFunctionArn:
+    Description: ARN of the enhance images Lambda function
+    Value:
+      Fn::GetAtt:
+      - EnhanceImagesFunction
+      - Arn
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-EnhanceImagesFunctionArn
+  EnhanceImagesFunctionName:
+    Description: Name of the enhance images Lambda function
+    Value:
+      Ref: EnhanceImagesFunction
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-EnhanceImagesFunctionName

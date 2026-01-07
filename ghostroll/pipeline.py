@@ -13,7 +13,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from . import media
-from .aws_boto3 import AwsBoto3Error, s3_upload_file, s3_presign_url
+from .aws_boto3 import AwsBoto3Error, s3_upload_file, s3_presign_url, s3_object_exists
 from .config import Config
 from .db import connect
 from .exif_utils import extract_basic_exif
@@ -1097,10 +1097,11 @@ def run_pipeline(
                 ready_rel_paths.append((thumb_rel, share_rel, title, subtitle))
 
             # Presign URLs for ready images
-            presigned_ready: list[tuple[str, str, str, str]] = []
+            presigned_ready: list[tuple[str, str, str, str, str | None]] = []
             for thumb_rel, share_rel, title, subtitle in ready_rel_paths:
                 thumb_key = f"{prefix}/thumbs/{thumb_rel}"
                 share_key = f"{prefix}/share/{share_rel}"
+                enhanced_key = f"{prefix}/enhanced/{share_rel}"
                 try:
                     thumb_url = s3_presign_url(
                         bucket=cfg.s3_bucket,
@@ -1112,7 +1113,15 @@ def run_pipeline(
                         key=share_key,
                         expires_in_seconds=cfg.presign_expiry_seconds,
                     )
-                    presigned_ready.append((thumb_url, share_url, title, subtitle))
+                    # Check for enhanced version
+                    enhanced_url = None
+                    if s3_object_exists(bucket=cfg.s3_bucket, key=enhanced_key):
+                        enhanced_url = s3_presign_url(
+                            bucket=cfg.s3_bucket,
+                            key=enhanced_key,
+                            expires_in_seconds=cfg.presign_expiry_seconds,
+                        )
+                    presigned_ready.append((thumb_url, share_url, title, subtitle, enhanced_url))
                 except Exception as e:
                     logger.warning(f"Failed to presign {thumb_key}: {e}")
                     continue
@@ -1262,11 +1271,23 @@ def run_pipeline(
                 )
             )
 
-        def _presign_one(t: Path) -> tuple[str, str, str, str, float]:
+        def _presign_one(t: Path) -> tuple[str, str, str, str, float, str | None]:
             rel = t.relative_to(derived_thumbs_dir)
             thumb_key = f"{prefix}/thumbs/{rel.as_posix()}"
             logger.debug(f"Presigning: {rel.as_posix()}")
             share_key = f"{prefix}/share/{rel.with_suffix('.jpg').as_posix()}"
+            enhanced_key = f"{prefix}/enhanced/{rel.with_suffix('.jpg').as_posix()}"
+            
+            # Check if enhanced version exists
+            enhanced_url = None
+            if s3_object_exists(bucket=cfg.s3_bucket, key=enhanced_key):
+                enhanced_url = s3_presign_url(
+                    bucket=cfg.s3_bucket,
+                    key=enhanced_key,
+                    expires_in_seconds=cfg.presign_expiry_seconds,
+                )
+                logger.debug(f"  Enhanced version available: {rel.as_posix()}")
+            
             thumb_url = s3_presign_url(
                 bucket=cfg.s3_bucket,
                 key=thumb_key,
@@ -1278,7 +1299,7 @@ def run_pipeline(
                 expires_in_seconds=cfg.presign_expiry_seconds,
             )
             title = rel.as_posix()
-            return (thumb_url, share_url, title, "", 9e18)
+            return (thumb_url, share_url, title, "", 9e18, enhanced_url)
 
         if thumb_files:
             with ThreadPoolExecutor(max_workers=max(1, cfg.presign_workers)) as ex:
@@ -1328,7 +1349,8 @@ def run_pipeline(
             )
 
         presigned_items.sort(key=lambda x: (x[4], x[2]))
-        presigned_ui = [(a, b, c, d) for (a, b, c, d, _ts) in presigned_items]
+        # Convert to UI format: (thumb_url, share_url, title, subtitle, enhanced_url)
+        presigned_ui = [(a, b, c, d, e) for (a, b, c, d, _ts, e) in presigned_items]
 
         index_for_s3 = session_dir / "index.s3.html"
         logger.info(f"Building final presigned gallery with {len(presigned_ui)} images...")

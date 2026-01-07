@@ -171,6 +171,27 @@ def s3_upload_file(local_path: Path, *, bucket: str, key: str, retries: int = 3)
         raise AwsBoto3Error(f"Upload failed after {retries} attempts: {last_error}") from last_error
 
 
+def s3_object_exists(*, bucket: str, key: str) -> bool:
+    """Check if an S3 object exists.
+    
+    Args:
+        bucket: S3 bucket name
+        key: S3 object key (path)
+    
+    Returns:
+        True if object exists, False otherwise
+    """
+    client = _get_s3_client()
+    try:
+        client.head_object(Bucket=bucket, Key=key)
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "404":
+            return False
+        # Re-raise other errors
+        raise
+
+
 def s3_presign_url(*, bucket: str, key: str, expires_in_seconds: int) -> str:
     """Generate a presigned URL for an S3 object using boto3.
     
