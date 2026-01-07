@@ -29,11 +29,13 @@ def write_qr_png(*, data: str, out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     qr = qrcode.QRCode(
         version=None,
-        error_correction=qrcode.constants.ERROR_CORRECT_H,  # High error correction for e-ink displays
+        error_correction=qrcode.constants.ERROR_CORRECT_M,  # Medium error correction: balanced between robustness and scanability
+        # Medium provides 15% error correction (sufficient for e-ink artifacts) while keeping QR code less dense
+        # This reduces complexity by ~20% compared to HIGH error correction, making it easier to scan
         # Larger QR for better scan reliability (especially on e-ink / when printed).
         # Increased box_size for higher quality when resized
         box_size=10,
-        border=4,  # Larger border for better scanning on e-ink
+        border=3,  # Reduced from 4 to 3 for slightly less complexity while maintaining scanability
     )
     qr.add_data(data)
     qr.make(fit=True)
