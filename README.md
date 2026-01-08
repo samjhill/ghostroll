@@ -215,6 +215,7 @@ Web interface settings (enabled by default):
 - `GHOSTROLL_WEB_ENABLED` (default `true`) — enable/disable web interface
 - `GHOSTROLL_WEB_HOST` (default `127.0.0.1`) — bind address (use `0.0.0.0` for network access)
 - `GHOSTROLL_WEB_PORT` (default `8080`, `8081` on Pi if WiFi portal enabled) — port number
+- `GHOSTROLL_UPLOAD_RAW_FILES` (default `true`) — upload RAW files as compressed ZIP to S3 (see [RAW Storage Options](docs/RAW_STORAGE_OPTIONS.md))
 
 Image settings:
 

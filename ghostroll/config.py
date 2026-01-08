@@ -67,6 +67,9 @@ class Config:
     web_enabled: bool
     web_host: str
     web_port: int
+    
+    # RAW file upload settings
+    upload_raw_files: bool
 
     @property
     def sessions_dir(self) -> Path:
@@ -103,6 +106,7 @@ def load_config(
     web_enabled: bool | None = None,
     web_host: str | None = None,
     web_port: int | None = None,
+    upload_raw_files: bool | None = None,
 ) -> Config:
     env = os.environ
     
@@ -240,6 +244,17 @@ def load_config(
     else:
         # Default port (8080 on macOS/Linux, 8081 on Pi if WiFi portal uses 8080)
         web_port = 8080
+    
+    # RAW file upload (default: enabled)
+    upload_raw_files_env = env.get("GHOSTROLL_UPLOAD_RAW_FILES", "")
+    if upload_raw_files is not None:
+        upload_raw_files = bool(upload_raw_files)
+    elif upload_raw_files_env:
+        upload_raw_files_env_lower = str(upload_raw_files_env).strip().lower()
+        upload_raw_files = upload_raw_files_env_lower in ("true", "1", "yes", "on", "enabled")
+    else:
+        # Default to enabled
+        upload_raw_files = True
 
     cfg = Config(
         sd_label=sd_label,
@@ -265,6 +280,7 @@ def load_config(
         web_enabled=web_enabled,
         web_host=web_host,
         web_port=web_port,
+        upload_raw_files=upload_raw_files,
     )
 
     cfg.base_output_dir.mkdir(parents=True, exist_ok=True)

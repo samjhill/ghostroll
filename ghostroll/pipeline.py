@@ -81,6 +81,46 @@ def _build_share_zip(*, share_dir: Path, out_zip: Path) -> None:
             zf.write(p, arcname=str(Path("share") / rel))
 
 
+def _build_raw_zip(*, originals_dir: Path, out_zip: Path, logger=None) -> int:
+    """
+    Creates a zip file containing RAW files from originals/DCIM/ directory.
+    Only includes RAW files (not JPEGs).
+    
+    Optimized for Raspberry Pi:
+    - Uses compression level 1 (fastest, still good compression for RAW files)
+    - Processes files in sorted order for predictable progress
+    
+    Returns:
+        Number of RAW files included in the zip.
+    """
+    out_zip.parent.mkdir(parents=True, exist_ok=True)
+    raw_count = 0
+    dcim_dir = originals_dir / "DCIM"
+    
+    if not dcim_dir.exists():
+        if logger:
+            logger.debug(f"No DCIM directory found in originals: {dcim_dir}")
+        return 0
+    
+    # Collect RAW files first (more efficient than checking during iteration)
+    raw_files = sorted([p for p in dcim_dir.rglob("*") if p.is_file() and media.is_raw(p)])
+    
+    if not raw_files:
+        return 0
+    
+    # Use compression level 1 for faster compression on Raspberry Pi
+    # RAW files compress well even at low levels, and speed is more important
+    with zipfile.ZipFile(out_zip, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
+        for i, p in enumerate(raw_files, 1):
+            rel = p.relative_to(dcim_dir)
+            zf.write(p, arcname=str(Path("DCIM") / rel))
+            raw_count += 1
+            if logger and i % 10 == 0:  # Log every 10 files to avoid spam
+                logger.debug(f"Added {i}/{len(raw_files)} RAW files to zip...")
+    
+    return raw_count
+
+
 def _db_has_ingested(conn: sqlite3.Connection, sha256: str) -> bool:
     row = conn.execute("SELECT 1 FROM ingested_files WHERE sha256 = ?", (sha256,)).fetchone()
     return row is not None
@@ -1625,6 +1665,33 @@ def run_pipeline(
                     logger.warning(f"Failed to upload session log: {err}")
             except Exception as e:
                 logger.warning(f"Failed to upload session log: {e}")
+
+        # Upload RAW files as compressed ZIP (last step, doesn't block sharing)
+        # This happens after the gallery link is already shared, so it doesn't delay the user
+        if cfg.upload_raw_files:
+            try:
+                raw_zip = session_dir / "originals-raw.zip"
+                logger.info(f"Compressing RAW files to {raw_zip.name}...")
+                raw_count = _build_raw_zip(originals_dir=originals_dir, out_zip=raw_zip, logger=logger)
+                
+                if raw_count > 0:
+                    zip_size = raw_zip.stat().st_size if raw_zip.exists() else 0
+                    logger.info(f"Created {raw_zip.name} with {raw_count} RAW files ({zip_size:,} bytes)")
+                    
+                    # Upload to S3 in originals/ prefix
+                    raw_zip_key = f"{prefix}/originals/raw.zip"
+                    logger.info(f"Uploading {raw_zip.name} to s3://{cfg.s3_bucket}/{raw_zip_key}...")
+                    uploaded, err = _upload_one((raw_zip, raw_zip_key))
+                    if uploaded:
+                        uploaded_ok += 1
+                        logger.info(f"Uploaded RAW files archive: {raw_zip_key} ({zip_size:,} bytes)")
+                    if err:
+                        logger.warning(f"Failed to upload RAW files archive: {err}")
+                else:
+                    logger.debug("No RAW files found to compress")
+            except Exception as e:
+                # Don't fail the pipeline if RAW upload fails - it's non-critical
+                logger.warning(f"Failed to upload RAW files (non-critical): {type(e).__name__}: {e}")
 
         if status is not None:
             # Ensure QR code path is valid for done state
