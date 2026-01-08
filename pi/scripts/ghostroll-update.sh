@@ -10,6 +10,13 @@ set -euo pipefail
 # For private repos, prefer a read-only deploy key and set:
 # - GHOSTROLL_GIT_SSH_COMMAND='ssh -i /etc/ghostroll_deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new'
 
+# Load environment file if it exists (needed for web interface config)
+if [[ -f /etc/ghostroll.env ]]; then
+    set -a
+    source /etc/ghostroll.env
+    set +a
+fi
+
 AUTO="${GHOSTROLL_AUTO_UPDATE:-0}"
 if [[ "$AUTO" != "1" ]]; then
   exit 0
@@ -86,14 +93,19 @@ fi
 
 echo "ghostroll-update: restarting services..."
 
-# Check if web interface is enabled
+# Check if web interface is enabled (web server runs as part of ghostroll-watch.service)
+WEB_ENABLED="0"
+WEB_HOST="${GHOSTROLL_WEB_HOST:-127.0.0.1}"
+WEB_PORT="${GHOSTROLL_WEB_PORT:-8080}"
 if [[ -f /etc/ghostroll.env ]] && grep -q "^GHOSTROLL_WEB_ENABLED=1" /etc/ghostroll.env; then
-    WEB_HOST="${GHOSTROLL_WEB_HOST:-127.0.0.1}"
-    WEB_PORT="${GHOSTROLL_WEB_PORT:-8080}"
+    WEB_ENABLED="1"
     echo "ghostroll-update: web interface enabled (http://${WEB_HOST}:${WEB_PORT})"
+    echo "ghostroll-update: web server will restart with ghostroll-watch.service"
 fi
 
 # Restart all GhostRoll services (only if they're active/enabled)
+# Note: The web server runs as part of ghostroll-watch.service, so restarting
+# that service will automatically restart the web server.
 SERVICES=(
     "ghostroll-watch.service"
     "ghostroll-eink.service"
@@ -102,11 +114,26 @@ SERVICES=(
 for service in "${SERVICES[@]}"; do
     if systemctl is-enabled "$service" >/dev/null 2>&1 || systemctl is-active "$service" >/dev/null 2>&1; then
         echo "ghostroll-update: restarting $service..."
-        systemctl restart "$service" || echo "ghostroll-update: warning: failed to restart $service" >&2
+        if systemctl restart "$service"; then
+            echo "ghostroll-update: $service restarted successfully"
+        else
+            echo "ghostroll-update: warning: failed to restart $service" >&2
+        fi
     else
         echo "ghostroll-update: skipping $service (not active/enabled)"
     fi
 done
+
+# Verify web server is running if enabled
+if [[ "$WEB_ENABLED" == "1" ]]; then
+    # Give the service a moment to start
+    sleep 1
+    if systemctl is-active ghostroll-watch.service >/dev/null 2>&1; then
+        echo "ghostroll-update: web server should be running at http://${WEB_HOST}:${WEB_PORT}/"
+    else
+        echo "ghostroll-update: warning: ghostroll-watch.service is not active (web server may not be running)" >&2
+    fi
+fi
 
 echo "ghostroll-update: done"
 

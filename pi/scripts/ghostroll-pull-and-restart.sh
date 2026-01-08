@@ -102,15 +102,19 @@ fi
 
 echo "Restarting GhostRoll services..."
 
-# Check if web interface is enabled
+# Check if web interface is enabled (web server runs as part of ghostroll-watch.service)
+WEB_ENABLED="0"
+WEB_HOST="${GHOSTROLL_WEB_HOST:-127.0.0.1}"
+WEB_PORT="${GHOSTROLL_WEB_PORT:-8080}"
 if grep -q "^GHOSTROLL_WEB_ENABLED=1" /etc/ghostroll.env 2>/dev/null; then
-    WEB_HOST="${GHOSTROLL_WEB_HOST:-127.0.0.1}"
-    WEB_PORT="${GHOSTROLL_WEB_PORT:-8080}"
+    WEB_ENABLED="1"
     echo "  Web interface enabled: http://${WEB_HOST}:${WEB_PORT}"
     echo "    (Web server starts automatically with ghostroll-watch.service)"
 fi
 
 # Restart all GhostRoll services (only if they're active/enabled)
+# Note: The web server runs as part of ghostroll-watch.service, so restarting
+# that service will automatically restart the web server.
 SERVICES=(
     "ghostroll-watch.service"
     "ghostroll-eink.service"
@@ -119,11 +123,31 @@ SERVICES=(
 for service in "${SERVICES[@]}"; do
     if systemctl is-enabled "$service" >/dev/null 2>&1 || systemctl is-active "$service" >/dev/null 2>&1; then
         echo "  Restarting $service..."
-        systemctl restart "$service" || echo "    Warning: Failed to restart $service" >&2
+        if systemctl restart "$service"; then
+            echo "    ✓ $service restarted successfully"
+        else
+            echo "    ✗ Warning: Failed to restart $service" >&2
+        fi
     else
         echo "  Skipping $service (not active/enabled)"
     fi
 done
 
+# Verify web server is running if enabled
+if [[ "$WEB_ENABLED" == "1" ]]; then
+    # Give the service a moment to start
+    sleep 1
+    if systemctl is-active ghostroll-watch.service >/dev/null 2>&1; then
+        echo ""
+        echo "  Web server should be running at: http://${WEB_HOST}:${WEB_PORT}/"
+        echo "  To check web server status: sudo journalctl -u ghostroll-watch.service -n 20 --no-pager | grep -i web"
+    else
+        echo ""
+        echo "  ⚠ Warning: ghostroll-watch.service is not active (web server may not be running)" >&2
+        echo "    Check logs: sudo journalctl -u ghostroll-watch.service -n 50 --no-pager"
+    fi
+fi
+
+echo ""
 echo "Done! GhostRoll services restarted."
 
