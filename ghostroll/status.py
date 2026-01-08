@@ -596,6 +596,10 @@ class StatusWriter:
             line_height = 15  # Increased from 13 for better readability
             small_line_height = 12  # Increased from 11
             
+            # Initialize text_area_width early to avoid UnboundLocalError
+            # Default to full width if no QR code, otherwise set by QR code layout
+            text_area_width = w - 12  # Default: full width minus margins
+            
             # Helper to format user-friendly messages
             def _format_message(msg: str, state: str) -> str:
                 """Make messages more concise and user-friendly."""
@@ -716,10 +720,6 @@ class StatusWriter:
                         vol_name = vol_name[:11] + "..."
                     draw.text((text_x, text_y), f"Card: {vol_name}", font=small_font, fill=0)
                     text_y += small_line_height
-            
-            # Initialize text_area_width for bottom info calculations
-            # Default to full width if no QR code, otherwise set by QR code layout
-            text_area_width = w - 12  # Default: full width minus margins
             
             # QR code on the right side (if available)
             # Show QR code whenever it's available, including in DONE state
