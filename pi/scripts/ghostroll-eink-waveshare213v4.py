@@ -136,36 +136,40 @@ def _fit_for_epd(img: Image.Image, *, w: int, h: int) -> Image.Image:
         width, height = img.size
         aspect_ratio = max(width, height) / min(width, height) if min(width, height) > 0 else 1
         
-        # QR code detection criteria:
+        # QR code detection criteria (improved for better detection):
         # 1. Very high contrast (nearly pure black/white)
-        # 2. Black pixel percentage in typical QR range (25-55%)
+        # 2. Black pixel percentage in typical QR range (20-60% - wider range for reliability)
         # 3. Reasonable aspect ratio (QR codes are square, but may be in rectangular status images)
         has_qr_likely = (
-            contrast_range > 220 and  # Very high contrast (QR codes are pure black/white)
-            25 < dark_pct < 55 and  # Typical QR code black percentage
-            aspect_ratio < 3.0  # Not extremely wide/tall (QR is usually square-ish)
+            contrast_range > 200 and  # Very high contrast (QR codes are pure black/white)
+            20 < dark_pct < 60 and  # Typical QR code black percentage (wider range)
+            aspect_ratio < 4.0  # Not extremely wide/tall (QR is usually square-ish)
         )
         
         if has_qr_likely:
             # QR code detected - preserve exact pattern with sharp thresholding
-            # Resize with LANCZOS for quality, then apply sharp threshold
-            # Important: resize before thresholding to avoid artifacts
-            img_resized = ImageOps.fit(img, (w, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+            # For e-ink, use NEAREST neighbor resampling to preserve sharp edges
+            # This is critical for QR code scanning - any blur makes scanning fail
+            img_resized = img.resize((w, h), Image.Resampling.NEAREST)
             
             # Sharp threshold at exactly 128 to preserve black/white distinction
-            # This ensures QR code patterns remain clear and scannable
-            img_1bit = img_resized.point(lambda p: 0 if p < 128 else 255, mode="1")
+            # This ensures QR code patterns remain clear and scannable on e-ink
+            if img_resized.mode != "1":
+                img_1bit = img_resized.point(lambda p: 0 if p < 128 else 255, mode="1")
+            else:
+                img_1bit = img_resized
             return img_1bit
     
-    # For text/images without QR codes, enhance readability
-    # Enhance contrast aggressively to make sparse text more visible
-    img = ImageOps.autocontrast(img, cutoff=1)
+    # For text/images without QR codes, enhance readability for e-ink
+    # Enhance contrast aggressively to make sparse text more visible on e-ink displays
+    img = ImageOps.autocontrast(img, cutoff=2)  # Increased cutoff for better e-ink contrast
     
-    # Resize to target dimensions using high-quality resampling
+    # Resize to target dimensions using high-quality resampling for text
+    # LANCZOS is better for text than NEAREST (which is only for QR codes)
     img = ImageOps.fit(img, (w, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
     
-    # Adaptive thresholding for text readability
-    # Check pixel distribution to determine appropriate threshold
+    # Adaptive thresholding for text readability on e-ink
+    # E-ink displays need higher contrast for readability
     pixels = list(img.getdata())
     if pixels:
         min_val = min(pixels)
@@ -174,17 +178,21 @@ def _fit_for_epd(img: Image.Image, *, w: int, h: int) -> Image.Image:
         dark_pixels = sum(1 for p in pixels if p < 200)
         dark_pct = (dark_pixels / len(pixels)) * 100
         
+        # Improved thresholds for e-ink readability
         if dark_pct < 2.0:  # Very sparse text (< 2% dark)
-            # Very low threshold to capture faint text
-            threshold = 240  # Anything darker than ~94% white becomes black
+            # Very low threshold to capture faint text on e-ink
+            threshold = 230  # Anything darker than ~90% white becomes black (more aggressive)
         elif dark_pct < 5.0:  # Sparse text (< 5% dark)
-            threshold = 200  # Anything darker than ~78% white becomes black
+            threshold = 180  # Anything darker than ~70% white becomes black (more aggressive)
+        elif dark_pct < 15.0:  # Moderate text (< 15% dark)
+            threshold = 140  # Slightly lower threshold for better e-ink contrast
         else:
             threshold = 128  # Normal threshold for typical text/images
     else:
         threshold = 128
     
-    # Convert to 1-bit with the determined threshold
+    # Convert to 1-bit with the determined threshold for e-ink
+    # Use sharper thresholding for better e-ink readability
     img_1bit = img.point(lambda p: 0 if p < threshold else 255, mode="1")
     
     return img_1bit

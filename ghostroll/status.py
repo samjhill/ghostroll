@@ -481,19 +481,19 @@ class StatusWriter:
         battery_percentage = payload.get("battery_percentage")
         battery_charging = payload.get("battery_charging", False)
         
-        # Helper function to draw battery indicator
+            # Helper function to draw battery indicator (improved visibility)
         def _draw_battery_indicator(x: int, y: int, percentage: int | None, charging: bool, size: int = 20) -> None:
             """Draw a battery icon with percentage and charging indicator."""
             if percentage is None:
                 return
             
             # Battery outline: rectangle with a small tab on the right
-            # Make it more visible with thicker lines
+            # Make it more visible with thicker lines for e-ink
             battery_w = size
-            battery_h = int(size * 0.65)  # Slightly taller for better visibility
-            tab_w = 3  # Wider tab
-            tab_h = int(size * 0.35)
-            outline_width = 2  # Thicker outline for e-ink visibility
+            battery_h = int(size * 0.7)  # Taller for better visibility on e-ink
+            tab_w = 4  # Wider tab for better visibility
+            tab_h = int(size * 0.4)
+            outline_width = 3  # Thicker outline for e-ink readability
             
             # Draw battery body with thicker outline
             draw.rectangle([x, y, x + battery_w, y + battery_h], outline=0, width=outline_width)
@@ -502,23 +502,30 @@ class StatusWriter:
             tab_y = y + (battery_h - tab_h) // 2
             draw.rectangle([tab_x, tab_y, tab_x + tab_w, tab_y + tab_h], fill=0, outline=0)
             
-            # Draw battery fill based on percentage
+            # Draw battery fill based on percentage (improved for e-ink)
             if percentage > 0:
                 # Account for thicker outline
-                padding = outline_width
-                fill_w = max(1, int((battery_w - (padding * 2)) * (percentage / 100)))
+                padding = outline_width + 1  # Extra padding for better visibility
+                fill_w = max(2, int((battery_w - (padding * 2)) * (percentage / 100)))
                 fill_x = x + padding
                 fill_y = y + padding
                 fill_h = battery_h - (padding * 2)
                 
-                # Color coding: red < 20%, normal otherwise
-                # For monochrome, we'll use different fill patterns
-                if percentage < 20:
-                    # Low battery: use diagonal lines pattern for visibility
-                    for i in range(0, fill_w, 3):
+                # For monochrome e-ink, use solid fill for better visibility
+                # Critical battery (<10%) uses crosshatch pattern
+                if percentage < 10:
+                    # Critical: crosshatch pattern for maximum visibility
+                    step = 2
+                    for i in range(0, fill_w, step):
+                        draw.line([fill_x + i, fill_y, fill_x + i, fill_y + fill_h], fill=0, width=1)
+                    for j in range(0, fill_h, step):
+                        draw.line([fill_x, fill_y + j, fill_x + fill_w, fill_y + j], fill=0, width=1)
+                elif percentage < 20:
+                    # Low battery: diagonal lines for visibility
+                    for i in range(0, fill_w, 2):
                         draw.line([fill_x + i, fill_y, fill_x + i, fill_y + fill_h], fill=0, width=1)
                 else:
-                    # Normal: solid fill
+                    # Normal: solid fill (most visible on e-ink)
                     draw.rectangle([fill_x, fill_y, fill_x + fill_w, fill_y + fill_h], fill=0)
             
             # Draw charging indicator (lightning bolt) if charging
@@ -600,33 +607,34 @@ class StatusWriter:
             # Default to full width if no QR code, otherwise set by QR code layout
             text_area_width = w - 12  # Default: full width minus margins
             
-            # Helper to format user-friendly messages
+            # Helper to format user-friendly messages (improved for e-ink readability)
             def _format_message(msg: str, state: str) -> str:
-                """Make messages more concise and user-friendly."""
+                """Make messages more concise and user-friendly for e-ink display."""
                 # Remove trailing ellipsis if present
-                msg = msg.rstrip("…").rstrip(".")
+                msg = msg.rstrip("…").rstrip(".").strip()
                 
-                # Map technical messages to user-friendly ones
+                # Map technical messages to user-friendly ones (optimized for small display)
                 replacements = {
-                    "Scanning DCIM for media": "Scanning card",
-                    "No new files detected": "No new photos",
-                    "Copying originals": "Copying photos",
-                    "Generating share images + thumbnails": "Processing images",
+                    "Scanning DCIM for media": "Scan card",
+                    "No new files detected": "No photos",
+                    "Copying originals": "Copying",
+                    "Generating share images + thumbnails": "Processing",
                     "Uploading photos to S3": "Uploading",
                     "Uploading to S3": "Uploading",
                     "Generating share link": "Creating link",
                     "Complete. Remove SD card when ready": "Done! Remove card",
                     "Complete. Remove SD card now": "Done! Remove card",
-                    "Waiting for SD card": "Insert SD card",
+                    "Waiting for SD card": "Insert card",
                 }
                 for old, new in replacements.items():
                     if old in msg:
                         msg = msg.replace(old, new)
                         break
                 
-                # Truncate if still too long
-                if len(msg) > 22:
-                    msg = msg[:19] + "..."
+                # Truncate if still too long (leave room for display width)
+                max_len = 20  # Reduced for better fit on small e-ink
+                if len(msg) > max_len:
+                    msg = msg[:max_len - 3] + "..."
                 return msg
             
             # Battery indicator in top-right corner (before QR code area)
@@ -641,21 +649,23 @@ class StatusWriter:
                 battery_y = 4  # Top margin
                 _draw_battery_indicator(battery_x, battery_y, battery_percentage, battery_charging, size=battery_size)
             
-            # Header - bold and clear
+            # Header - bold and clear (improved for e-ink readability)
             if state == "IDLE":
                 header = "GhostRoll"
             elif state == "RUNNING":
                 header = "GhostRoll"
             elif state == "DONE":
-                header = "✓ Done"
+                header = "✓ Done"  # Checkmark for visual clarity
             elif state == "ERROR":
-                header = "✗ Error"
+                header = "✗ Error"  # X mark for visual clarity
             else:
                 header = "GhostRoll"
             
-            # Draw header with better spacing
+            # Draw header with bold text for better e-ink contrast
             draw.text((text_x, text_y), header, font=title_font, fill=0)
-            text_y += line_height + 2  # Increased spacing for better readability
+            # Draw again slightly offset for bolder effect on e-ink
+            draw.text((text_x + 1, text_y), header, font=title_font, fill=0)
+            text_y += line_height + 3  # Increased spacing for better readability
             
             # Status message - user-friendly formatting with better spacing
             if message:
@@ -695,23 +705,45 @@ class StatusWriter:
                         draw.text((text_x, text_y), f"{disc_count} found", font=small_font, fill=0)
                         text_y += small_line_height
                 
-                # Processing progress (more compact)
+                # Processing progress (more compact and readable)
                 if "process" in step_lower and "processed_done" in counts and "processed_total" in counts:
                     done = int(counts.get("processed_done", 0))
                     total = int(counts.get("processed_total", 0))
                     if total > 0:
                         pct = int((done / total) * 100)
-                        draw.text((text_x, text_y), f"Proc: {done}/{total} ({pct}%)", font=small_font, fill=0)
-                        text_y += small_line_height
+                        # Add visual progress bar for better e-ink feedback
+                        bar_width = 60
+                        bar_height = 4
+                        bar_x = text_x
+                        bar_y = text_y + small_line_height - 2
+                        # Background bar
+                        draw.rectangle([bar_x, bar_y, bar_x + bar_width, bar_y + bar_height], outline=0, width=1)
+                        # Fill bar
+                        fill_width = int((bar_width - 2) * (pct / 100))
+                        if fill_width > 0:
+                            draw.rectangle([bar_x + 1, bar_y + 1, bar_x + 1 + fill_width, bar_y + bar_height - 1], fill=0)
+                        draw.text((text_x, text_y), f"Proc: {done}/{total} {pct}%", font=small_font, fill=0)
+                        text_y += small_line_height + 2  # Extra space for progress bar
                 
-                # Upload progress (more compact)
+                # Upload progress (more compact and readable)
                 if "upload" in step_lower and "uploaded_done" in counts and "uploaded_total" in counts:
                     done = int(counts.get("uploaded_done", 0))
                     total = int(counts.get("uploaded_total", 0))
                     if total > 0:
                         pct = int((done / total) * 100)
-                        draw.text((text_x, text_y), f"Up: {done}/{total} ({pct}%)", font=small_font, fill=0)
-                        text_y += small_line_height
+                        # Add visual progress bar
+                        bar_width = 60
+                        bar_height = 4
+                        bar_x = text_x
+                        bar_y = text_y + small_line_height - 2
+                        # Background bar
+                        draw.rectangle([bar_x, bar_y, bar_x + bar_width, bar_y + bar_height], outline=0, width=1)
+                        # Fill bar
+                        fill_width = int((bar_width - 2) * (pct / 100))
+                        if fill_width > 0:
+                            draw.rectangle([bar_x + 1, bar_y + 1, bar_x + 1 + fill_width, bar_y + bar_height - 1], fill=0)
+                        draw.text((text_x, text_y), f"Up: {done}/{total} {pct}%", font=small_font, fill=0)
+                        text_y += small_line_height + 2  # Extra space for progress bar
                 
                 # RAW upload progress
                 if step_lower == "raw_upload":

@@ -13,6 +13,7 @@ import os
 import subprocess
 import threading
 import time
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -449,7 +450,11 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
             cursor: pointer;
             text-decoration: none;
             color: inherit;
-            display: block;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            position: relative;
+            overflow: hidden;
         }
         
         .session-card:hover {
@@ -458,18 +463,58 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
             box-shadow: 0 4px 12px var(--shadow);
         }
         
+        .session-card:focus {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
+        }
+        
+        .session-header {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+        
+        .session-icon {
+            display: inline-block;
+            font-size: 1.2rem;
+            flex-shrink: 0;
+        }
+        
         .session-id {
             font-family: "SF Mono", Monaco, monospace;
             font-size: 0.9rem;
             color: var(--text-primary);
             font-weight: 500;
             word-break: break-all;
+            flex: 1;
         }
         
-        .session-icon {
-            display: inline-block;
-            margin-right: 0.5rem;
-            font-size: 1.2rem;
+        .session-meta {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+        
+        .session-date {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .session-thumb {
+            width: 100%;
+            aspect-ratio: 4/3;
+            object-fit: cover;
+            border-radius: 6px;
+            background: var(--bg-tertiary);
+            opacity: 0.8;
+            transition: opacity 0.2s ease;
+        }
+        
+        .session-card:hover .session-thumb {
+            opacity: 1;
         }
         
         .footer {
@@ -522,6 +567,108 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
             font-size: 3rem;
             margin-bottom: 1rem;
             opacity: 0.5;
+        }
+        
+        .loading-spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            vertical-align: middle;
+            margin-left: 0.5rem;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .error-message {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid var(--status-error);
+            border-radius: 8px;
+            padding: 1rem;
+            color: var(--status-error);
+            margin-top: 1rem;
+            font-size: 0.9rem;
+        }
+        
+        .keyboard-hint {
+            position: fixed;
+            bottom: 1rem;
+            right: 1rem;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0.75rem 1rem;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            box-shadow: 0 4px 12px var(--shadow);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+            z-index: 1000;
+        }
+        
+        .keyboard-hint.visible {
+            opacity: 1;
+            pointer-events: auto;
+        }
+        
+        .keyboard-hint kbd {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 0.2rem 0.4rem;
+            font-family: "SF Mono", Monaco, monospace;
+            font-size: 0.8em;
+            margin: 0 0.25rem;
+        }
+        
+        .dark-mode-toggle {
+            position: fixed;
+            top: 1rem;
+            right: 1rem;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            z-index: 100;
+            box-shadow: 0 2px 8px var(--shadow);
+        }
+        
+        .dark-mode-toggle:hover {
+            background: var(--bg-tertiary);
+            transform: scale(1.1);
+        }
+        
+        .dark-mode-toggle:focus {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
+        }
+        
+        .accessibility-skip {
+            position: absolute;
+            top: -40px;
+            left: 0;
+            background: var(--accent);
+            color: white;
+            padding: 0.5rem 1rem;
+            text-decoration: none;
+            border-radius: 4px;
+            z-index: 1000;
+        }
+        
+        .accessibility-skip:focus {
+            top: 0;
         }
         
         .qr-section {
@@ -648,6 +795,35 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
             display: none;
         }
         
+        /* Improved focus states for accessibility */
+        a:focus-visible,
+        button:focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
+            border-radius: 4px;
+        }
+        
+        /* Loading state for buttons */
+        .action-button.loading {
+            position: relative;
+            color: transparent;
+            pointer-events: none;
+        }
+        
+        .action-button.loading::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        
         @media (max-width: 640px) {
             h1 {
                 font-size: 2rem;
@@ -655,6 +831,10 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
             
             .container {
                 padding: 0;
+            }
+            
+            body {
+                padding: 1rem 0.75rem;
             }
             
             .sessions-grid {
@@ -665,11 +845,46 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
                 flex-direction: column;
                 gap: 1rem;
             }
+            
+            .dark-mode-toggle {
+                top: 0.5rem;
+                right: 0.5rem;
+                width: 36px;
+                height: 36px;
+            }
+            
+            .keyboard-hint {
+                bottom: 0.5rem;
+                right: 0.5rem;
+                font-size: 0.75rem;
+                padding: 0.5rem 0.75rem;
+            }
+            
+            .status-card {
+                padding: 1rem;
+            }
+            
+            .action-button {
+                width: 100%;
+                text-align: center;
+            }
+        }
+        
+        @media (prefers-reduced-motion: reduce) {
+            * {
+                animation-duration: 0.01ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.01ms !important;
+            }
         }
     </style>
 </head>
-<body>
-    <div class="container">
+    <body>
+    <a href="#main-content" class="accessibility-skip">Skip to main content</a>
+    <button class="dark-mode-toggle" id="darkModeToggle" aria-label="Toggle dark mode" title="Toggle dark mode (D)">
+        <span id="darkModeIcon">🌙</span>
+    </button>
+    <div class="container" id="main-content">
         <header>
             <h1>GhostRoll</h1>
             <p class="subtitle">Image ingest pipeline & gallery</p>
@@ -839,7 +1054,10 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
             html += '                <div class="status-indicator idle"></div>\n'
             html += '                <div class="status-title">Unknown</div>\n'
             html += '            </div>\n'
-            html += '            <div class="status-message">Status file not found</div>\n'
+            html += '            <div class="status-message">Status file not found. GhostRoll may not be running.</div>\n'
+            html += '            <div class="error-message" style="margin-top: 1rem;">'
+            html += '               If GhostRoll is running, check that the status file exists at the configured path.'
+            html += '            </div>\n'
             html += '        </div>\n'
         
         # List sessions
@@ -849,9 +1067,46 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
             html += '            <h2 class="section-title">Sessions</h2>\n'
             html += '            <div class="sessions-grid">\n'
             for session_id in sessions:
-                html += f'                <a href="/sessions/{session_id}" class="session-card">\n'
-                html += '                    <span class="session-icon">📷</span>\n'
-                html += f'                    <span class="session-id">{session_id}</span>\n'
+                session_dir = self.sessions_dir / session_id
+                # Try to get session metadata (date, thumbnail)
+                session_date = None
+                thumbnail_path = None
+                image_count = 0
+                
+                if session_dir.exists():
+                    # Get modification time for date
+                    try:
+                        mtime = session_dir.stat().st_mtime
+                        session_date = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+                    except Exception:
+                        pass
+                    
+                    # Look for first thumbnail
+                    thumbs_dir = session_dir / "thumbs"
+                    if thumbs_dir.exists():
+                        try:
+                            thumb_files = sorted([f for f in thumbs_dir.rglob("*.jpg") if f.is_file()])[:1]
+                            if thumb_files:
+                                thumbnail_path = f"/sessions/{session_id}/thumbs/{thumb_files[0].relative_to(thumbs_dir)}"
+                                # Count total images
+                                image_count = len(list(thumbs_dir.rglob("*.jpg")))
+                        except Exception:
+                            pass
+                
+                html += f'                <a href="/sessions/{session_id}" class="session-card" aria-label="Session {session_id}">\n'
+                html += '                    <div class="session-header">\n'
+                html += '                        <span class="session-icon">📷</span>\n'
+                html += f'                        <span class="session-id">{session_id}</span>\n'
+                html += '                    </div>\n'
+                if thumbnail_path:
+                    html += f'                    <img src="{html_escape_module.escape(thumbnail_path)}" alt="Session thumbnail" class="session-thumb" loading="lazy">\n'
+                if session_date or image_count > 0:
+                    html += '                    <div class="session-meta">\n'
+                    if session_date:
+                        html += f'                        <div class="session-date">📅 {session_date}</div>\n'
+                    if image_count > 0:
+                        html += f'                        <div>🖼️ {image_count} image{"s" if image_count != 1 else ""}</div>\n'
+                    html += '                    </div>\n'
                 html += '                </a>\n'
             html += '            </div>\n'
             html += '        </div>\n'
@@ -861,6 +1116,9 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
             html += '            <div class="empty-state">\n'
             html += '                <div class="empty-state-icon">📂</div>\n'
             html += '                <p>No sessions found yet</p>\n'
+            html += '                <p style="font-size: 0.9rem; margin-top: 0.5rem; color: var(--text-tertiary);">'
+            html += '                   Insert an SD card and run <code>ghostroll watch</code> to create a session.'
+            html += '                </p>\n'
             html += '            </div>\n'
             html += '        </div>\n'
         
@@ -893,14 +1151,78 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
         html += '        </div>\n'
         html += '    </div>\n'
         
-        # Add auto-refresh JavaScript to poll status.json and update the display
+        # Add dark mode toggle and auto-refresh JavaScript
         html += """        <script>
         (function() {
+            // Dark mode toggle
+            const darkModeToggle = document.getElementById('darkModeToggle');
+            const darkModeIcon = document.getElementById('darkModeIcon');
+            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            
+            // Check localStorage for saved preference
+            let isDark = localStorage.getItem('ghostrollDarkMode');
+            if (isDark === null) {
+                // No saved preference, use system preference
+                isDark = prefersDark;
+            } else {
+                isDark = isDark === 'true';
+            }
+            
+            function applyDarkMode(dark) {
+                if (dark) {
+                    document.documentElement.style.setProperty('color-scheme', 'dark');
+                    if (darkModeIcon) darkModeIcon.textContent = '☀️';
+                } else {
+                    document.documentElement.style.setProperty('color-scheme', 'light');
+                    if (darkModeIcon) darkModeIcon.textContent = '🌙';
+                }
+                localStorage.setItem('ghostrollDarkMode', dark.toString());
+            }
+            
+            // Apply initial dark mode
+            applyDarkMode(isDark);
+            
+            if (darkModeToggle) {
+                darkModeToggle.addEventListener('click', () => {
+                    isDark = !isDark;
+                    applyDarkMode(isDark);
+                });
+            }
+            
+            // Keyboard shortcut: 'D' to toggle dark mode
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'd' || e.key === 'D') {
+                    if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
+                        e.preventDefault();
+                        isDark = !isDark;
+                        applyDarkMode(isDark);
+                    }
+                }
+            });
+            
+            // Show keyboard hints
+            const keyboardHint = document.createElement('div');
+            keyboardHint.className = 'keyboard-hint';
+            keyboardHint.innerHTML = 'Keyboard: <kbd>D</kbd> dark mode';
+            document.body.appendChild(keyboardHint);
+            
+            // Show hint on first visit
+            if (!localStorage.getItem('ghostrollKeyboardHintShown')) {
+                setTimeout(() => {
+                    keyboardHint.classList.add('visible');
+                    setTimeout(() => {
+                        keyboardHint.classList.remove('visible');
+                        localStorage.setItem('ghostrollKeyboardHintShown', 'true');
+                    }, 4000);
+                }, 2000);
+            }
+            
             const STATUS_URL = '/status.json';
             const POLL_INTERVAL = 2000; // Poll every 2 seconds
             let currentSessionId = null;
             let currentUrl = null;
             let pollTimer = null;
+            let pollErrorCount = 0;
             
             // Elements that will be updated
             let statusCard = null;
@@ -1312,9 +1634,23 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
                     }
                     const data = await response.json();
                     updateStatus(data);
+                    pollErrorCount = 0; // Reset error count on success
                 } catch (error) {
-                    // Silently handle errors - don't spam console
-                    // The page will just show the last known status
+                    pollErrorCount++;
+                    // Show error after multiple failures
+                    if (pollErrorCount >= 5) {
+                        const statusCard = document.querySelector('.status-card');
+                        if (statusCard && !statusCard.querySelector('.error-message')) {
+                            const errorMsg = document.createElement('div');
+                            errorMsg.className = 'error-message';
+                            errorMsg.textContent = 'Unable to connect to status server. The page will keep trying.';
+                            statusCard.appendChild(errorMsg);
+                        }
+                    }
+                    // Stop showing error after a while
+                    if (pollErrorCount > 20) {
+                        pollErrorCount = 0;
+                    }
                 }
             }
             
