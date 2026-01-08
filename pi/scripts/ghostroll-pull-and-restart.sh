@@ -7,7 +7,7 @@ set -euo pipefail
 #   sudo ./ghostroll-pull-and-restart.sh
 #
 # Environment (optional, via /etc/ghostroll.env or command line):
-#   - GHOSTROLL_REPO_DIR (default: /usr/local/src/ghostroll)
+#   - GHOSTROLL_REPO_DIR (default: /home/pi/ghostroll)
 #   - GHOSTROLL_GIT_REMOTE (default: tries to detect from current repo)
 #   - GHOSTROLL_GIT_BRANCH (default: main)
 #   - GHOSTROLL_GIT_SSH_COMMAND (for private repos with deploy keys)
@@ -19,7 +19,7 @@ if [[ -f /etc/ghostroll.env ]]; then
     set +a
 fi
 
-REPO_DIR="${GHOSTROLL_REPO_DIR:-/usr/local/src/ghostroll}"
+REPO_DIR="${GHOSTROLL_REPO_DIR:-/home/pi/ghostroll}"
 REMOTE="${GHOSTROLL_GIT_REMOTE:-}"
 BRANCH="${GHOSTROLL_GIT_BRANCH:-main}"
 

@@ -419,20 +419,38 @@ def run_pipeline(
         failed_files = _db_get_failed_files(conn, dcim_dir=dcim_dir)
         
         # Filter out files that have consistently failed to hash
+        # Also optimize: if a file size is NOT in the database, we know it's definitely new
+        # (we still need to hash it to store in DB, but we can skip duplicate checking)
         files_to_check: list[tuple[Path, int]] = []
+        files_known_new: list[tuple[Path, int]] = []  # Files with sizes not in DB (definitely new)
         failed_count = 0
+        size_filtered_count = 0
         for p, size in files_with_sizes:
             if p in failed_files:
                 failed_count += 1
                 logger.debug(f"  Skipping file that consistently fails to hash: {p.name}")
                 continue
-            files_to_check.append((p, size))
+            # If size is not in known_sizes, the file is definitely new (no need to check for duplicates)
+            # But we still need to hash it to store the hash in the DB
+            if known_sizes and size not in known_sizes:
+                files_known_new.append((p, size))
+                size_filtered_count += 1
+                logger.debug(f"  File size not in DB (definitely new, skipping duplicate check): {p.name} ({size:,} bytes)")
+            else:
+                # Size might match a known file - need to hash to check for duplicates
+                files_to_check.append((p, size))
         
         if failed_count > 0:
             logger.info(f"Skipping {failed_count} files that consistently fail to hash (marked in database)")
         
         if known_sizes:
-            logger.debug(f"Database contains {len(known_sizes)} unique file sizes - will check hashes after computing")
+            logger.debug(f"Database contains {len(known_sizes)} unique file sizes")
+            if size_filtered_count > 0:
+                logger.info(f"Pre-filtered {size_filtered_count} files as definitely new (size not in DB) - will hash but skip duplicate check")
+        
+        # Combine known-new files with files to check (we hash all of them, but check duplicates only for files_to_check)
+        # Note: We still hash known-new files to store their hash in the DB, but we know they're new so skip duplicate check
+        all_files_to_hash = files_to_check + files_known_new
         
         # Before hashing from SD card, check if files already exist in recent session originals/
         # This prevents re-hashing if the process crashed during upload
@@ -460,7 +478,7 @@ def run_pipeline(
         except Exception as e:
             logger.debug(f"Error checking for existing originals: {e}")
         
-        logger.info(f"Hashing {len(files_to_check)} files to check for duplicates...")
+        logger.info(f"Hashing {len(all_files_to_hash)} files ({len(files_to_check)} need duplicate check, {len(files_known_new)} known new)...")
         
         # Hash all files to check for duplicates (parallelized)
         # Always hash from SD card to ensure we detect new/changed files correctly
@@ -482,12 +500,17 @@ def run_pipeline(
                 return None
         
         hashed_files: list[tuple[Path, str, int]] = []
+        hashed_known_new: list[tuple[Path, str, int]] = []  # Files that were known to be new (by size)
         failed_files: list[tuple[Path, int]] = []  # Files that failed to hash
         # Use dedicated hash workers (default 8) for better I/O parallelism
         # Adaptive: scale down for small batches to avoid overhead
-        hash_workers = min(cfg.hash_workers, max(1, len(files_to_check) // 5))
+        hash_workers = min(cfg.hash_workers, max(1, len(all_files_to_hash) // 5))
+        
+        # Track which files need duplicate checking
+        files_to_check_set = {(p, size) for p, size in files_to_check}
+        
         with ThreadPoolExecutor(max_workers=hash_workers) as ex:
-            futures = {ex.submit(_hash_one, item): item for item in files_to_check}
+            futures = {ex.submit(_hash_one, item): item for item in all_files_to_hash}
             for i, fut in enumerate(as_completed(futures), 1):
                 try:
                     result = fut.result()
@@ -497,8 +520,14 @@ def run_pipeline(
                         failed_files.append((item[0], item[1]))
                         continue
                     p, sha, size = result
-                    logger.debug(f"Hashing [{i}/{len(files_to_check)}]: {p.name}")
-                    hashed_files.append((p, sha, size))
+                    item = futures[fut]
+                    # Separate files that need duplicate checking from known-new files
+                    if (p, size) in files_to_check_set:
+                        logger.debug(f"Hashing [{i}/{len(all_files_to_hash)}]: {p.name} (checking for duplicates)")
+                        hashed_files.append((p, sha, size))
+                    else:
+                        logger.debug(f"Hashing [{i}/{len(all_files_to_hash)}]: {p.name} (known new, no duplicate check needed)")
+                        hashed_known_new.append((p, sha, size))
                 except Exception as e:
                     # Handle any unexpected errors from the future
                     item = futures[fut]
@@ -514,11 +543,12 @@ def run_pipeline(
             conn.commit()
             logger.info(f"Marked {len(failed_files)} files as failed in DB (will skip in future runs)")
         
-        # Batch check database for duplicates (more efficient than one-by-one)
+        # Batch check database for duplicates (only for files that might be duplicates)
+        # Files in hashed_known_new are already known to be new (by size), so skip duplicate check
         all_shas = {sha for (_, sha, _) in hashed_files}
         existing_shas: set[str] = set()
         if all_shas:
-            logger.debug(f"Checking database for {len(all_shas)} hashes...")
+            logger.debug(f"Checking database for {len(all_shas)} hashes (files that might be duplicates)...")
             placeholders = ",".join("?" * len(all_shas))
             existing_rows = conn.execute(
                 f"SELECT sha256 FROM ingested_files WHERE sha256 IN ({placeholders})",
@@ -528,13 +558,16 @@ def run_pipeline(
             if existing_shas:
                 logger.info(f"Found {len(existing_shas)} files already in database (will skip)")
             else:
-                logger.debug(f"No files found in database (all {len(all_shas)} are new)")
+                logger.debug(f"No files found in database (all {len(all_shas)} checked files are new)")
+        else:
+            logger.debug("No files to check for duplicates (all files were pre-filtered as new)")
         
         # Collect new files: all files that aren't duplicates
-        new_files: list[tuple[Path, str, int]] = []  # All files are hashed, so sha is never None
+        # Start with known-new files (already determined to be new by size check)
+        new_files: list[tuple[Path, str, int]] = list(hashed_known_new)
         skipped = 0
         
-        # Check hashed files for duplicates
+        # Check hashed files for duplicates (only files that might be duplicates)
         # Also handle crash recovery: if files were already copied to originals but not yet in DB,
         # mark them in DB immediately to prevent re-hashing on next run
         crash_recovery_items: list[tuple[str, int, str]] = []
