@@ -717,6 +717,10 @@ class StatusWriter:
                     draw.text((text_x, text_y), f"Card: {vol_name}", font=small_font, fill=0)
                     text_y += small_line_height
             
+            # Initialize text_area_width for bottom info calculations
+            # Default to full width if no QR code, otherwise set by QR code layout
+            text_area_width = w - 12  # Default: full width minus margins
+            
             # QR code on the right side (if available)
             # Show QR code whenever it's available, including in DONE state
             # Priority: Maximize QR code size for reliable phone scanning
