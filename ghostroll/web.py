@@ -765,6 +765,15 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
         html += '            <a href="/status.png" class="footer-link">Status Image</a>\n'
         html += '            <a href="/sessions" class="footer-link">Sessions API</a>\n'
         
+        # Add log link if there's an active session
+        if status_data:
+            session_id = status_data.get("session_id")
+            if session_id:
+                log_file = self.sessions_dir / session_id / "ghostroll.log"
+                if log_file.exists() and log_file.is_file():
+                    log_url = f"/sessions/{session_id}/ghostroll.log"
+                    html += f'            <a href="{html_escape_module.escape(log_url)}" class="footer-link" target="_blank" title="View session log">📋 Log</a>\n'
+        
         # Add git commit hash with link if available (use cached info from server startup)
         commit_hash, repo_url = self.git_info
         if commit_hash:
