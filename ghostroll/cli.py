@@ -506,6 +506,12 @@ def cmd_watch(args: argparse.Namespace) -> int:
             logger.debug(f"Volume path: {vol}")
             logger.debug(f"DCIM directory: {vol / 'DCIM'}")
             status.write(Status(state="running", step="detected", message="SD card detected.", volume=str(vol)))
+            
+            # After remount, filesystem may need time to sync directory entries
+            # Add a short delay to ensure all files are visible before scanning
+            logger.debug("Waiting for filesystem to sync after mount...")
+            time.sleep(1.0)  # 1 second delay to allow filesystem to sync
+            
             rc = cmd_run(
                 argparse.Namespace(
                     sd_label=cfg.sd_label,

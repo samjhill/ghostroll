@@ -5,6 +5,7 @@ import os
 import queue
 import shutil
 import sqlite3
+import stat
 import subprocess
 import threading
 import time
@@ -213,9 +214,20 @@ def _iter_media_files(dcim_dir: Path, logger=None) -> list[Path]:
     """
     Recursively find all media files in the DCIM directory.
     Uses subprocess find command to bypass any Python filesystem caching.
+    
+    After remount, filesystems may have stale directory entries. This function
+    uses os.stat() directly with retry logic to ensure all files are detected.
     """
     out: list[Path] = []
     all_files_count = 0
+    
+    # Force a directory refresh by accessing the directory first
+    # This helps clear any stale directory entries after remount
+    try:
+        list(dcim_dir.iterdir())
+    except (OSError, IOError):
+        pass  # If we can't list, continue anyway - find will handle it
+    
     try:
         # Use subprocess find to bypass any Python filesystem caching
         # This should give us a fresh view of the filesystem
@@ -249,6 +261,9 @@ def _iter_media_files(dcim_dir: Path, logger=None) -> list[Path]:
             if logger:
                 logger.debug(f"find command found {all_files_count} total files in {dcim_dir}")
             
+            # Track files that fail initial check for retry
+            failed_files: list[Path] = []
+            
             for line in all_find_files:
                 if not line.strip():
                     continue
@@ -257,10 +272,54 @@ def _iter_media_files(dcim_dir: Path, logger=None) -> list[Path]:
                     # Skip macOS metadata files (resource forks) - they start with ._
                     if file_path.name.startswith("._"):
                         continue
-                    if file_path.is_file() and media.is_media(file_path):
-                        out.append(file_path)
-                except (OSError, IOError):
+                    
+                    # Use os.stat() directly instead of pathlib's is_file() to avoid caching issues
+                    # This is more reliable after remount when directory entries might be stale
+                    try:
+                        stat_result = os.stat(file_path)
+                        if not stat.S_ISREG(stat_result.st_mode):
+                            # Not a regular file, skip
+                            continue
+                    except (OSError, IOError) as e:
+                        # File might not be accessible yet (filesystem still syncing after remount)
+                        # Collect for retry
+                        failed_files.append(file_path)
+                        if logger:
+                            logger.debug(f"File not accessible yet (will retry): {file_path.name}: {e}")
+                        continue
+                    
+                    # Check if it's a media file
+                    try:
+                        if media.is_media(file_path):
+                            out.append(file_path)
+                    except (OSError, IOError) as e:
+                        if logger:
+                            logger.debug(f"Error checking if media file: {file_path.name}: {e}")
+                        continue
+                except (OSError, IOError) as e:
                     # File became inaccessible, skip it
+                    if logger:
+                        logger.debug(f"File became inaccessible: {line.strip()}: {e}")
+                    continue
+            
+            # Retry failed files after a short delay (filesystem might still be syncing)
+            if failed_files and logger:
+                logger.debug(f"Retrying {len(failed_files)} files that weren't accessible initially...")
+            for file_path in failed_files:
+                try:
+                    # Retry with a small delay to allow filesystem to sync
+                    time.sleep(0.01)  # Small delay between retries
+                    stat_result = os.stat(file_path)
+                    if not stat.S_ISREG(stat_result.st_mode):
+                        continue
+                    if media.is_media(file_path):
+                        out.append(file_path)
+                        if logger:
+                            logger.debug(f"Successfully retried file: {file_path.name}")
+                except (OSError, IOError):
+                    # Still not accessible, skip it
+                    if logger:
+                        logger.debug(f"File still not accessible after retry: {file_path.name}")
                     continue
     except (OSError, IOError, subprocess.TimeoutExpired) as e:
         if logger:
