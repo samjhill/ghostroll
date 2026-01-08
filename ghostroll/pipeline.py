@@ -674,6 +674,11 @@ def run_pipeline(
         derived_share_dir.mkdir(parents=True, exist_ok=True)
         derived_thumbs_dir.mkdir(parents=True, exist_ok=True)
         
+        # Early QR code generation: publish the gallery link (loading page) immediately after session creation,
+        # before processing files, so the QR code is available as soon as possible.
+        # Define prefix early so it can be used for log uploader setup
+        prefix = f"{cfg.s3_prefix_root}{session_id}".rstrip("/")
+        
         # Set up bulletproof log uploader (uploads periodically and on crash/exit)
         log_file = session_dir / "ghostroll.log"
         log_key = f"{prefix}/logs/ghostroll.log"
@@ -691,10 +696,6 @@ def run_pipeline(
             except Exception as e:
                 logger.warning(f"Failed to start log uploader: {e} (logs will still be uploaded at end)")
                 log_uploader = None
-
-        # Early QR code generation: publish the gallery link (loading page) immediately after session creation,
-        # before processing files, so the QR code is available as soon as possible.
-        prefix = f"{cfg.s3_prefix_root}{session_id}".rstrip("/")
         uploaded_ok = 0
         upload_failures: list[str] = []
         url: str | None = None
