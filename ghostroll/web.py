@@ -685,19 +685,41 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
             counts = status_data.get("counts") or {}
             volume = status_data.get("volume")
             
-            # Fallback: If URL is not set but we have a session_id, try to read from share.txt
-            if not url and session_id:
-                share_txt = self.sessions_dir / session_id / "share.txt"
-                if share_txt.exists() and share_txt.is_file():
+            # Fallback: If URL is not set, try to find the latest session's share.txt
+            if not url:
+                # First try with session_id if available
+                if session_id:
+                    share_txt = self.sessions_dir / session_id / "share.txt"
+                    if share_txt.exists() and share_txt.is_file():
+                        try:
+                            url = share_txt.read_text(encoding="utf-8").strip()
+                            # Only use if it's a valid S3 presigned URL (starts with https://)
+                            if not url or not url.startswith("https://"):
+                                url = None
+                        except Exception:
+                            url = None
+                
+                # If still no URL, try the latest session
+                if not url:
                     try:
-                        url = share_txt.read_text(encoding="utf-8").strip()
-                        # Only use if it's a valid S3 presigned URL (starts with https://)
-                        if url and url.startswith("https://"):
-                            pass  # Valid URL, use it
-                        else:
-                            url = None  # Invalid URL, ignore it
+                        sessions = sorted(
+                            [d for d in self.sessions_dir.iterdir() if d.is_dir() and (d / "share.txt").exists()],
+                            key=lambda x: x.stat().st_mtime,
+                            reverse=True
+                        )
+                        if sessions:
+                            latest_session = sessions[0]
+                            share_txt = latest_session / "share.txt"
+                            if share_txt.exists() and share_txt.is_file():
+                                try:
+                                    url = share_txt.read_text(encoding="utf-8").strip()
+                                    # Only use if it's a valid S3 presigned URL (starts with https://)
+                                    if not url or not url.startswith("https://"):
+                                        url = None
+                                except Exception:
+                                    url = None
                     except Exception:
-                        pass  # Failed to read, keep url as None
+                        pass
             
             html += '        <div class="status-card">\n'
             html += '            <div class="status-header">\n'
@@ -757,9 +779,10 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
             html += '            </div>\n'
             
             # Only show gallery link if URL is a valid S3 presigned URL (not a local path)
-            if url and (url.startswith("https://") or url.startswith("http://")):
-                # Ensure it's not a local path
-                if not (url.startswith("/sessions/") or url.startswith("http://localhost") or url.startswith("http://127.0.0.1")):
+            # CRITICAL: Only use S3 presigned URLs - never link to local HTML files
+            if url and url.startswith("https://") and not url.startswith("http://localhost") and not url.startswith("http://127.0.0.1"):
+                # Validate it's actually an S3 URL (not a local path masquerading as https)
+                if "s3.amazonaws.com" in url or "s3-" in url or ".s3." in url:
                     html += f'            <a href="{html_escape_module.escape(url)}" target="_blank" class="action-button">View Gallery →</a>\n'
             
             # Add QR code if available
@@ -897,20 +920,55 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
                 const counts = data.counts || {};
                 const volume = data.volume || null;
                 
-                // Fallback: If URL is not set but we have a sessionId, try to fetch from share.txt
-                if (!url && sessionId) {
-                    fetch('/sessions/' + escapeHtml(sessionId) + '/share.txt')
+                // Fallback: If URL is not set, try to fetch from share.txt
+                if (!url) {
+                    // First try with sessionId if available
+                    if (sessionId) {
+                        fetch('/sessions/' + escapeHtml(sessionId) + '/share.txt')
+                            .then(response => {
+                                if (response.ok) {
+                                    return response.text();
+                                }
+                                return null;
+                            })
+                            .then(shareUrl => {
+                                if (shareUrl && shareUrl.trim() && shareUrl.trim().startsWith('https://')) {
+                                    updateGalleryLinks(shareUrl.trim(), sessionId, data.qr_path || null);
+                                } else {
+                                    // Try getting latest session
+                                    tryLatestSessionShare();
+                                }
+                            })
+                            .catch(() => {
+                                // Try getting latest session
+                                tryLatestSessionShare();
+                            });
+                    } else {
+                        // No sessionId, try getting latest session from sessions API
+                        tryLatestSessionShare();
+                    }
+                }
+                
+                function tryLatestSessionShare() {
+                    fetch('/sessions')
+                        .then(response => response.json())
+                        .then(data => {
+                            if (data && data.sessions && data.sessions.length > 0) {
+                                const latestSession = data.sessions[0];
+                                return fetch('/sessions/' + escapeHtml(latestSession) + '/share.txt');
+                            }
+                            return null;
+                        })
                         .then(response => {
-                            if (response.ok) {
+                            if (response && response.ok) {
                                 return response.text();
                             }
                             return null;
                         })
                         .then(shareUrl => {
-                            if (shareUrl && shareUrl.trim()) {
-                                url = shareUrl.trim();
-                                // Update the button and QR code with the fetched URL
-                                updateGalleryLinks(url, sessionId, data.qr_path || null);
+                            if (shareUrl && shareUrl.trim() && shareUrl.trim().startsWith('https://')) {
+                                const latestSessionId = data.session_id || (data.sessions && data.sessions[0]) || null;
+                                updateGalleryLinks(shareUrl.trim(), latestSessionId, data.qr_path || null);
                             }
                         })
                         .catch(() => {
@@ -1007,10 +1065,14 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
                 // Update action button (gallery link)
                 let actionButton = statusCard.querySelector('.action-button');
                 if (url) {
-                    // Ensure URL is the presigned S3 URL, not a local path
-                    // If it looks like a local path (/sessions/...), don't use it
-                    if (url.startsWith('/sessions/') || url.startsWith('http://localhost') || url.startsWith('http://127.0.0.1')) {
-                        // This is a local path, not the S3 presigned URL - skip it
+                    // CRITICAL: Only use S3 presigned URLs - never local paths
+                    // Validate it's actually an S3 URL
+                    if (!url.startsWith('https://') || 
+                        url.startsWith('http://localhost') || 
+                        url.startsWith('http://127.0.0.1') ||
+                        url.startsWith('/sessions/') ||
+                        (!url.includes('s3.amazonaws.com') && !url.includes('s3-') && !url.includes('.s3.'))) {
+                        // This is not a valid S3 presigned URL - skip it
                         if (actionButton) {
                             actionButton.style.display = 'none';
                         }
@@ -1036,9 +1098,14 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
                 
                 // Update QR code if URL or session changed
                 if (url && sessionId && qrPathStr) {
-                    // Ensure URL is the presigned S3 URL, not a local path
-                    if (url.startsWith('/sessions/') || url.startsWith('http://localhost') || url.startsWith('http://127.0.0.1')) {
-                        // This is a local path, not the S3 presigned URL - skip QR code
+                    // CRITICAL: Only use S3 presigned URLs - never local paths
+                    // Validate it's actually an S3 URL
+                    if (!url.startsWith('https://') || 
+                        url.startsWith('http://localhost') || 
+                        url.startsWith('http://127.0.0.1') ||
+                        url.startsWith('/sessions/') ||
+                        (!url.includes('s3.amazonaws.com') && !url.includes('s3-') && !url.includes('.s3.'))) {
+                        // This is not a valid S3 presigned URL - skip QR code
                         if (qrSection) {
                             qrSection.remove();
                             qrSection = null;
