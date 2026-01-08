@@ -709,12 +709,21 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
             html += '            <div class="progress-section" id="progress-section" style="display: none;">\n'
             html += '            </div>\n'
             
-            if url:
-                html += f'            <a href="{url}" target="_blank" class="action-button">View Gallery →</a>\n'
+            # Only show gallery link if URL is a valid S3 presigned URL (not a local path)
+            if url and (url.startswith("https://") or url.startswith("http://")):
+                # Ensure it's not a local path
+                if not (url.startswith("/sessions/") or url.startswith("http://localhost") or url.startswith("http://127.0.0.1")):
+                    html += f'            <a href="{html_escape_module.escape(url)}" target="_blank" class="action-button">View Gallery →</a>\n'
             
             # Add QR code if available
             qr_path_str = status_data.get("qr_path")
-            if qr_path_str and url:
+            # Only show QR code if URL is a valid S3 presigned URL (not a local path)
+            if qr_path_str and url and (url.startswith("https://") or url.startswith("http://")):
+                # Ensure it's not a local path
+                if url.startswith("/sessions/") or url.startswith("http://localhost") or url.startswith("http://127.0.0.1"):
+                    # Skip QR code for local paths
+                    pass
+                else:
                 # Check if QR code file exists and is accessible
                 qr_path = Path(qr_path_str)
                 if qr_path.exists() and qr_path.is_file() and qr_path.stat().st_size > 0:
