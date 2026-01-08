@@ -243,7 +243,13 @@ Note: On Raspberry Pi, if the WiFi portal is enabled (uses port 8080), the web i
 **Performance Impact:**
 The web server runs in a separate thread and only serves existing files — it has virtually no impact on the main pipeline performance. It uses Python's built-in `http.server`, requires minimal memory (~5–10 MB), and doesn't interfere with image processing or uploads.
 
-**Default URL:** `http://localhost:8080` (or `http://<pi-ip>:8080` if bound to `0.0.0.0`)
+**Default URL:** `http://localhost:8080` (or `http://<pi-ip>:8081/` on Raspberry Pi, `http://<pi-ip>:8080/` if bound to `0.0.0.0` on macOS/Linux)
+
+**Troubleshooting:** If the web interface isn't starting, check:
+- Service logs: `sudo journalctl -u ghostroll-watch.service -n 50 | grep -i web`
+- Configuration: `cat /etc/ghostroll.env | grep GHOSTROLL_WEB`
+- Port availability: `sudo ss -tuln | grep 8081` (or 8080)
+- Run diagnostic: `./pi/scripts/check-web-interface.sh`
 
 ## Raspberry Pi / e‑ink
 

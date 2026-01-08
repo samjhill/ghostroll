@@ -145,3 +145,76 @@ def test_copy_workers_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     cfg = load_config(copy_workers=12)
     assert cfg.copy_workers == 12
 
+
+def test_web_interface_config_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Test that web interface defaults are correct."""
+    # Clear web interface env vars
+    monkeypatch.delenv("GHOSTROLL_WEB_ENABLED", raising=False)
+    monkeypatch.delenv("GHOSTROLL_WEB_HOST", raising=False)
+    monkeypatch.delenv("GHOSTROLL_WEB_PORT", raising=False)
+    
+    cfg = load_config()
+    # Web interface is enabled by default
+    assert cfg.web_enabled is True
+    assert cfg.web_host == "127.0.0.1"
+    assert cfg.web_port == 8080
+
+
+def test_web_interface_config_env_vars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Test that web interface respects environment variables."""
+    # Test enabled
+    monkeypatch.setenv("GHOSTROLL_WEB_ENABLED", "1")
+    monkeypatch.setenv("GHOSTROLL_WEB_HOST", "0.0.0.0")
+    monkeypatch.setenv("GHOSTROLL_WEB_PORT", "8081")
+    cfg = load_config()
+    assert cfg.web_enabled is True
+    assert cfg.web_host == "0.0.0.0"
+    assert cfg.web_port == 8081
+    
+    # Test disabled
+    monkeypatch.setenv("GHOSTROLL_WEB_ENABLED", "0")
+    cfg = load_config()
+    assert cfg.web_enabled is False
+    
+    # Test various truthy values
+    for truthy in ("1", "true", "yes", "on", "enabled", "True", "YES"):
+        monkeypatch.setenv("GHOSTROLL_WEB_ENABLED", truthy)
+        cfg = load_config()
+        assert cfg.web_enabled is True, f"Should be True for value: {truthy}"
+    
+    # Test various falsy values
+    for falsy in ("0", "false", "no", "off", "disabled", "False", "NO"):
+        monkeypatch.setenv("GHOSTROLL_WEB_ENABLED", falsy)
+        cfg = load_config()
+        assert cfg.web_enabled is False, f"Should be False for value: {falsy}"
+
+
+def test_web_interface_config_arg_overrides(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Test that CLI arguments override environment variables."""
+    monkeypatch.setenv("GHOSTROLL_WEB_ENABLED", "0")
+    monkeypatch.setenv("GHOSTROLL_WEB_HOST", "127.0.0.1")
+    monkeypatch.setenv("GHOSTROLL_WEB_PORT", "8080")
+    
+    # CLI args should override env vars
+    cfg = load_config(web_enabled=True, web_host="0.0.0.0", web_port=9000)
+    assert cfg.web_enabled is True
+    assert cfg.web_host == "0.0.0.0"
+    assert cfg.web_port == 9000
+    
+    # Disable via CLI arg
+    cfg = load_config(web_enabled=False)
+    assert cfg.web_enabled is False
+
+
+def test_web_interface_env_file_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Test that env file fallback doesn't break when /etc/ghostroll.env doesn't exist."""
+    # Clear env vars
+    monkeypatch.delenv("GHOSTROLL_WEB_ENABLED", raising=False)
+    monkeypatch.delenv("GHOSTROLL_WEB_HOST", raising=False)
+    monkeypatch.delenv("GHOSTROLL_WEB_PORT", raising=False)
+    
+    # Should use defaults when env file doesn't exist (will be default enabled=True)
+    cfg = load_config()
+    # Default behavior: enabled=True when not explicitly set
+    assert cfg.web_enabled is True
+

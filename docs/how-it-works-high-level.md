@@ -30,10 +30,12 @@ This document is intended as input to an LLM to generate a visual (architecture 
 - **Status outputs (optional, especially for Raspberry Pi / e-ink)**:
   - `status.json` (machine-readable)
   - `status.png` (simple display image showing current step/progress)
-- **Web interface (optional)**:
+- **Web interface (enabled by default)**:
   - Lightweight HTTP server for viewing status and sessions via browser
-  - Runs in background thread with minimal performance impact
+  - Runs in background thread with minimal performance impact (~5-10MB memory)
   - Serves existing files (status.json, status.png, session galleries)
+  - Accessible at `http://<pi-ip>:8081/` (or `http://localhost:8080/` on macOS/Linux)
+  - Enabled by default, can be disabled via `GHOSTROLL_WEB_ENABLED=0`
 
 ## Key data model: “Session”
 
