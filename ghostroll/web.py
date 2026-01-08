@@ -382,6 +382,48 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
             opacity: 0.5;
         }
         
+        .qr-section {
+            margin-top: 1.5rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.75rem;
+        }
+        
+        .qr-title {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 600;
+        }
+        
+        .qr-code {
+            width: 160px;
+            height: 160px;
+            border-radius: 12px;
+            border: 2px solid var(--border);
+            padding: 8px;
+            background: white;
+            box-shadow: 0 4px 12px var(--shadow);
+            display: block;
+        }
+        
+        .qr-code img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            display: block;
+        }
+        
+        .qr-hint {
+            font-size: 0.85rem;
+            color: var(--text-tertiary);
+            text-align: center;
+        }
+        
         @media (max-width: 640px) {
             h1 {
                 font-size: 2rem;
@@ -457,6 +499,36 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
             
             if url:
                 html += f'            <a href="{url}" target="_blank" class="action-button">View Gallery →</a>\n'
+            
+            # Add QR code if available
+            qr_path_str = status_data.get("qr_path")
+            if qr_path_str and url:
+                # Check if QR code file exists and is accessible
+                qr_path = Path(qr_path_str)
+                if qr_path.exists() and qr_path.is_file() and qr_path.stat().st_size > 0:
+                    # Determine QR code URL
+                    qr_url = None
+                    if session_id:
+                        # QR code is in session directory, use session path
+                        # Verify that the QR path is actually in the session directory
+                        try:
+                            qr_path_relative = qr_path.resolve().relative_to(
+                                (self.sessions_dir / session_id).resolve()
+                            )
+                            if qr_path_relative == Path("share-qr.png"):
+                                qr_url = f"/sessions/{session_id}/share-qr.png"
+                        except (ValueError, OSError):
+                            # QR path is not in session directory, skip
+                            pass
+                    
+                    if qr_url:
+                        html += '            <div class="qr-section">\n'
+                        html += '                <div class="qr-title">Scan to Open Gallery</div>\n'
+                        html += f'                <a href="{html.escape(url)}" target="_blank" class="qr-code" aria-label="QR code for gallery link">\n'
+                        html += f'                    <img src="{html.escape(qr_url)}" alt="QR code" loading="lazy">\n'
+                        html += '                </a>\n'
+                        html += '                <div class="qr-hint">Point your phone camera at the code</div>\n'
+                        html += '            </div>\n'
             
             html += '        </div>\n'
         else:

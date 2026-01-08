@@ -85,6 +85,15 @@ def _write_gallery_html(
             ".lb-bar{flex-direction:column;align-items:stretch}"
             ".lb-controls{justify-content:space-between;width:100%}"
             "}"
+            ".qr-section{padding:18px 0;border-top:1px solid var(--border);margin-top:18px;display:flex;flex-direction:column;align-items:center;gap:12px}"
+            ".qr-title{font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;font-weight:600}"
+            ".qr-code{width:160px;height:160px;border-radius:var(--radius);border:2px solid var(--border);padding:8px;background:#ffffff;box-shadow:var(--shadow);display:block;transition:transform 0.2s,box-shadow 0.2s}"
+            ".qr-code:hover{transform:translateY(-2px);box-shadow:0 12px 40px rgba(0,0,0,.4)}"
+            ".qr-code img{width:100%;height:100%;object-fit:contain;display:block}"
+            ".qr-hint{font-size:12px;color:var(--muted);text-align:center}"
+            "@media (max-width:600px){"
+            ".qr-code{width:140px;height:140px}"
+            "}"
             "</style>\n"
         )
         f.write("</head><body>\n")
@@ -108,6 +117,12 @@ def _write_gallery_html(
             )
         f.write("</div>")
         f.write("</div>\n")
+        
+        # Check if QR code exists in the same directory as the output file
+        qr_code_path = out_path.parent / "share-qr.png"
+        qr_code_url = None
+        if qr_code_path.exists() and qr_code_path.is_file() and qr_code_path.stat().st_size > 0:
+            qr_code_url = "share-qr.png"
 
         if not items:
             f.write("<div class=\"empty\">No shareable images found.</div>\n")
@@ -145,6 +160,36 @@ def _write_gallery_html(
                     )
                 )
             f.write("</div>\n")
+        
+        # Add QR code section if available
+        if qr_code_url:
+            # Try to get the URL from share.txt if available
+            share_txt_path = out_path.parent / "share.txt"
+            qr_link_url = None
+            if share_txt_path.exists():
+                try:
+                    share_url = share_txt_path.read_text(encoding="utf-8").strip()
+                    if share_url:
+                        qr_link_url = share_url
+                except Exception:
+                    pass
+            # Fallback to download_href or just show QR without link
+            if not qr_link_url and download_href:
+                qr_link_url = download_href
+            
+            f.write('<div class="qr-section">\n')
+            f.write('<div class="qr-title">Scan to Open Gallery</div>\n')
+            if qr_link_url:
+                f.write(f'<a href="{html.escape(qr_link_url)}" target="_blank" class="qr-code" aria-label="QR code for gallery link">\n')
+            else:
+                f.write('<div class="qr-code">\n')
+            f.write(f'<img src="{html.escape(qr_code_url)}" alt="QR code" loading="lazy">\n')
+            if qr_link_url:
+                f.write('</a>\n')
+            else:
+                f.write('</div>\n')
+            f.write('<div class="qr-hint">Point your phone camera at the code</div>\n')
+            f.write('</div>\n')
 
         # Lightbox shell + JS
         f.write(
