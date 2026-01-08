@@ -376,7 +376,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
         status_path=args.status_path,
         status_image_path=args.status_image_path,
         status_image_size=args.status_image_size,
-        web_enabled=args.web_enabled if hasattr(args, "web_enabled") else None,
+        web_enabled=args.web_enabled if hasattr(args, "web_enabled") and args.web_enabled is not None else None,
         web_host=args.web_host if hasattr(args, "web_host") else None,
         web_port=args.web_port if hasattr(args, "web_port") else None,
     )
@@ -748,7 +748,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_args(p_watch)
     p_watch.add_argument("--poll-seconds", type=float, default=None, help="Polling interval (default: 2)")
     p_watch.add_argument("--always-create-session", action="store_true", help="Create a session even if no new files")
-    p_watch.add_argument("--web-enabled", action="store_true", help="Enable web interface (or set GHOSTROLL_WEB_ENABLED=true)")
+    p_watch.add_argument("--web-enabled", action="store_true", default=None, help="Enable web interface (or set GHOSTROLL_WEB_ENABLED=true)")
+    p_watch.add_argument("--no-web-enabled", dest="web_enabled", action="store_false", help="Disable web interface")
     p_watch.add_argument("--web-host", default=None, help="Web interface host (default: 127.0.0.1, or GHOSTROLL_WEB_HOST)")
     p_watch.add_argument("--web-port", type=int, default=None, help="Web interface port (default: 8080, or GHOSTROLL_WEB_PORT)")
     p_watch.set_defaults(func=cmd_watch)
