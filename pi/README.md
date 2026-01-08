@@ -311,10 +311,18 @@ Start conservative and tune up:
 
 Web interface (enabled by default):
 - `GHOSTROLL_WEB_ENABLED=1` (enabled by default; set to `0` to disable)
-- `GHOSTROLL_WEB_HOST=0.0.0.0` (bind to all interfaces for network access) or `127.0.0.1` (local only)
+- `GHOSTROLL_WEB_HOST=0.0.0.0` (bind to all interfaces for network access, recommended) or `127.0.0.1` (local only)
 - `GHOSTROLL_WEB_PORT=8081` (default: 8081 on Pi to avoid conflict with WiFi portal on port 8080)
 
-The web interface provides easy access to status and session galleries without impacting performance. Access it at `http://<pi-ip>:<port>/` when enabled. See main README for details.
+**Important:** The default port is **8081** (not 8080) to avoid conflict with the WiFi portal. If the web interface isn't accessible:
+
+1. Check logs: `sudo journalctl -u ghostroll-watch.service -n 50 | grep -i web`
+2. Verify port: `sudo netstat -tuln | grep 8081` or `sudo ss -tuln | grep 8081`
+3. Run diagnostic: `./pi/scripts/check-web-interface.sh`
+4. Ensure `/etc/ghostroll.env` has `GHOSTROLL_WEB_ENABLED=1` and `GHOSTROLL_WEB_HOST=0.0.0.0`
+5. Restart service: `sudo systemctl restart ghostroll-watch.service`
+
+Access it at `http://<pi-ip>:8081/` when enabled. See main README for details.
 
 Then restart:
 

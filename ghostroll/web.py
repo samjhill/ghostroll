@@ -657,7 +657,7 @@ class GhostRollWebServer:
     def start(self):
         """Start the web server in a background thread."""
         if self._running:
-            return
+            return True
         
         def handler_factory(*args, **kwargs):
             return GhostRollWebHandler(
@@ -674,15 +674,31 @@ class GhostRollWebServer:
             def run_server():
                 try:
                     self.server.serve_forever()
-                except Exception:
-                    pass  # Server stopped
+                except Exception as e:
+                    # Log server errors (if server was stopped, this is expected)
+                    import sys
+                    if self._running:  # Only log if it wasn't intentionally stopped
+                        print(f"ghostroll-web: server error: {e}", file=sys.stderr)
             
             self.thread = threading.Thread(target=run_server, daemon=True)
             self.thread.start()
             
+            # Give the server a moment to start and verify it's actually running
+            import time
+            time.sleep(0.1)
+            if not self._running:
+                return False
+            
             return True
-        except OSError:
+        except OSError as e:
             # Port already in use or permission denied
+            import sys
+            print(f"ghostroll-web: failed to start on {self.host}:{self.port}: {e}", file=sys.stderr)
+            self._running = False
+            return False
+        except Exception as e:
+            import sys
+            print(f"ghostroll-web: unexpected error starting server: {e}", file=sys.stderr)
             self._running = False
             return False
     
