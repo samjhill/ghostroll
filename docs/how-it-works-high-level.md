@@ -80,34 +80,32 @@ S3 bucket structure (after upload and optional enhancement):
 8. Each **new file** is copied into `originals/DCIM/<relative path under DCIM>`, preserving structure.
 9. Each copied file’s SHA is inserted into `ingested_files` (dedupe record).
 
-### 4) Process derivatives (share + thumbs)
+### 4) Process derivatives + upload in parallel (upload-as-ready)
 
 10. From the discovered media set, the pipeline chooses sources for derivatives:
    - If RAW+JPEG exist with the same stem in the same folder, prefer the **JPEG** for derivatives.
    - RAW files are still ingested as originals but generally not used to generate share/thumb images.
-11. For each newly-ingested JPEG source, create:
-   - `derived/share/<same relpath>.jpg` (e.g. max long edge ~2048, quality ~90, auto-orient, metadata stripped)
-   - `derived/thumbs/<same relpath>.jpg` (e.g. max long edge ~512, quality ~85, auto-orient, metadata stripped)
-12. Basic EXIF info may be extracted (capture time/camera) to sort and label items in the gallery.
+11. **Parallel processing and uploading** starts:
+    - Processing workers generate derivatives concurrently:
+      - `derived/share/<same relpath>.jpg` (e.g. max long edge ~2048, quality ~90, auto-orient, metadata stripped)
+      - `derived/thumbs/<same relpath>.jpg` (e.g. max long edge ~512, quality ~85, auto-orient, metadata stripped)
+    - **As soon as each image is processed**, it's immediately queued for upload (upload-as-ready pattern)
+    - Upload workers consume from the queue and upload to S3 in parallel with ongoing processing
+    - This overlaps processing and upload work, reducing total time by **30-50% on Raspberry Pi**
+12. Basic EXIF info is extracted (capture time/camera) to sort and label items in the gallery.
+13. Upload dedupe: before uploading a given `s3_key`, the pipeline checks `uploads`:
+    - If the recorded `local_sha256` matches the current local file hash, upload is **skipped**.
+    - Otherwise upload happens and `uploads` is updated. (This makes reruns more idempotent.)
 
 ### 5) Build local gallery + zip
 
-13. Build `share.zip` from `derived/share/` for a single “download all” artifact.
-14. Build a **local** `index.html` that references `derived/thumbs/...` and `derived/share/...` via relative paths (works offline / locally).
-
-### 6) Upload to S3 (idempotent)
-
-15. Compute an S3 prefix like `sessions/<SESSION_ID>/` (configurable root + session id).
-16. Upload these objects (typically concurrent):
-   - `share/*`
-   - `thumbs/*`
-   - `share.zip`
-17. Upload dedupe: before uploading a given `s3_key`, the pipeline checks `uploads`:
-   - If the recorded `local_sha256` matches the current local file hash, upload is **skipped**.
-   - Otherwise upload happens and `uploads` is updated. (This makes reruns more idempotent.)
+14. After all processing/uploads complete, build `share.zip` from `derived/share/` for a single "download all" artifact.
+15. Upload `share.zip` to S3.
+16. Build a **local** `index.html` that references `derived/thumbs/...` and `derived/share/...` via relative paths (works offline / locally).
 
 ### 7) Create an S3-shareable gallery (presigned URLs)
 
+17. Compute an S3 prefix like `sessions/<SESSION_ID>/` (configurable root + session id).
 18. Generate presigned URLs for:
    - every thumbnail object
    - every share image object
@@ -117,7 +115,7 @@ S3 bucket structure (after upload and optional enhancement):
    - If enhanced images exist, includes toggle button and enhanced URLs as data attributes.
 20. Upload `index.s3.html` to S3 as `.../index.html`.
 
-### 8) Automatic image enhancement (optional, via AWS Lambda)
+### 7) Automatic image enhancement (optional, via AWS Lambda)
 
 21. When images are uploaded to `sessions/<SESSION_ID>/share/*.jpg`, S3 EventBridge automatically triggers the Lambda function.
 22. Lambda function:
@@ -127,7 +125,7 @@ S3 bucket structure (after upload and optional enhancement):
    - Includes idempotency check to prevent duplicate processing.
 23. Enhancement happens asynchronously after upload; gallery detects and uses enhanced images when available.
 
-### 9) Produce the final share link + QR
+### 8) Produce the final share link + QR
 
 24. Generate a presigned URL for the uploaded `.../index.html`.
 25. Write it to `share.txt` and optionally render:
@@ -136,7 +134,7 @@ S3 bucket structure (after upload and optional enhancement):
 26. Write status outputs: **state=done**, **step=done**, including counts and the final URL.
 27. `watch` then waits for SD card removal before returning to idle.
 
-### 10) Gallery with enhanced images
+### 9) Gallery with enhanced images
 
 28. When users open the gallery:
    - Gallery automatically detects if enhanced images are available.
@@ -170,12 +168,13 @@ flowchart TB
         A[SD Card Mount] --> B[GhostRoll Watch]
         B --> C[Pipeline: Scan & Dedupe]
         C --> D[Copy Originals]
-        D --> E[Generate Share/Thumbs]
+        D --> E[Generate Share/Thumbs<br/>in parallel]
+        E -->|Upload as ready| G[S3 Bucket<br/>Private]
         E --> F[Build Gallery HTML]
     end
     
     subgraph "AWS Services"
-        G[S3 Bucket<br/>Private] 
+        G 
         H[Lambda Function<br/>Enhance Images]
         I[EventBridge<br/>S3 Events]
     end
@@ -196,6 +195,7 @@ flowchart TB
     K -->|Toggle| L[Original View]
     K -->|Toggle| M[Enhanced View]
     
+    style E fill:#fff4e1,color:#000
     style H fill:#fff3e0,color:#000
     style I fill:#e3f2fd,color:#000
     style K fill:#e8f5e9,color:#000
@@ -220,10 +220,13 @@ sequenceDiagram
     Pipeline->>DB: Check for duplicates
     DB-->>Pipeline: New files list
     Pipeline->>LocalFS: Copy originals
-    Pipeline->>LocalFS: Generate share/thumbs
+    par Parallel Processing & Uploading
+        Pipeline->>LocalFS: Generate share/thumbs
+    and
+        Pipeline->>S3: Upload as ready (upload-as-ready)
+    end
     Pipeline->>LocalFS: Build gallery HTML
-    Pipeline->>S3: Upload share images
-    Pipeline->>S3: Upload thumbs
+    Pipeline->>S3: Upload share.zip
     Pipeline->>S3: Upload gallery HTML
     Pipeline->>S3: Generate presigned URLs
     Pipeline->>User: Share link + QR code

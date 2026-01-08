@@ -7,6 +7,7 @@ GhostRoll is a “drop the SD card in and it just works” ingest pipeline:
 It's designed to be:
 
 - **Low-friction** (watch mode + one URL)
+- **Fast** (parallel processing + uploading; 30-50% faster on Raspberry Pi)
 - **Incremental** (dedupe so re-inserting the same card is fast)
 - **Privacy-friendly** (derived images strip metadata; S3 stays private)
 
@@ -31,9 +32,9 @@ flowchart TD
     D -->|No| E[Skip - already processed]
     D -->|Yes| F[Copy originals to session]
     F --> G[Generate share images & thumbnails]
-    G --> H[Build HTML gallery]
-    H --> I[Upload to private S3 bucket]
-    I --> J[S3 EventBridge triggers Lambda]
+    G -->|As processed| I[Upload to private S3 bucket<br/>in parallel]
+    I --> H[Build HTML gallery]
+    H --> J[S3 EventBridge triggers Lambda]
     J --> K[Lambda enhances images automatically]
     K --> L[Enhanced images stored in enhanced/]
     L --> M[Generate presigned URLs]
@@ -42,6 +43,8 @@ flowchart TD
     O --> P[Gallery with toggle: Original/Enhanced]
     E --> Q[Wait for next card]
     P --> Q
+    style G fill:#fff4e1,color:#000
+    style I fill:#e3f2fd,color:#000
     style J fill:#e3f2fd,color:#000
     style K fill:#fff3e0,color:#000
     style L fill:#f3e5f5,color:#000

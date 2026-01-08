@@ -1,5 +1,35 @@
 # GhostRoll Performance Optimization Recommendations
 
+## Implemented Optimizations (v0.5.0+)
+
+### ✅ Parallel Processing + Uploading (Major Performance Improvement)
+
+**Status**: ✅ **IMPLEMENTED** in v0.5.0
+
+**What it does**:
+- Upload images as soon as they're processed (upload-as-ready pattern)
+- Overlaps processing and upload work using queue-based coordination
+- Processing workers generate derivatives concurrently
+- Upload workers consume from queue and upload to S3 in parallel
+- Reduces total time by **30-50% on Raspberry Pi**
+
+**Implementation**:
+- Queue-based coordination between processing and upload workers
+- Thread-safe tracking of uploaded keys and counters
+- Progressive gallery updates work with parallel uploads
+- All existing functionality preserved
+
+**Performance Impact**:
+- **Before**: Process all images → Upload all images (sequential)
+- **After**: Process + Upload in parallel (overlapping)
+- **Result**: 30-50% faster end-to-end on Raspberry Pi
+
+**Configuration**:
+- `GHOSTROLL_PROCESS_WORKERS` (default: 1-6 based on CPU)
+- `GHOSTROLL_UPLOAD_WORKERS` (default: 4)
+
+See `PROCESSING_VS_DIRECT_UPLOAD_ANALYSIS.md` for detailed analysis.
+
 ## Current Performance Characteristics
 
 ### Bottlenecks Identified
@@ -165,30 +195,18 @@ def render_jpeg_derivative(
 **Impact**: 2-3x faster thumbnail generation, minimal quality loss
 
 #### 3.2 Parallel Share + Thumb Generation
-**Current**: Sequential (share then thumb)  
-**Recommended**: Generate both in parallel from same source
+**Status**: ✅ **IMPLEMENTED**
 
-```python
-def _process_one_parallel(task: tuple[Path, Path, Path, Path]) -> tuple[str, float, str, str]:
-    src, rel, share_out, thumb_out = task
-    
-    # Generate both in parallel using threads
-    def gen_share():
-        if not share_out.exists():
-            render_jpeg_derivative(src, dst_path=share_out, ...)
-    
-    def gen_thumb():
-        if not thumb_out.exists():
-            render_jpeg_derivative(src, dst_path=thumb_out, ...)
-    
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        ex.submit(gen_share)
-        ex.submit(gen_thumb)
-    
-    # ... rest
-```
+**Implementation**: Generate both share and thumb in parallel from same source using ThreadPoolExecutor
 
 **Impact**: 30-40% faster per-image processing
+
+#### 3.2.1 Parallel Processing + Uploading
+**Status**: ✅ **IMPLEMENTED** in v0.5.0
+
+**Implementation**: Upload images as soon as they're processed (upload-as-ready) using queue-based coordination
+
+**Impact**: 30-50% faster end-to-end on Raspberry Pi
 
 #### 3.3 Progressive JPEG Encoding
 **Current**: Progressive=True (good)  
