@@ -536,6 +536,88 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
             text-align: center;
         }
         
+        .progress-section {
+            margin-top: 1.5rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid var(--border);
+        }
+        
+        .progress-item {
+            margin-bottom: 1rem;
+        }
+        
+        .progress-item:last-child {
+            margin-bottom: 0;
+        }
+        
+        .progress-label {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+        
+        .progress-label-text {
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .progress-label-value {
+            font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, monospace;
+            color: var(--accent);
+            font-weight: 600;
+        }
+        
+        .progress-bar-container {
+            width: 100%;
+            height: 8px;
+            background: var(--bg-tertiary);
+            border-radius: 4px;
+            overflow: hidden;
+            position: relative;
+        }
+        
+        .progress-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent), var(--accent-hover));
+            border-radius: 4px;
+            transition: width 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .progress-bar-fill::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            right: 0;
+            background: linear-gradient(
+                90deg,
+                transparent,
+                rgba(255, 255, 255, 0.2),
+                transparent
+            );
+            animation: shimmer 2s infinite;
+        }
+        
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+        
+        .progress-bar-fill.complete {
+            background: var(--status-done);
+        }
+        
+        .progress-bar-fill.complete::after {
+            display: none;
+        }
+        
         @media (max-width: 640px) {
             h1 {
                 font-size: 2rem;
@@ -608,6 +690,10 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
                     html += f'                    <div class="count-value">{value}</div>\n'
                     html += '                </div>\n'
                 html += '            </div>\n'
+            
+            # Add progress bars section (will be populated by JavaScript)
+            html += '            <div class="progress-section" id="progress-section" style="display: none;">\n'
+            html += '            </div>\n'
             
             if url:
                 html += f'            <a href="{url}" target="_blank" class="action-button">View Gallery →</a>\n'
@@ -790,6 +876,9 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
                     }
                 }
                 
+                // Update progress bars
+                updateProgressBars(counts, state);
+                
                 // Update action button (gallery link)
                 let actionButton = statusCard.querySelector('.action-button');
                 if (url) {
@@ -853,6 +942,93 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
                 const div = document.createElement('div');
                 div.textContent = text;
                 return div.innerHTML;
+            }
+            
+            function updateProgressBars(counts, state) {
+                if (!statusCard) return;
+                
+                let progressSection = statusCard.querySelector('#progress-section');
+                if (!progressSection) {
+                    // Create progress section if it doesn't exist
+                    progressSection = document.createElement('div');
+                    progressSection.id = 'progress-section';
+                    progressSection.className = 'progress-section';
+                    // Insert before QR section or at end of status card
+                    const qrSection = statusCard.querySelector('.qr-section');
+                    if (qrSection) {
+                        statusCard.insertBefore(progressSection, qrSection);
+                    } else {
+                        statusCard.appendChild(progressSection);
+                    }
+                }
+                
+                const progressItems = [];
+                
+                // Processing progress
+                if (counts.processed_done !== undefined && counts.processed_total !== undefined && counts.processed_total > 0) {
+                    const done = parseInt(counts.processed_done) || 0;
+                    const total = parseInt(counts.processed_total) || 0;
+                    const percent = Math.min(100, Math.round((done / total) * 100));
+                    const isComplete = done >= total;
+                    progressItems.push({
+                        label: 'Processing',
+                        done: done,
+                        total: total,
+                        percent: percent,
+                        complete: isComplete
+                    });
+                }
+                
+                // Upload progress
+                if (counts.uploaded_done !== undefined && counts.uploaded_total !== undefined && counts.uploaded_total > 0) {
+                    const done = parseInt(counts.uploaded_done) || 0;
+                    const total = parseInt(counts.uploaded_total) || 0;
+                    const percent = Math.min(100, Math.round((done / total) * 100));
+                    const isComplete = done >= total;
+                    progressItems.push({
+                        label: 'Uploading',
+                        done: done,
+                        total: total,
+                        percent: percent,
+                        complete: isComplete
+                    });
+                }
+                
+                // Presigning progress (if available)
+                if (counts.presigned_done !== undefined && counts.presigned_total !== undefined && counts.presigned_total > 0) {
+                    const done = parseInt(counts.presigned_done) || 0;
+                    const total = parseInt(counts.presigned_total) || 0;
+                    const percent = Math.min(100, Math.round((done / total) * 100));
+                    const isComplete = done >= total;
+                    progressItems.push({
+                        label: 'Generating Links',
+                        done: done,
+                        total: total,
+                        percent: percent,
+                        complete: isComplete
+                    });
+                }
+                
+                // Render progress bars
+                if (progressItems.length > 0 && state === 'running') {
+                    let progressHTML = '';
+                    for (const item of progressItems) {
+                        progressHTML += '<div class="progress-item">\\n';
+                        progressHTML += '    <div class="progress-label">\\n';
+                        progressHTML += '        <span class="progress-label-text">' + escapeHtml(item.label) + '</span>\\n';
+                        progressHTML += '        <span class="progress-label-value">' + item.done + ' / ' + item.total + ' (' + item.percent + '%)</span>\\n';
+                        progressHTML += '    </div>\\n';
+                        progressHTML += '    <div class="progress-bar-container">\\n';
+                        const fillClass = item.complete ? 'progress-bar-fill complete' : 'progress-bar-fill';
+                        progressHTML += '        <div class="' + fillClass + '" style="width: ' + item.percent + '%;"></div>\\n';
+                        progressHTML += '    </div>\\n';
+                        progressHTML += '</div>\\n';
+                    }
+                    progressSection.innerHTML = progressHTML;
+                    progressSection.style.display = '';
+                } else {
+                    progressSection.style.display = 'none';
+                }
             }
             
             async function pollStatus() {
