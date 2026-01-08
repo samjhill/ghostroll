@@ -678,6 +678,7 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
         
         if status_data:
             state = status_data.get("state", "unknown").lower()
+            step = status_data.get("step", "").lower()
             state_display = state.upper()
             message = status_data.get("message", "")
             session_id = status_data.get("session_id")
@@ -767,10 +768,23 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
             if counts:
                 html += '            <div class="status-counts">\n'
                 for key, value in sorted(counts.items()):
+                    # Skip internal RAW progress counts - they're shown in progress bars
+                    if key in ('raw_files_compressing', 'raw_zip_size_bytes', 'raw_upload_error'):
+                        continue
                     key_display = key.replace("_", " ").title()
+                    # Format specific keys for better display
+                    if key == 'raw_files_total':
+                        key_display = 'RAW Files'
+                    elif key == 'raw_uploaded':
+                        key_display = 'RAW Uploaded'
                     html += f'                <div class="count-badge">\n'
                     html += f'                    <div class="count-label">{key_display}</div>\n'
-                    html += f'                    <div class="count-value">{value}</div>\n'
+                    # Format file sizes nicely
+                    if key == 'raw_zip_size_bytes' and isinstance(value, int):
+                        size_mb = value / (1024 * 1024)
+                        html += f'                    <div class="count-value">{size_mb:.1f} MB</div>\n'
+                    else:
+                        html += f'                    <div class="count-value">{value}</div>\n'
                     html += '                </div>\n'
                 html += '            </div>\n'
             
@@ -913,8 +927,9 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
                 if (!statusCard || !data) return;
                 
                 const state = (data.state || 'unknown').toLowerCase();
+                const step = (data.step || '').toLowerCase();
                 const stateDisplay = state.toUpperCase();
-                const message = data.message || '';
+                let message = data.message || '';
                 const sessionId = data.session_id || null;
                 let url = data.url || null;
                 const counts = data.counts || {};
@@ -1221,6 +1236,44 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
                         total: total,
                         percent: percent,
                         complete: isComplete
+                    });
+                }
+                
+                // RAW upload progress (compression + upload)
+                if (counts.raw_files_compressing !== undefined && counts.raw_files_total !== undefined && counts.raw_files_total > 0) {
+                    // Compression in progress
+                    const compressing = parseInt(counts.raw_files_compressing) || 0;
+                    const total = parseInt(counts.raw_files_total) || 0;
+                    const percent = Math.min(100, Math.round((compressing / total) * 100));
+                    const isComplete = compressing >= total && (counts.raw_uploaded !== undefined && counts.raw_uploaded > 0);
+                    // Show upload status if compression is complete
+                    if (compressing >= total && counts.raw_uploaded !== undefined) {
+                        const uploaded = parseInt(counts.raw_uploaded) || 0;
+                        progressItems.push({
+                            label: 'RAW Files',
+                            done: uploaded,
+                            total: 1,
+                            percent: uploaded > 0 ? 100 : 0,
+                            complete: uploaded > 0
+                        });
+                    } else {
+                        progressItems.push({
+                            label: 'RAW Files (Compressing)',
+                            done: compressing,
+                            total: total,
+                            percent: percent,
+                            complete: false
+                        });
+                    }
+                } else if (counts.raw_files_total !== undefined && counts.raw_files_total > 0 && counts.raw_uploaded !== undefined) {
+                    // Compression complete, show upload status
+                    const uploaded = parseInt(counts.raw_uploaded) || 0;
+                    progressItems.push({
+                        label: 'RAW Files',
+                        done: uploaded,
+                        total: 1,
+                        percent: uploaded > 0 ? 100 : 0,
+                        complete: uploaded > 0
                     });
                 }
                 

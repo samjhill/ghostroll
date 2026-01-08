@@ -81,7 +81,7 @@ def _build_share_zip(*, share_dir: Path, out_zip: Path) -> None:
             zf.write(p, arcname=str(Path("share") / rel))
 
 
-def _build_raw_zip(*, originals_dir: Path, out_zip: Path, logger=None) -> int:
+def _build_raw_zip(*, originals_dir: Path, out_zip: Path, logger=None, progress_callback=None, raw_files_list: list[Path] | None = None) -> int:
     """
     Creates a zip file containing RAW files from originals/DCIM/ directory.
     Only includes RAW files (not JPEGs).
@@ -89,6 +89,14 @@ def _build_raw_zip(*, originals_dir: Path, out_zip: Path, logger=None) -> int:
     Optimized for Raspberry Pi:
     - Uses compression level 1 (fastest, still good compression for RAW files)
     - Processes files in sorted order for predictable progress
+    - Can accept pre-collected file list to avoid double-scanning
+    
+    Args:
+        originals_dir: Directory containing DCIM subdirectory
+        out_zip: Output ZIP file path
+        logger: Optional logger for progress messages
+        progress_callback: Optional callback(current, total) called during compression
+        raw_files_list: Optional pre-collected list of RAW files (avoids re-scanning)
     
     Returns:
         Number of RAW files included in the zip.
@@ -102,11 +110,16 @@ def _build_raw_zip(*, originals_dir: Path, out_zip: Path, logger=None) -> int:
             logger.debug(f"No DCIM directory found in originals: {dcim_dir}")
         return 0
     
-    # Collect RAW files first (more efficient than checking during iteration)
-    raw_files = sorted([p for p in dcim_dir.rglob("*") if p.is_file() and media.is_raw(p)])
+    # Use provided list or collect RAW files (more efficient than checking during iteration)
+    if raw_files_list is not None:
+        raw_files = sorted(raw_files_list)
+    else:
+        raw_files = sorted([p for p in dcim_dir.rglob("*") if p.is_file() and media.is_raw(p)])
     
     if not raw_files:
         return 0
+    
+    total_files = len(raw_files)
     
     # Use compression level 1 for faster compression on Raspberry Pi
     # RAW files compress well even at low levels, and speed is more important
@@ -115,8 +128,16 @@ def _build_raw_zip(*, originals_dir: Path, out_zip: Path, logger=None) -> int:
             rel = p.relative_to(dcim_dir)
             zf.write(p, arcname=str(Path("DCIM") / rel))
             raw_count += 1
+            
+            # Call progress callback if provided
+            if progress_callback:
+                try:
+                    progress_callback(i, total_files)
+                except Exception:
+                    pass  # Don't let callback errors break compression
+            
             if logger and i % 10 == 0:  # Log every 10 files to avoid spam
-                logger.debug(f"Added {i}/{len(raw_files)} RAW files to zip...")
+                logger.debug(f"Added {i}/{total_files} RAW files to zip...")
     
     return raw_count
 
@@ -1733,11 +1754,99 @@ def run_pipeline(
             try:
                 raw_zip = session_dir / "originals-raw.zip"
                 logger.info(f"Compressing RAW files to {raw_zip.name}...")
-                raw_count = _build_raw_zip(originals_dir=originals_dir, out_zip=raw_zip, logger=logger)
+                
+                # Check for RAW files first to get count before starting
+                dcim_dir = originals_dir / "DCIM"
+                raw_files_list = []
+                if dcim_dir.exists():
+                    raw_files_list = sorted([p for p in dcim_dir.rglob("*") if p.is_file() and media.is_raw(p)])
+                
+                # Update status with RAW compression start
+                if status is not None and raw_files_list:
+                    status.write(
+                        Status(
+                            state="running",
+                            step="raw_upload",
+                            message=f"Compressing {len(raw_files_list)} RAW files…",
+                            session_id=session_id,
+                            volume=str(volume_path),
+                            counts={
+                                "discovered": len(all_media),
+                                "new": len(new_files_with_hashes),
+                                "skipped": skipped,
+                                "processed": processed,
+                                "uploaded": uploaded_ok,
+                                "raw_files_compressing": 0,
+                                "raw_files_total": len(raw_files_list),
+                            },
+                            url=url,
+                            qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,
+                        )
+                    )
+                
+                # Track compression progress
+                raw_compression_progress = {"current": 0, "total": len(raw_files_list)}
+                
+                def raw_progress_callback(current: int, total: int):
+                    """Update status with compression progress."""
+                    raw_compression_progress["current"] = current
+                    raw_compression_progress["total"] = total
+                    if status is not None and current % 5 == 0:  # Update every 5 files to avoid spam
+                        status.write(
+                            Status(
+                                state="running",
+                                step="raw_upload",
+                                message=f"Compressing RAW files ({current}/{total})…",
+                                session_id=session_id,
+                                volume=str(volume_path),
+                                counts={
+                                    "discovered": len(all_media),
+                                    "new": len(new_files_with_hashes),
+                                    "skipped": skipped,
+                                    "processed": processed,
+                                    "uploaded": uploaded_ok,
+                                    "raw_files_compressing": current,
+                                    "raw_files_total": total,
+                                },
+                                url=url,
+                                qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,
+                            )
+                        )
+                
+                raw_count = _build_raw_zip(
+                    originals_dir=originals_dir,
+                    out_zip=raw_zip,
+                    logger=logger,
+                    progress_callback=raw_progress_callback,
+                    raw_files_list=raw_files_list,  # Pass pre-collected list to avoid double-scanning
+                )
                 
                 if raw_count > 0:
                     zip_size = raw_zip.stat().st_size if raw_zip.exists() else 0
                     logger.info(f"Created {raw_zip.name} with {raw_count} RAW files ({zip_size:,} bytes)")
+                    
+                    # Update status with upload start
+                    if status is not None:
+                        status.write(
+                            Status(
+                                state="running",
+                                step="raw_upload",
+                                message=f"Uploading RAW archive ({zip_size:,} bytes)…",
+                                session_id=session_id,
+                                volume=str(volume_path),
+                                counts={
+                                    "discovered": len(all_media),
+                                    "new": len(new_files_with_hashes),
+                                    "skipped": skipped,
+                                    "processed": processed,
+                                    "uploaded": uploaded_ok,
+                                    "raw_files_total": raw_count,
+                                    "raw_zip_size_bytes": zip_size,
+                                },
+                                url=url,
+                                qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,
+                            )
+                        )
                     
                     # Upload to S3 in originals/ prefix
                     raw_zip_key = f"{prefix}/originals/raw.zip"
@@ -1746,6 +1855,29 @@ def run_pipeline(
                     if uploaded:
                         uploaded_ok += 1
                         logger.info(f"Uploaded RAW files archive: {raw_zip_key} ({zip_size:,} bytes)")
+                        
+                        # Update status with success
+                        if status is not None:
+                            status.write(
+                                Status(
+                                    state="running",
+                                    step="raw_upload",
+                                    message="RAW files uploaded",
+                                    session_id=session_id,
+                                    volume=str(volume_path),
+                                    counts={
+                                        "discovered": len(all_media),
+                                        "new": len(new_files_with_hashes),
+                                        "skipped": skipped,
+                                        "processed": processed,
+                                        "uploaded": uploaded_ok,
+                                        "raw_files_total": raw_count,
+                                        "raw_uploaded": 1,
+                                    },
+                                    url=url,
+                                    qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,
+                                )
+                            )
                     if err:
                         logger.warning(f"Failed to upload RAW files archive: {err}")
                 else:
@@ -1753,6 +1885,27 @@ def run_pipeline(
             except Exception as e:
                 # Don't fail the pipeline if RAW upload fails - it's non-critical
                 logger.warning(f"Failed to upload RAW files (non-critical): {type(e).__name__}: {e}")
+                # Update status with error (but don't fail pipeline)
+                if status is not None:
+                    status.write(
+                        Status(
+                            state="running",
+                            step="raw_upload",
+                            message="RAW upload failed (non-critical)",
+                            session_id=session_id,
+                            volume=str(volume_path),
+                            counts={
+                                "discovered": len(all_media),
+                                "new": len(new_files_with_hashes),
+                                "skipped": skipped,
+                                "processed": processed,
+                                "uploaded": uploaded_ok,
+                                "raw_upload_error": 1,
+                            },
+                            url=url,
+                            qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,
+                        )
+                    )
 
         if status is not None:
             # Ensure QR code path is valid for done state

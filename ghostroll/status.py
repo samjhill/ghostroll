@@ -713,6 +713,19 @@ class StatusWriter:
                         draw.text((text_x, text_y), f"Up: {done}/{total} ({pct}%)", font=small_font, fill=0)
                         text_y += small_line_height
                 
+                # RAW upload progress
+                if step_lower == "raw_upload":
+                    if "raw_files_compressing" in counts and "raw_files_total" in counts:
+                        compressing = int(counts.get("raw_files_compressing", 0))
+                        total = int(counts.get("raw_files_total", 0))
+                        if total > 0:
+                            pct = int((compressing / total) * 100)
+                            draw.text((text_x, text_y), f"RAW: {compressing}/{total} ({pct}%)", font=small_font, fill=0)
+                            text_y += small_line_height
+                    elif "raw_uploaded" in counts and counts.get("raw_uploaded", 0) > 0:
+                        draw.text((text_x, text_y), "RAW: Uploaded", font=small_font, fill=0)
+                        text_y += small_line_height
+                
                 # Show volume name if available (only if space allows)
                 if payload.get("volume") and text_y + small_line_height < h - 16:
                     vol_name = Path(payload["volume"]).name
@@ -865,16 +878,30 @@ class StatusWriter:
                     draw.text((text_x, text_y), message, font=default_font, fill=0)
                     text_y += line_height
             
-            # Progress information (when running)
+                # Progress information (when running)
             if state == "RUNNING":
                 step_lower = step.lower()
                 prog_pairs = [
                     ("process", "processed_done", "processed_total", "Processing"),
                     ("upload", "uploaded_done", "uploaded_total", "Uploading"),
                     ("presign", "presigned_done", "presigned_total", "Generating link"),
+                    ("raw_upload", "raw_files_compressing", "raw_files_total", "RAW Files"),
                 ]
                 for step_name, done_k, total_k, label in prog_pairs:
-                    if step_name in step_lower and total_k in counts and done_k in counts and counts[total_k] > 0:
+                    if step_name == "raw_upload" and step_lower == "raw_upload":
+                        # Special handling for RAW upload: show compression or upload status
+                        if "raw_files_compressing" in counts and "raw_files_total" in counts and counts["raw_files_total"] > 0:
+                            compressing = int(counts.get("raw_files_compressing", 0))
+                            total = int(counts.get("raw_files_total", 0))
+                            pct = int((compressing / total) * 100)
+                            draw.text((text_x, text_y), f"RAW: {compressing}/{total} ({pct}%)", font=default_font, fill=0)
+                            text_y += line_height
+                            break
+                        elif "raw_uploaded" in counts and counts.get("raw_uploaded", 0) > 0:
+                            draw.text((text_x, text_y), "RAW Files: Uploaded", font=default_font, fill=0)
+                            text_y += line_height
+                            break
+                    elif step_name in step_lower and total_k in counts and done_k in counts and counts[total_k] > 0:
                         done = int(counts[done_k])
                         total = int(counts[total_k])
                         pct = int((done / total) * 100)
