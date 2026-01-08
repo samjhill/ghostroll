@@ -9,7 +9,7 @@ import threading
 import time
 from pathlib import Path
 
-from .aws_boto3 import s3_upload_file
+from .aws_boto3 import s3_upload_file, AwsBoto3Error
 
 
 logger = logging.getLogger("ghostroll")
@@ -71,18 +71,19 @@ class LogUploader:
                         handler.flush()
                 
                 # Upload the log file
-                uploaded, err = s3_upload_file(
-                    local_path=self.log_file,
-                    bucket=self.s3_bucket,
-                    key=self.s3_key,
-                )
-                
-                if uploaded:
+                # s3_upload_file returns None on success, raises AwsBoto3Error on failure
+                try:
+                    s3_upload_file(
+                        local_path=self.log_file,
+                        bucket=self.s3_bucket,
+                        key=self.s3_key,
+                    )
+                    # Upload succeeded
                     self._last_upload_time = time.time()
                     self._upload_count += 1
                     return True
-                else:
-                    logger.debug(f"Log upload failed: {err}")
+                except AwsBoto3Error as e:
+                    logger.debug(f"Log upload failed: {e}")
                     return False
             except Exception as e:
                 logger.debug(f"Log upload exception: {e}")

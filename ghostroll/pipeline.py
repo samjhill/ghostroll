@@ -233,6 +233,9 @@ def _iter_media_files(dcim_dir: Path, logger=None) -> list[Path]:
                 root_path = Path(root)
                 for filename in files:
                     all_files_count += 1
+                    # Skip macOS metadata files (resource forks) - they start with ._
+                    if filename.startswith("._"):
+                        continue
                     file_path = root_path / filename
                     try:
                         if media.is_media(file_path):
@@ -251,6 +254,9 @@ def _iter_media_files(dcim_dir: Path, logger=None) -> list[Path]:
                     continue
                 file_path = Path(line.strip())
                 try:
+                    # Skip macOS metadata files (resource forks) - they start with ._
+                    if file_path.name.startswith("._"):
+                        continue
                     if file_path.is_file() and media.is_media(file_path):
                         out.append(file_path)
                 except (OSError, IOError):
@@ -265,6 +271,9 @@ def _iter_media_files(dcim_dir: Path, logger=None) -> list[Path]:
                 root_path = Path(root)
                 for filename in files:
                     all_files_count += 1
+                    # Skip macOS metadata files (resource forks) - they start with ._
+                    if filename.startswith("._"):
+                        continue
                     file_path = root_path / filename
                     try:
                         if media.is_media(file_path):
@@ -696,6 +705,7 @@ def run_pipeline(
             except Exception as e:
                 logger.warning(f"Failed to start log uploader: {e} (logs will still be uploaded at end)")
                 log_uploader = None
+
         uploaded_ok = 0
         upload_failures: list[str] = []
         url: str | None = None
