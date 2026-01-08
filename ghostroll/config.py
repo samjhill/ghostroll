@@ -174,13 +174,27 @@ def load_config(
     )
     
     # Web interface settings (enabled by default)
-    web_enabled = (
-        web_enabled if web_enabled is not None else env.get("GHOSTROLL_WEB_ENABLED", "true").lower() in ("true", "1", "yes")
-    )
+    # Read from environment, handling both explicit values and defaults
+    web_enabled_env = env.get("GHOSTROLL_WEB_ENABLED", "").strip()
+    if web_enabled is not None:
+        # CLI argument takes precedence
+        web_enabled = web_enabled
+    elif web_enabled_env:
+        # Environment variable set
+        web_enabled = web_enabled_env.lower() in ("true", "1", "yes", "on")
+    else:
+        # Default to enabled
+        web_enabled = True
+    
     web_host = web_host or env.get("GHOSTROLL_WEB_HOST", "127.0.0.1")
-    web_port = int(
-        web_port if web_port is not None else env.get("GHOSTROLL_WEB_PORT", "8080")
-    )
+    web_port_env = env.get("GHOSTROLL_WEB_PORT", "").strip()
+    if web_port is not None:
+        web_port = web_port
+    elif web_port_env:
+        web_port = int(web_port_env)
+    else:
+        # Default port (8080 on macOS/Linux, 8081 on Pi if WiFi portal uses 8080)
+        web_port = 8080
 
     cfg = Config(
         sd_label=sd_label,

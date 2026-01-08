@@ -394,8 +394,10 @@ def cmd_watch(args: argparse.Namespace) -> int:
     logger.info(f"S3 bucket: {cfg.s3_bucket}")
     
     # Start web server if enabled
+    logger.debug(f"Web interface configuration: enabled={cfg.web_enabled}, host={cfg.web_host}, port={cfg.web_port}")
     web_server = None
     if cfg.web_enabled:
+        logger.info(f"Starting web interface on {cfg.web_host}:{cfg.web_port}...")
         web_server = GhostRollWebServer(
             status_path=cfg.status_path,
             sessions_dir=cfg.sessions_dir,
@@ -410,6 +412,8 @@ def cmd_watch(args: argparse.Namespace) -> int:
         else:
             logger.warning(f"Failed to start web server on {cfg.web_host}:{cfg.web_port} (port may be in use)")
             web_server = None
+    else:
+        logger.debug("Web interface is disabled (GHOSTROLL_WEB_ENABLED not set or false)")
     
     # Try to unmount any stale mounts before starting
     logger.debug("Checking for stale mounts before starting...")
