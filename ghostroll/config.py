@@ -175,23 +175,40 @@ def load_config(
     
     # Web interface settings (enabled by default)
     # Read from environment, handling both explicit values and defaults
-    web_enabled_env = env.get("GHOSTROLL_WEB_ENABLED", "").strip()
+    # Systemd passes environment variables as strings, so we need to handle "1", "true", etc.
+    web_enabled_env = env.get("GHOSTROLL_WEB_ENABLED", "")
+    # Handle empty string, whitespace, and None
+    if web_enabled_env:
+        web_enabled_env = str(web_enabled_env).strip()
+    else:
+        web_enabled_env = ""
+    
     if web_enabled is not None:
         # CLI argument takes precedence
-        web_enabled = web_enabled
+        web_enabled = bool(web_enabled)
     elif web_enabled_env:
-        # Environment variable set
-        web_enabled = web_enabled_env.lower() in ("true", "1", "yes", "on")
+        # Environment variable set - check for truthy values
+        web_enabled_env_lower = web_enabled_env.lower()
+        web_enabled = web_enabled_env_lower in ("true", "1", "yes", "on", "enabled")
     else:
-        # Default to enabled
+        # Default to enabled if not explicitly set
         web_enabled = True
     
     web_host = web_host or env.get("GHOSTROLL_WEB_HOST", "127.0.0.1")
-    web_port_env = env.get("GHOSTROLL_WEB_PORT", "").strip()
+    web_port_env = env.get("GHOSTROLL_WEB_PORT", "")
+    if web_port_env:
+        web_port_env = str(web_port_env).strip()
+    else:
+        web_port_env = ""
+    
     if web_port is not None:
-        web_port = web_port
+        web_port = int(web_port)
     elif web_port_env:
-        web_port = int(web_port_env)
+        try:
+            web_port = int(web_port_env)
+        except ValueError:
+            # Invalid port, use default
+            web_port = 8080
     else:
         # Default port (8080 on macOS/Linux, 8081 on Pi if WiFi portal uses 8080)
         web_port = 8080

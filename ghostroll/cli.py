@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import platform
 import subprocess
 import sys
@@ -394,7 +395,10 @@ def cmd_watch(args: argparse.Namespace) -> int:
     logger.info(f"S3 bucket: {cfg.s3_bucket}")
     
     # Start web server if enabled
-    logger.debug(f"Web interface configuration: enabled={cfg.web_enabled}, host={cfg.web_host}, port={cfg.web_port}")
+    # Debug: Check what environment variables are actually set
+    web_enabled_env = os.environ.get("GHOSTROLL_WEB_ENABLED", "NOT_SET")
+    logger.debug(f"Environment GHOSTROLL_WEB_ENABLED={web_enabled_env!r} (type: {type(web_enabled_env).__name__})")
+    logger.info(f"Web interface configuration: enabled={cfg.web_enabled}, host={cfg.web_host}, port={cfg.web_port}")
     web_server = None
     if cfg.web_enabled:
         logger.info(f"Starting web interface on {cfg.web_host}:{cfg.web_port}...")
