@@ -102,6 +102,14 @@ fi
 
 echo "Restarting GhostRoll services..."
 
+# Check if web interface is enabled
+if grep -q "^GHOSTROLL_WEB_ENABLED=1" /etc/ghostroll.env 2>/dev/null; then
+    WEB_HOST="${GHOSTROLL_WEB_HOST:-127.0.0.1}"
+    WEB_PORT="${GHOSTROLL_WEB_PORT:-8080}"
+    echo "  Web interface enabled: http://${WEB_HOST}:${WEB_PORT}"
+    echo "    (Web server starts automatically with ghostroll-watch.service)"
+fi
+
 # Restart all GhostRoll services (only if they're active/enabled)
 SERVICES=(
     "ghostroll-watch.service"

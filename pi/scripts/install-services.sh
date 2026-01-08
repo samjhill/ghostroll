@@ -92,6 +92,14 @@ echo "Services installed:"
 echo "  - ghostroll-watch.service (enabled and started)"
 echo "  - ghostroll-eink.service (enabled, starts if GHOSTROLL_EINK_ENABLE=1)"
 echo ""
+if [[ -f "${ENV_DST}" ]] && grep -q "^GHOSTROLL_WEB_ENABLED=1" "${ENV_DST}" 2>/dev/null; then
+    WEB_HOST=$(grep "^GHOSTROLL_WEB_HOST=" "${ENV_DST}" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "127.0.0.1")
+    WEB_PORT=$(grep "^GHOSTROLL_WEB_PORT=" "${ENV_DST}" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "8080")
+    echo "Web interface:"
+    echo "  - Enabled (starts automatically with ghostroll-watch.service)"
+    echo "  - URL: http://${WEB_HOST}:${WEB_PORT}/"
+    echo ""
+fi
 echo "Check logs:"
 echo "  sudo journalctl -u ghostroll-watch.service -f"
 echo "  sudo journalctl -u ghostroll-eink.service -f"
