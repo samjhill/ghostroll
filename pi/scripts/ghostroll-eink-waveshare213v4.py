@@ -101,14 +101,15 @@ def _load_epd():
 
 
 def _fit_for_epd(img: Image.Image, *, w: int, h: int) -> Image.Image:
-    # Ensure monochrome, correct aspect, and orientation.
-    # Many users mount the HAT in landscape; we keep the 250x122 native resolution.
-    
+    """
+    Prepare image for e-ink display (250x122 for Waveshare 2.13" V4).
+    Optimized to preserve QR code sharpness for reliable phone scanning.
+    """
     # Check if image is already 1-bit (like status images with QR codes)
     # QR codes need sharp edges and exact patterns - preserve them carefully
     if img.mode == "1":
-        # Already 1-bit - just resize carefully to preserve QR code sharpness
-        # Use nearest neighbor for 1-bit images to avoid anti-aliasing that breaks QR codes
+        # Already 1-bit - preserve sharpness with nearest neighbor resampling
+        # This is critical for QR codes - any anti-aliasing will make them unscannable
         img_resized = img.resize((w, h), Image.Resampling.NEAREST)
         return img_resized
     
@@ -116,57 +117,70 @@ def _fit_for_epd(img: Image.Image, *, w: int, h: int) -> Image.Image:
     if img.mode != "L":
         img = img.convert("L")
     
-    # Detect if image likely contains a QR code by checking for high-contrast square patterns
-    # QR codes have very specific patterns - we need to preserve them exactly
+    # Detect QR codes by looking for characteristic high-contrast patterns
+    # QR codes are always black/white with sharp edges - detect and preserve
     pixels = list(img.getdata())
+    has_qr_likely = False
+    
     if pixels:
         min_val = min(pixels)
         max_val = max(pixels)
         contrast_range = max_val - min_val
         
-        # Check for high contrast (QR codes have pure black/white)
-        # Also check pixel distribution - QR codes have ~30-50% black pixels
+        # QR codes have very high contrast (nearly pure black/white)
+        # Also check pixel distribution - QR codes typically have 30-50% black pixels
         dark_pixels = sum(1 for p in pixels if p < 128)
         dark_pct = (dark_pixels / len(pixels)) * 100
         
-        # If high contrast and reasonable black percentage, likely has QR code
-        # Preserve QR codes with sharp thresholding (no autocontrast)
-        has_qr_likely = contrast_range > 200 and 20 < dark_pct < 60
+        # More accurate QR detection: high contrast + typical black percentage + square-ish aspect
+        width, height = img.size
+        aspect_ratio = max(width, height) / min(width, height) if min(width, height) > 0 else 1
+        
+        # QR code detection criteria:
+        # 1. Very high contrast (nearly pure black/white)
+        # 2. Black pixel percentage in typical QR range (25-55%)
+        # 3. Reasonable aspect ratio (QR codes are square, but may be in rectangular status images)
+        has_qr_likely = (
+            contrast_range > 220 and  # Very high contrast (QR codes are pure black/white)
+            25 < dark_pct < 55 and  # Typical QR code black percentage
+            aspect_ratio < 3.0  # Not extremely wide/tall (QR is usually square-ish)
+        )
         
         if has_qr_likely:
-            # QR code detected - use sharp thresholding to preserve exact pattern
-            # Resize first with high quality, then threshold sharply
-            img = ImageOps.fit(img, (w, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
-            # Use standard 128 threshold for QR codes (preserves black/white distinction)
-            img_1bit = img.point(lambda p: 0 if p < 128 else 255, mode="1")
+            # QR code detected - preserve exact pattern with sharp thresholding
+            # Resize with LANCZOS for quality, then apply sharp threshold
+            # Important: resize before thresholding to avoid artifacts
+            img_resized = ImageOps.fit(img, (w, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+            
+            # Sharp threshold at exactly 128 to preserve black/white distinction
+            # This ensures QR code patterns remain clear and scannable
+            img_1bit = img_resized.point(lambda p: 0 if p < 128 else 255, mode="1")
             return img_1bit
     
-    # For text/images without QR codes, use the original processing
+    # For text/images without QR codes, enhance readability
     # Enhance contrast aggressively to make sparse text more visible
-    # Use a lower cutoff to preserve even faint text
     img = ImageOps.autocontrast(img, cutoff=1)
     
     # Resize to target dimensions using high-quality resampling
     img = ImageOps.fit(img, (w, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
     
-    # For sparse text (like 0.4% black), we need a lower threshold to preserve it
+    # Adaptive thresholding for text readability
     # Check pixel distribution to determine appropriate threshold
     pixels = list(img.getdata())
     if pixels:
         min_val = min(pixels)
         max_val = max(pixels)
-        # If image has very sparse dark content, use a more aggressive threshold
-        # to capture even faint text
-        dark_pixels = sum(1 for p in pixels if p < 200)  # Count pixels darker than ~78% gray
+        # Count pixels darker than ~78% gray for threshold determination
+        dark_pixels = sum(1 for p in pixels if p < 200)
         dark_pct = (dark_pixels / len(pixels)) * 100
         
         if dark_pct < 2.0:  # Very sparse text (< 2% dark)
-            # Use a very low threshold to capture faint text
+            # Very low threshold to capture faint text
             threshold = 240  # Anything darker than ~94% white becomes black
         elif dark_pct < 5.0:  # Sparse text (< 5% dark)
             threshold = 200  # Anything darker than ~78% white becomes black
         else:
-            threshold = 128  # Normal threshold
+            threshold = 128  # Normal threshold for typical text/images
     else:
         threshold = 128
     

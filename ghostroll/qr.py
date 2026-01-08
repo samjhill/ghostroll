@@ -29,17 +29,20 @@ def write_qr_png(*, data: str, out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     qr = qrcode.QRCode(
         version=None,
-        error_correction=qrcode.constants.ERROR_CORRECT_M,  # Medium error correction: balanced between robustness and scanability
-        # Medium provides 15% error correction (sufficient for e-ink artifacts) while keeping QR code less dense
-        # This reduces complexity by ~20% compared to HIGH error correction, making it easier to scan
-        # Larger QR for better scan reliability (especially on e-ink / when printed).
-        # Increased box_size for higher quality when resized
-        box_size=10,
-        border=3,  # Reduced from 4 to 3 for slightly less complexity while maintaining scanability
+        error_correction=qrcode.constants.ERROR_CORRECT_H,  # High error correction: 30% error correction for maximum robustness on e-ink displays
+        # HIGH provides 30% error correction, essential for e-ink displays where artifacts, ghosting, and imperfect rendering can occur
+        # This makes the QR code more reliable even if some pixels are degraded during e-ink rendering
+        box_size=12,  # Increased from 10 to 12 for larger initial QR code (better quality when resized)
+        border=4,  # Increased border (quiet zone) to 4 modules for better scanning reliability
+        # Larger border ensures phones can easily detect the QR code boundaries even with e-ink rendering artifacts
     )
     qr.add_data(data)
     qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white").convert("1")
+    # Generate high-quality QR code image with sharp edges for better phone scanning
+    # Using RGB mode first, then convert to 1-bit for crisp black/white edges
+    img = qr.make_image(fill_color="black", back_color="white")
+    # Convert to 1-bit mode (monochrome) for optimal e-ink display and scanning
+    img = img.convert("1")
     img.save(out_path)
     # Ensure file is fully written and synced to disk before returning
     # This is critical for e-ink display to pick up the QR code immediately

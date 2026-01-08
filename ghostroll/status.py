@@ -264,6 +264,7 @@ class StatusWriter:
         draw = ImageDraw.Draw(img)
         
         # Load fonts - try platform-specific paths first, then fallback
+        # Use larger, more readable fonts for e-ink displays
         default_font = None
         title_font = None
         small_font = None
@@ -279,24 +280,31 @@ class StatusWriter:
                 "/Library/Fonts/Arial.ttf",
             ]
         elif system == "linux":
-            # Linux font paths
+            # Linux font paths - prioritize bold fonts for better readability
             font_paths = [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
                 "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
                 "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
             ]
         
-        # Try to load fonts from platform-specific paths
+        # Try to load fonts from platform-specific paths with larger sizes for readability
         for font_path in font_paths:
             try:
                 if Path(font_path).exists():
-                    default_font = ImageFont.truetype(font_path, 12)
-                    # Try to find bold variant
+                    # Use larger fonts for better e-ink readability
+                    default_font = ImageFont.truetype(font_path, 13)  # Increased from 12
+                    # Try to find bold variant for title
                     bold_path = font_path.replace("Regular", "Bold").replace("DejaVuSans.ttf", "DejaVuSans-Bold.ttf")
-                    if Path(bold_path).exists():
-                        title_font = ImageFont.truetype(bold_path, 16)
+                    if "Bold" in font_path or Path(bold_path).exists():
+                        if "Bold" in font_path:
+                            title_font_path = font_path
+                        else:
+                            title_font_path = bold_path
+                        title_font = ImageFont.truetype(title_font_path, 18)  # Increased from 16 for better visibility
                     else:
-                        title_font = ImageFont.truetype(font_path, 16)
-                    small_font = ImageFont.truetype(font_path, 10)
+                        title_font = ImageFont.truetype(font_path, 18)
+                    small_font = ImageFont.truetype(font_path, 11)  # Increased from 10
                     break
             except Exception:
                 continue
@@ -429,12 +437,12 @@ class StatusWriter:
         
         if is_small_display:
             # Compact layout for small e-ink displays (e.g., 250x122)
-            # Optimized for 250x122: text on left, QR on right (when available)
-            text_x = 8
-            # Start text lower to ensure all content is visible, but leave room for larger QR
-            text_y = max(30, int(h * 0.25))  # Start at 30px or 25% of height (moved up for QR space)
-            line_height = 13
-            small_line_height = 11
+            # Optimized for 250x122: maximize QR code size for phone scanning
+            # Improved spacing and readability
+            text_x = 6
+            text_y = 28  # Start text at fixed position for consistent layout
+            line_height = 15  # Increased from 13 for better readability
+            small_line_height = 12  # Increased from 11
             
             # Helper to format user-friendly messages
             def _format_message(msg: str, state: str) -> str:
@@ -465,18 +473,19 @@ class StatusWriter:
                     msg = msg[:19] + "..."
                 return msg
             
-            # Battery indicator in top-right corner
-            # Calculate position to ensure it fits: battery (24px) + tab (3px) + text (~20px) + margin (5px) = ~52px
+            # Battery indicator in top-right corner (before QR code area)
+            # Position it above QR code area when QR is present, or top-right if no QR
             if battery_percentage is not None:
-                battery_size = 24  # Larger for better visibility on e-ink
+                battery_size = 22  # Slightly smaller to give more space to QR code
                 # Estimate text width (percentage can be 1-3 digits + %)
                 text_width = 20 if battery_percentage < 100 else 25
                 total_width = battery_size + 3 + 4 + text_width  # battery + tab + spacing + text
-                battery_x = w - total_width - 4  # Position from right with margin
-                battery_y = 2  # Top margin
+                # Position battery at top-right, but leave space for QR code on right side
+                battery_x = w - total_width - 6
+                battery_y = 4  # Top margin
                 _draw_battery_indicator(battery_x, battery_y, battery_percentage, battery_charging, size=battery_size)
             
-            # Header - more compact
+            # Header - bold and clear
             if state == "IDLE":
                 header = "GhostRoll"
             elif state == "RUNNING":
@@ -488,135 +497,178 @@ class StatusWriter:
             else:
                 header = "GhostRoll"
             
+            # Draw header with better spacing
             draw.text((text_x, text_y), header, font=title_font, fill=0)
-            text_y += line_height + 1
+            text_y += line_height + 2  # Increased spacing for better readability
             
-            # Status message - user-friendly formatting
+            # Status message - user-friendly formatting with better spacing
             if message:
                 friendly_msg = _format_message(message, state)
                 if state == "DONE":
+                    # Done state: clear, bold message
                     draw.text((text_x, text_y), friendly_msg, font=default_font, fill=0)
-                    text_y += line_height
-                    # Show session info if available
-                    if payload.get("session_id"):
+                    text_y += line_height + 1  # Extra spacing after main message
+                    # Show session info if available (only if space allows)
+                    if payload.get("session_id") and text_y + small_line_height < h - 16:
                         session_short = payload["session_id"][:18] + "..." if len(payload.get("session_id", "")) > 18 else payload["session_id"]
-                        draw.text((text_x, text_y), f"Session: {session_short}", font=small_font, fill=0)
+                        draw.text((text_x, text_y), f"S: {session_short}", font=small_font, fill=0)
                         text_y += small_line_height
                 elif state == "ERROR":
-                    # Show first line of error
+                    # Error state: show first line of error clearly
                     error_lines = friendly_msg.split("\n")
                     draw.text((text_x, text_y), error_lines[0][:22], font=default_font, fill=0)
                     text_y += line_height
                 else:
+                    # Normal state: clear message
                     draw.text((text_x, text_y), friendly_msg, font=default_font, fill=0)
                     text_y += line_height
             
-            # Progress and file counts (when running)
+            # Progress and file counts (when running) - improved formatting
             if state == "RUNNING":
                 step_lower = step.lower()
                 
-                # Show file counts if available
+                # Show file counts if available (more concise)
                 if "new" in counts:
                     new_count = int(counts.get("new", 0))
                     if new_count > 0:
-                        draw.text((text_x, text_y), f"{new_count} new photo{'s' if new_count != 1 else ''}", font=small_font, fill=0)
+                        draw.text((text_x, text_y), f"{new_count} new", font=small_font, fill=0)
                         text_y += small_line_height
                 elif "discovered" in counts:
                     disc_count = int(counts.get("discovered", 0))
                     if disc_count > 0:
-                        draw.text((text_x, text_y), f"{disc_count} photo{'s' if disc_count != 1 else ''}", font=small_font, fill=0)
+                        draw.text((text_x, text_y), f"{disc_count} found", font=small_font, fill=0)
                         text_y += small_line_height
                 
-                # Processing progress
+                # Processing progress (more compact)
                 if "process" in step_lower and "processed_done" in counts and "processed_total" in counts:
                     done = int(counts.get("processed_done", 0))
                     total = int(counts.get("processed_total", 0))
                     if total > 0:
                         pct = int((done / total) * 100)
-                        draw.text((text_x, text_y), f"Process: {done}/{total} ({pct}%)", font=small_font, fill=0)
+                        draw.text((text_x, text_y), f"Proc: {done}/{total} ({pct}%)", font=small_font, fill=0)
                         text_y += small_line_height
                 
-                # Upload progress
+                # Upload progress (more compact)
                 if "upload" in step_lower and "uploaded_done" in counts and "uploaded_total" in counts:
                     done = int(counts.get("uploaded_done", 0))
                     total = int(counts.get("uploaded_total", 0))
                     if total > 0:
                         pct = int((done / total) * 100)
-                        draw.text((text_x, text_y), f"Upload: {done}/{total} ({pct}%)", font=small_font, fill=0)
+                        draw.text((text_x, text_y), f"Up: {done}/{total} ({pct}%)", font=small_font, fill=0)
                         text_y += small_line_height
                 
-                # Show volume name if available
-                if payload.get("volume"):
+                # Show volume name if available (only if space allows)
+                if payload.get("volume") and text_y + small_line_height < h - 16:
                     vol_name = Path(payload["volume"]).name
-                    if len(vol_name) > 15:
-                        vol_name = vol_name[:12] + "..."
+                    if len(vol_name) > 14:
+                        vol_name = vol_name[:11] + "..."
                     draw.text((text_x, text_y), f"Card: {vol_name}", font=small_font, fill=0)
                     text_y += small_line_height
             
             # QR code on the right side (if available)
             # Show QR code whenever it's available, including in DONE state
-            # This ensures it appears as soon as it's generated and remains visible throughout
-            # Priority: QR code is always shown when available, regardless of state
+            # Priority: Maximize QR code size for reliable phone scanning
             if qr_img:
-                # Optimize layout to maximize QR code size for better phone scanning
-                # Reduce text area width to give more space to QR code
-                text_area_width = 110  # Reduced from 130 to give more space for QR
-                available_width = w - text_area_width - 6
+                # Maximize QR code size: use most of the right side of display
+                # Reserve space for text on left (reduced to minimum)
+                text_area_width = 100  # Reduced to maximize QR code space
+                qr_margin = 3  # Minimal margin around QR
+                available_width = w - text_area_width - qr_margin
                 
-                # Position QR code starting near the top for maximum size
-                # Fixed position ensures QR code is always visible, even in DONE state with extra text
-                qr_start_y = 8  # Start closer to top to maximize vertical space
+                # Position QR code starting below battery indicator (if present)
+                # Start QR code at y=30 to leave room for battery at top
+                qr_start_y = 32 if battery_percentage is not None else 6
                 
-                # Calculate available height - leave minimal room for label
-                # In DONE state, text may be longer, but QR code position is fixed at top
-                bottom_space = 12  # Reduced space for label
-                available_height = h - qr_start_y - bottom_space
+                # Calculate available height - leave room for label at bottom
+                label_height = 14
+                bottom_info_height = small_line_height + 4 if state in ("IDLE", "DONE", "") and payload.get("ip") else 0
+                available_height = h - qr_start_y - label_height - bottom_info_height - 2
                 
-                # Make QR code as large as possible for better scanning (min 80px, prefer 100px+)
-                # For 250x122 display: max width ~134px, max height ~102px
+                # Make QR code as large as possible for reliable phone scanning
+                # Target: minimum 90px, prefer 100px+ for easy scanning
                 qr_size = min(available_width, available_height)
-                # Ensure QR is at least 80px for reliable phone scanning
-                # QR code is always displayed when available, including in DONE state
-                # Use NEAREST resampling for 1-bit QR codes to preserve sharp edges for scanning
-                if qr_size >= 80:
+                # Ensure QR is at least 85px for reliable phone scanning (QR codes need good size)
+                if qr_size >= 85:
+                    # Add white border (quiet zone) around QR code for better scanning
+                    # This helps phones detect QR code boundaries more easily
+                    border_pixels = 3  # 3-pixel white border around QR code
+                    qr_with_border_size = qr_size + (border_pixels * 2)
+                    
+                    # Create a temporary image with white border
+                    qr_with_border = Image.new("1", (qr_with_border_size, qr_with_border_size), 1)  # 1 = white
+                    
+                    # Resize QR code with sharp edges (NEAREST for 1-bit to preserve sharpness)
                     if qr_img.mode == "1":
                         # For 1-bit images, use nearest neighbor to preserve sharp QR code edges
+                        # This is critical for QR code scanning - blurry edges make scanning fail
                         qr_resized = qr_img.resize((qr_size, qr_size), Image.Resampling.NEAREST)
                     else:
-                        qr_resized = qr_img.resize((qr_size, qr_size), Image.Resampling.LANCZOS)
-                    qr_x = w - qr_size - 4
+                        # Convert to 1-bit first, then resize
+                        qr_1bit = qr_img.convert("1")
+                        qr_resized = qr_1bit.resize((qr_size, qr_size), Image.Resampling.NEAREST)
+                    
+                    # Paste QR code into center of white border image
+                    qr_with_border.paste(qr_resized, (border_pixels, border_pixels))
+                    
+                    # Position QR code on right side with margin
+                    qr_x = w - qr_with_border_size - qr_margin
+                    qr_y = qr_start_y
+                    
+                    # Paste QR code with border onto main image
+                    img.paste(qr_with_border, (qr_x, qr_y))
+                    
+                    # Label below QR code - centered and clear
+                    label_text = "Scan"
+                    # Measure text to center it
+                    bbox = draw.textbbox((0, 0), label_text, font=small_font)
+                    label_width = bbox[2] - bbox[0]
+                    label_x = qr_x + (qr_with_border_size - label_width) // 2
+                    label_y = qr_y + qr_with_border_size + 2
+                    draw.text((label_x, label_y), label_text, font=small_font, fill=0)
+                else:
+                    # QR code too small - log warning but still try to display
+                    import sys
+                    print(f"ghostroll-status: WARNING: QR code size {qr_size}px may be too small for reliable scanning (minimum recommended: 85px)", file=sys.stderr)
+                    # Still try to display it
+                    if qr_img.mode == "1":
+                        qr_resized = qr_img.resize((qr_size, qr_size), Image.Resampling.NEAREST)
+                    else:
+                        qr_1bit = qr_img.convert("1")
+                        qr_resized = qr_1bit.resize((qr_size, qr_size), Image.Resampling.NEAREST)
+                    qr_x = w - qr_size - qr_margin
                     qr_y = qr_start_y
                     img.paste(qr_resized, (qr_x, qr_y))
-                    # Label below QR, centered (smaller font to save space)
-                    label_x = qr_x + (qr_size // 2) - 10
-                    draw.text((label_x, qr_y + qr_size + 1), "Scan", font=small_font, fill=0)
             elif qr_path_str:
                 # QR path was provided but image failed to load - log for debugging
                 import sys
                 print(f"ghostroll-status: QR code path provided ({qr_path_str}) but image not loaded - check logs above", file=sys.stderr)
             
-            # Bottom info bar
-            bottom_y = h - small_line_height - 2
+            # Bottom info bar - improved spacing and readability
+            bottom_y = h - small_line_height - 3
             bottom_info_parts = []
             
-            # SSH info (when idle or done)
+            # SSH info (when idle or done) - only show if QR code is not present or we have space
             if state in ("IDLE", "DONE", "") and payload.get("ip"):
                 ip = payload.get("ip", "")
-                # Shorten IP if needed
-                if len(ip) > 12:
-                    ip = ip[:9] + "..."
+                # Shorten IP if needed for small display
+                if len(ip) > 14:
+                    ip = ip[:11] + "..."
                 bottom_info_parts.append(f"SSH: {ip}")
             
-            # Session ID when done (if no IP or space available)
+            # Session ID when done (if no IP or space available) - very concise
             if state == "DONE" and payload.get("session_id") and not payload.get("ip"):
-                session_short = payload["session_id"][:15] + "..." if len(payload.get("session_id", "")) > 15 else payload["session_id"]
+                session_short = payload["session_id"][:12] + "..." if len(payload.get("session_id", "")) > 12 else payload["session_id"]
                 bottom_info_parts.append(session_short)
             
-            # Show bottom info
+            # Show bottom info only if we have room (don't overlap with QR code)
             if bottom_info_parts:
                 bottom_text = " | ".join(bottom_info_parts)
-                if len(bottom_text) > 30:
-                    bottom_text = bottom_text[:27] + "..."
+                # Limit width to fit on screen without overlapping QR code
+                max_text_width = text_area_width - 4
+                # Rough estimate: 6 pixels per character for small font
+                max_chars = max_text_width // 6
+                if len(bottom_text) > max_chars:
+                    bottom_text = bottom_text[:max_chars - 3] + "..."
                 draw.text((text_x, bottom_y), bottom_text, font=small_font, fill=0)
         
         else:
@@ -686,28 +738,41 @@ class StatusWriter:
                     draw.text((text_x, text_y), "  ".join(key_counts), font=default_font, fill=0)
                     text_y += line_height
             
-            # QR code - prominently displayed
+            # QR code - prominently displayed with white border for better scanning
             # Always shown when available, including in DONE state
             if qr_img:
                 # Position QR code: right side for larger displays
                 # Make QR code larger for better phone scanning (prefer 250px+ for large displays)
-                max_qr_size = min(300, h - padding * 2, w - text_x - padding - 20)
-                qr_size = max(150, max_qr_size)  # Ensure at least 150px for large displays
-                # Use NEAREST resampling for 1-bit QR codes to preserve sharp edges for scanning
+                max_qr_size = min(350, h - padding * 2, w - text_x - padding - 40)
+                qr_size = max(200, max_qr_size)  # Ensure at least 200px for large displays (better for scanning)
+                
+                # Add white border (quiet zone) around QR code for better scanning
+                border_pixels = 6  # Larger border for big displays
+                qr_with_border_size = qr_size + (border_pixels * 2)
+                
+                # Create a temporary image with white border
+                qr_with_border = Image.new("1", (qr_with_border_size, qr_with_border_size), 1)  # 1 = white
+                
+                # Resize QR code with sharp edges (NEAREST for 1-bit to preserve sharpness)
                 if qr_img.mode == "1":
                     qr_resized = qr_img.resize((qr_size, qr_size), Image.Resampling.NEAREST)
                 else:
-                    qr_resized = qr_img.resize((qr_size, qr_size), Image.Resampling.LANCZOS)
-                qr_x = w - qr_size - padding
+                    qr_1bit = qr_img.convert("1")
+                    qr_resized = qr_1bit.resize((qr_size, qr_size), Image.Resampling.NEAREST)
+                
+                # Paste QR code into center of white border image
+                qr_with_border.paste(qr_resized, (border_pixels, border_pixels))
+                
+                qr_x = w - qr_with_border_size - padding
                 qr_y = padding
-                img.paste(qr_resized, (qr_x, qr_y))
+                img.paste(qr_with_border, (qr_x, qr_y))
                 
                 # Label above QR
                 label_text = "Scan to view gallery"
                 # Measure text width to center it
                 bbox = draw.textbbox((0, 0), label_text, font=default_font)
                 label_width = bbox[2] - bbox[0]
-                label_x = qr_x + (qr_size - label_width) // 2
+                label_x = qr_x + (qr_with_border_size - label_width) // 2
                 draw.text((label_x, qr_y - line_height - 4), label_text, font=default_font, fill=0)
             elif qr_path_str:
                 # QR path was provided but image failed to load - log for debugging
