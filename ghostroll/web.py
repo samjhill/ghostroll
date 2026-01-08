@@ -1164,6 +1164,8 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
                 content_type = "text/html"
             elif file_path.endswith(".json"):
                 content_type = "application/json"
+            elif file_path.endswith(".log"):
+                content_type = "text/plain; charset=utf-8"
             elif file_path.endswith(".png"):
                 content_type = "image/png"
             elif file_path.endswith(".jpg") or file_path.endswith(".jpeg"):
