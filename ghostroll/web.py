@@ -7,13 +7,87 @@ Designed to have virtually no performance impact on the main pipeline.
 
 from __future__ import annotations
 
+import html as html_escape_module
 import json
 import os
+import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+
+
+def _get_git_info(repo_dir: Path | None = None) -> tuple[str | None, str | None]:
+    """
+    Get git commit hash and repository URL.
+    
+    Returns:
+        Tuple of (commit_hash, repo_url) or (None, None) if not available.
+    """
+    try:
+        # Try to determine repository directory
+        if repo_dir is None:
+            # Try to find the GhostRoll repo directory
+            # Check common locations
+            possible_dirs = [
+                Path(__file__).parent.parent,  # ghostroll/../ (repo root)
+                Path("/home/pi/ghostroll"),    # Common Pi location
+                Path("/usr/local/src/ghostroll"),  # Pi-gen location
+            ]
+            
+            for candidate in possible_dirs:
+                if (candidate / ".git").exists():
+                    repo_dir = candidate
+                    break
+        else:
+            if not (repo_dir / ".git").exists():
+                return None, None
+        
+        if repo_dir is None:
+            return None, None
+        
+        # Get commit hash
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            commit_hash = result.stdout.strip() if result.returncode == 0 else None
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            commit_hash = None
+        
+        # Get repository URL
+        repo_url = None
+        if commit_hash:
+            try:
+                result = subprocess.run(
+                    ["git", "remote", "get-url", "origin"],
+                    cwd=repo_dir,
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                    check=False,
+                )
+                if result.returncode == 0:
+                    remote_url = result.stdout.strip()
+                    # Convert SSH URLs to HTTPS URLs for GitHub
+                    if remote_url.startswith("git@github.com:"):
+                        repo_url = remote_url.replace("git@github.com:", "https://github.com/").replace(".git", "")
+                    elif remote_url.startswith("https://github.com/"):
+                        repo_url = remote_url.replace(".git", "")
+                    else:
+                        repo_url = remote_url.replace(".git", "")
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                pass
+        
+        return commit_hash, repo_url
+    except Exception:
+        return None, None
 
 
 class GhostRollWebHandler(BaseHTTPRequestHandler):
@@ -370,6 +444,26 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
             color: var(--accent);
         }
         
+        .version-link {
+            font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, monospace;
+            font-size: 0.85rem;
+        }
+        
+        .version-link code {
+            background: var(--bg-tertiary);
+            padding: 0.2rem 0.4rem;
+            border-radius: 4px;
+            font-family: inherit;
+            font-size: inherit;
+            color: var(--text-secondary);
+            transition: all 0.2s ease;
+        }
+        
+        .version-link:hover code {
+            background: var(--accent);
+            color: white;
+        }
+        
         .empty-state {
             text-align: center;
             padding: 3rem 1rem;
@@ -524,8 +618,8 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
                     if qr_url:
                         html += '            <div class="qr-section">\n'
                         html += '                <div class="qr-title">Scan to Open Gallery</div>\n'
-                        html += f'                <a href="{html.escape(url)}" target="_blank" class="qr-code" aria-label="QR code for gallery link">\n'
-                        html += f'                    <img src="{html.escape(qr_url)}" alt="QR code" loading="lazy">\n'
+                        html += f'                <a href="{html_escape_module.escape(url)}" target="_blank" class="qr-code" aria-label="QR code for gallery link">\n'
+                        html += f'                    <img src="{html_escape_module.escape(qr_url)}" alt="QR code" loading="lazy">\n'
                         html += '                </a>\n'
                         html += '                <div class="qr-hint">Point your phone camera at the code</div>\n'
                         html += '            </div>\n'
@@ -562,14 +656,27 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
             html += '            </div>\n'
             html += '        </div>\n'
         
-        html += """        <div class="footer">
-            <a href="/status.json" class="footer-link">Status JSON</a>
-            <a href="/status.png" class="footer-link">Status Image</a>
-            <a href="/sessions" class="footer-link">Sessions API</a>
-        </div>
-    </div>
-</body>
-</html>"""
+        html += '        <div class="footer">\n'
+        html += '            <a href="/status.json" class="footer-link">Status JSON</a>\n'
+        html += '            <a href="/status.png" class="footer-link">Status Image</a>\n'
+        html += '            <a href="/sessions" class="footer-link">Sessions API</a>\n'
+        
+        # Add git commit hash with link if available
+        commit_hash, repo_url = _get_git_info()
+        if commit_hash:
+            short_hash = commit_hash[:7]
+            if repo_url:
+                commit_url = f"{repo_url}/commit/{commit_hash}"
+                html += f'            <a href="{html_escape_module.escape(commit_url)}" target="_blank" class="footer-link version-link" title="Commit: {html_escape_module.escape(commit_hash)}">'
+                html += f'            <code>{html_escape_module.escape(short_hash)}</code></a>\n'
+            else:
+                html += f'            <span class="footer-link version-link" title="Commit: {html_escape_module.escape(commit_hash)}">'
+                html += f'            <code>{html_escape_module.escape(short_hash)}</code></span>\n'
+        
+        html += '        </div>\n'
+        html += '    </div>\n'
+        html += '</body>\n'
+        html += '</html>'
         
         self._send_html(html)
     
