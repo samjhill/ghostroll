@@ -655,6 +655,20 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
             counts = status_data.get("counts") or {}
             volume = status_data.get("volume")
             
+            # Fallback: If URL is not set but we have a session_id, try to read from share.txt
+            if not url and session_id:
+                share_txt = self.sessions_dir / session_id / "share.txt"
+                if share_txt.exists() and share_txt.is_file():
+                    try:
+                        url = share_txt.read_text(encoding="utf-8").strip()
+                        # Only use if it's a valid S3 presigned URL (starts with https://)
+                        if url and url.startswith("https://"):
+                            pass  # Valid URL, use it
+                        else:
+                            url = None  # Invalid URL, ignore it
+                    except Exception:
+                        pass  # Failed to read, keep url as None
+            
             html += '        <div class="status-card">\n'
             html += '            <div class="status-header">\n'
             html += f'                <div class="status-indicator {state}"></div>\n'
@@ -826,9 +840,30 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
                 const stateDisplay = state.toUpperCase();
                 const message = data.message || '';
                 const sessionId = data.session_id || null;
-                const url = data.url || null;
+                let url = data.url || null;
                 const counts = data.counts || {};
                 const volume = data.volume || null;
+                
+                // Fallback: If URL is not set but we have a sessionId, try to fetch from share.txt
+                if (!url && sessionId) {
+                    fetch('/sessions/' + escapeHtml(sessionId) + '/share.txt')
+                        .then(response => {
+                            if (response.ok) {
+                                return response.text();
+                            }
+                            return null;
+                        })
+                        .then(shareUrl => {
+                            if (shareUrl && shareUrl.trim()) {
+                                url = shareUrl.trim();
+                                // Update the button and QR code with the fetched URL
+                                updateGalleryLinks(url, sessionId, data.qr_path || null);
+                            }
+                        })
+                        .catch(() => {
+                            // Ignore errors - URL will remain null
+                        });
+                }
                 
                 // Update status indicator and title
                 if (statusIndicator) {
@@ -888,9 +923,24 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
                 // Update progress bars
                 updateProgressBars(counts, state);
                 
+                // Update gallery links (button and QR code)
+                updateGalleryLinks(url, sessionId, data.qr_path || null);
+            }
+            
+            function updateGalleryLinks(url, sessionId, qrPathStr) {
                 // Update action button (gallery link)
                 let actionButton = statusCard.querySelector('.action-button');
                 if (url) {
+                    // Ensure URL is the presigned S3 URL, not a local path
+                    // If it looks like a local path (/sessions/...), don't use it
+                    if (url.startsWith('/sessions/') || url.startsWith('http://localhost') || url.startsWith('http://127.0.0.1')) {
+                        // This is a local path, not the S3 presigned URL - skip it
+                        if (actionButton) {
+                            actionButton.style.display = 'none';
+                        }
+                        return;
+                    }
+                    
                     if (!actionButton) {
                         // Create button if it doesn't exist
                         const buttonContainer = document.createElement('div');
@@ -909,8 +959,19 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
                 }
                 
                 // Update QR code if URL or session changed
-                const qrPathStr = data.qr_path || null;
                 if (url && sessionId && qrPathStr) {
+                    // Ensure URL is the presigned S3 URL, not a local path
+                    if (url.startsWith('/sessions/') || url.startsWith('http://localhost') || url.startsWith('http://127.0.0.1')) {
+                        // This is a local path, not the S3 presigned URL - skip QR code
+                        if (qrSection) {
+                            qrSection.remove();
+                            qrSection = null;
+                        }
+                        currentSessionId = null;
+                        currentUrl = null;
+                        return;
+                    }
+                    
                     const qrUrl = '/sessions/' + escapeHtml(sessionId) + '/share-qr.png';
                     
                     // Only update QR if session or URL changed
