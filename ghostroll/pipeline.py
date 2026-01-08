@@ -21,7 +21,7 @@ from .db import connect
 from .exif_utils import extract_basic_exif
 from .gallery import build_index_html_from_items, build_index_html_loading, build_index_html_presigned
 from .hashing import sha256_file
-from .image_processing import render_jpeg_derivative
+from .image_processing import ProcessingError, render_jpeg_derivative
 from .logging_utils import attach_session_logfile
 from .log_uploader import ensure_log_upload, LogUploader
 from .qr import QrError, render_qr_ascii, write_qr_png
@@ -1029,12 +1029,23 @@ def run_pipeline(
                     logger.debug(f"  Thumbnail exists, skipping: {thumb_out.name}")
             
             # Generate both in parallel (2 workers for share + thumb)
-            with ThreadPoolExecutor(max_workers=2) as inner_ex:
-                share_future = inner_ex.submit(gen_share)
-                thumb_future = inner_ex.submit(gen_thumb)
-                # Wait for both to complete
-                share_future.result()
-                thumb_future.result()
+            try:
+                with ThreadPoolExecutor(max_workers=2) as inner_ex:
+                    share_future = inner_ex.submit(gen_share)
+                    thumb_future = inner_ex.submit(gen_thumb)
+                    # Wait for both to complete
+                    share_future.result()
+                    thumb_future.result()
+            except Exception as e:
+                # Log the specific error for debugging
+                logger.error(f"Failed to generate derivatives for {src.name}: {type(e).__name__}: {e}")
+                raise  # Re-raise to be caught by outer handler
+            
+            # Verify files were actually created before queuing uploads
+            if not thumb_out.exists():
+                raise ProcessingError(f"Thumbnail file was not created: {thumb_out}")
+            if not share_out.exists():
+                raise ProcessingError(f"Share image file was not created: {share_out}")
             
             ex = extract_basic_exif(src)
             sort_ts = ex.captured_at.timestamp() if ex.captured_at is not None else 9e18
@@ -1052,10 +1063,16 @@ def run_pipeline(
             share_key = f"{prefix}/share/{share_rel}"
             
             # Queue upload tasks immediately (upload workers are waiting)
-            upload_queue.put((thumb_path, thumb_key))
-            upload_queue.put((share_path, share_key))
+            # Only queue if files exist (double-check)
+            if thumb_path.exists() and share_path.exists():
+                upload_queue.put((thumb_path, thumb_key))
+                upload_queue.put((share_path, share_key))
+                logger.debug(f"  Processed and queued for upload: {src.name} -> {rel_posix}")
+            else:
+                raise ProcessingError(
+                    f"Processed files do not exist: thumb={thumb_path.exists()}, share={share_path.exists()}"
+                )
             
-            logger.debug(f"  Processed and queued for upload: {src.name} -> {rel_posix}")
             return (rel_posix, sort_ts, title, subtitle)
 
         gallery_items_local: list[tuple[str, str, str, str, float]] = []
@@ -1083,14 +1100,26 @@ def run_pipeline(
             def upload_worker():
                 """Worker thread that consumes upload tasks from the queue."""
                 nonlocal uploaded_ok
+                worker_id = threading.current_thread().name
+                logger.debug(f"Upload worker {worker_id} started")
                 while True:
                     task = upload_queue.get()
                     if task is None:  # Sentinel: end of uploads
                         upload_queue.task_done()
+                        logger.debug(f"Upload worker {worker_id} received stop signal")
                         break
                     
                     local_path, s3_key = task
+                    logger.debug(f"Upload worker {worker_id} starting upload: {local_path.name} -> {s3_key}")
                     try:
+                        # Verify file exists before attempting upload
+                        if not local_path.exists():
+                            error_msg = f"File does not exist: {local_path}"
+                            upload_errors.append(error_msg)
+                            logger.error(f"Upload skipped (file missing): {local_path.name} -> {s3_key}")
+                            upload_queue.task_done()
+                            continue
+                        
                         uploaded, err = _upload_one((local_path, s3_key))
                         if uploaded:
                             with uploaded_keys_lock:
@@ -1108,6 +1137,7 @@ def run_pipeline(
                     finally:
                         upload_queue.task_done()
                 
+                logger.debug(f"Upload worker {worker_id} finished")
                 upload_workers_finished.set()
             
             # Start upload worker threads
@@ -1117,74 +1147,89 @@ def run_pipeline(
                 thread.start()
                 upload_threads.append(thread)
             
-            # Start processing in parallel
-            with ThreadPoolExecutor(max_workers=max(1, cfg.process_workers)) as process_ex:
-                futures = [process_ex.submit(_process_one, t) for t in proc_tasks]
-                last_ui = time.time()
-                for fut in as_completed(futures):
-                    try:
-                        rel_posix, sort_ts, title, subtitle = fut.result()
-                        thumb_href = f"derived/thumbs/{rel_posix}"
-                        share_href = f"derived/share/{rel_posix}"
-                        
-                        # Track gallery items
-                        gallery_items_local.append((thumb_href, share_href, title, subtitle, sort_ts))
-                        
-                        # Map to S3 keys for progressive gallery updates
-                        thumb_rel = thumb_href.replace("derived/thumbs/", "")
-                        share_rel = share_href.replace("derived/share/", "")
-                        gallery_to_s3_keys[(thumb_href, share_href, title, subtitle, sort_ts)] = (
-                            f"{prefix}/thumbs/{thumb_rel}",
-                            f"{prefix}/share/{share_rel}",
-                        )
-                        
-                        with processed_count_lock:
-                            processed += 1
-                        logger.debug(f"Processed [{processed}/{len(proc_tasks)}]: {rel_posix}")
-                    except Exception as e:
-                        # Handle processing errors for individual files gracefully
-                        # Don't fail the entire pipeline if one file is corrupted
-                        logger.warning(f"Failed to process one image file (skipping): {e}")
-                        continue
-                    
-                    if status is not None and (time.time() - last_ui) > 0.75:
-                        last_ui = time.time()
-                        with uploaded_count_lock:
-                            current_uploaded = uploaded_ok
-                        status.write(
-                            Status(
-                                state="running",
-                                step="process",
-                                message="Processing and uploading in parallel…",
-                                session_id=session_id,
-                                volume=str(volume_path),
-                                counts={
-                                    "new": len(new_files_with_hashes),
-                                    "skipped": skipped,
-                                    "processed_done": processed,
-                                    "processed_total": len(proc_tasks),
-                                    "uploaded_done": current_uploaded,
-                                },
-                                url=url,
-                                qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,
+            try:
+                # Start processing in parallel
+                with ThreadPoolExecutor(max_workers=max(1, cfg.process_workers)) as process_ex:
+                    futures = [process_ex.submit(_process_one, t) for t in proc_tasks]
+                    last_ui = time.time()
+                    for fut in as_completed(futures):
+                        try:
+                            rel_posix, sort_ts, title, subtitle = fut.result()
+                            thumb_href = f"derived/thumbs/{rel_posix}"
+                            share_href = f"derived/share/{rel_posix}"
+                            
+                            # Track gallery items
+                            gallery_items_local.append((thumb_href, share_href, title, subtitle, sort_ts))
+                            
+                            # Map to S3 keys for progressive gallery updates
+                            thumb_rel = thumb_href.replace("derived/thumbs/", "")
+                            share_rel = share_href.replace("derived/share/", "")
+                            gallery_to_s3_keys[(thumb_href, share_href, title, subtitle, sort_ts)] = (
+                                f"{prefix}/thumbs/{thumb_rel}",
+                                f"{prefix}/share/{share_rel}",
                             )
-                        )
-            
-            logger.info(f"Processing complete: {processed}/{len(proc_tasks)} images processed")
-            
-            # Wait for all upload tasks in queue to be processed
-            upload_queue.join()
-            logger.info("All upload tasks queued, waiting for upload workers to complete...")
-            
-            # Signal upload workers to stop (send sentinel for each worker)
-            for _ in range(len(upload_threads)):
-                upload_queue.put(None)
-            
-            # Wait for all upload workers to finish
-            for thread in upload_threads:
-                thread.join(timeout=300)  # 5 minute timeout per thread
-                if thread.is_alive():
-                    logger.warning(f"Upload worker thread did not finish within timeout")
+                            
+                            with processed_count_lock:
+                                processed += 1
+                            logger.debug(f"Processed [{processed}/{len(proc_tasks)}]: {rel_posix}")
+                        except Exception as e:
+                            # Handle processing errors for individual files gracefully
+                            # Don't fail the entire pipeline if one file is corrupted
+                            logger.warning(f"Failed to process one image file (skipping): {e}")
+                            continue
+                        
+                        if status is not None and (time.time() - last_ui) > 0.75:
+                            last_ui = time.time()
+                            with uploaded_count_lock:
+                                current_uploaded = uploaded_ok
+                            status.write(
+                                Status(
+                                    state="running",
+                                    step="process",
+                                    message="Processing and uploading in parallel…",
+                                    session_id=session_id,
+                                    volume=str(volume_path),
+                                    counts={
+                                        "new": len(new_files_with_hashes),
+                                        "skipped": skipped,
+                                        "processed_done": processed,
+                                        "processed_total": len(proc_tasks),
+                                        "uploaded_done": current_uploaded,
+                                    },
+                                    url=url,
+                                    qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,
+                                )
+                            )
+                
+                logger.info(f"Processing complete: {processed}/{len(proc_tasks)} images processed")
+                
+                # Check if any uploads were queued
+                queue_size = upload_queue.qsize()
+                if queue_size == 0 and processed == 0:
+                    logger.warning("No images were successfully processed, so no uploads were queued")
+                elif queue_size == 0 and processed > 0:
+                    logger.warning(f"Processed {processed} images but no uploads were queued - this may indicate a bug")
+                else:
+                    logger.info(f"Waiting for {queue_size} upload tasks to complete...")
+                
+                # Wait for all upload tasks in queue to be processed
+                upload_queue.join()
+                logger.info("All upload tasks queued, waiting for upload workers to complete...")
+            finally:
+                # Always ensure upload workers are signaled to stop, even if processing fails
+                logger.debug("Signaling upload workers to stop...")
+                # Signal upload workers to stop (send sentinel for each worker)
+                for _ in range(len(upload_threads)):
+                    try:
+                        upload_queue.put(None)
+                    except Exception as e:
+                        logger.warning(f"Failed to signal upload worker: {e}")
+                
+                # Wait for all upload workers to finish
+                for thread in upload_threads:
+                    thread.join(timeout=300)  # 5 minute timeout per thread
+                    if thread.is_alive():
+                        logger.warning(f"Upload worker thread did not finish within timeout")
             
             # Collect upload failures
             if upload_errors:
