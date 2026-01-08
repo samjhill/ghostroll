@@ -1462,6 +1462,24 @@ def run_pipeline(
         if err:
             logger.warning(f"Failed to update S3 status.json to complete: {err}")
 
+        # Upload session log to S3 in logs folder
+        log_file = session_dir / "ghostroll.log"
+        if log_file.exists():
+            log_key = f"{prefix}/logs/ghostroll.log"
+            logger.info(f"Uploading session log to s3://{cfg.s3_bucket}/{log_key}...")
+            # Flush all log handlers to ensure log file is complete before upload
+            for handler in logger.handlers:
+                handler.flush()
+            try:
+                uploaded, err = _upload_one((log_file, log_key))
+                if uploaded:
+                    uploaded_ok += 1
+                    logger.info(f"Session log uploaded: {log_key}")
+                if err:
+                    logger.warning(f"Failed to upload session log: {err}")
+            except Exception as e:
+                logger.warning(f"Failed to upload session log: {e}")
+
         if status is not None:
             # Ensure QR code path is valid for done state
             # Re-verify the QR code file exists and is readable
