@@ -203,23 +203,35 @@ def load_config(
     # Web interface settings (enabled by default)
     # Read from environment, handling both explicit values and defaults
     # Systemd passes environment variables as strings, so we need to handle "1", "true", etc.
-    web_enabled_env = env.get("GHOSTROLL_WEB_ENABLED", "")
+    web_enabled_env_raw = env.get("GHOSTROLL_WEB_ENABLED", "")
+    
+    # Debug: log raw value before processing
+    import sys
+    print(f"ghostroll-config: GHOSTROLL_WEB_ENABLED raw value: {web_enabled_env_raw!r} (type: {type(web_enabled_env_raw).__name__})", file=sys.stderr)
+    
     # Handle empty string, whitespace, and None
-    if web_enabled_env:
-        web_enabled_env = str(web_enabled_env).strip()
+    if web_enabled_env_raw:
+        web_enabled_env = str(web_enabled_env_raw).strip()
     else:
         web_enabled_env = ""
+    
+    print(f"ghostroll-config: GHOSTROLL_WEB_ENABLED after processing: {web_enabled_env!r}", file=sys.stderr)
+    print(f"ghostroll-config: web_enabled CLI arg: {web_enabled}", file=sys.stderr)
     
     if web_enabled is not None:
         # CLI argument takes precedence
         web_enabled = bool(web_enabled)
+        print(f"ghostroll-config: Using CLI arg: web_enabled={web_enabled}", file=sys.stderr)
     elif web_enabled_env:
         # Environment variable set - check for truthy values
         web_enabled_env_lower = web_enabled_env.lower()
+        print(f"ghostroll-config: Checking env var: '{web_enabled_env_lower}' in truthy values", file=sys.stderr)
         web_enabled = web_enabled_env_lower in ("true", "1", "yes", "on", "enabled")
+        print(f"ghostroll-config: Result from env var check: web_enabled={web_enabled}", file=sys.stderr)
     else:
         # Default to enabled if not explicitly set
         web_enabled = True
+        print(f"ghostroll-config: Using default: web_enabled={web_enabled}", file=sys.stderr)
     
     web_host = web_host or env.get("GHOSTROLL_WEB_HOST", "127.0.0.1")
     web_port_env = env.get("GHOSTROLL_WEB_PORT", "")
