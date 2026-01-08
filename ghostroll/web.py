@@ -693,6 +693,225 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
         
         html += '        </div>\n'
         html += '    </div>\n'
+        
+        # Add auto-refresh JavaScript to poll status.json and update the display
+        html += """        <script>
+        (function() {
+            const STATUS_URL = '/status.json';
+            const POLL_INTERVAL = 2000; // Poll every 2 seconds
+            let currentSessionId = null;
+            let currentUrl = null;
+            let pollTimer = null;
+            
+            // Elements that will be updated
+            let statusCard = null;
+            let statusIndicator = null;
+            let statusTitle = null;
+            let statusMessage = null;
+            let statusDetails = null;
+            let statusCounts = null;
+            let qrSection = null;
+            
+            function initElements() {
+                statusCard = document.querySelector('.status-card');
+                if (!statusCard) return false;
+                statusIndicator = statusCard.querySelector('.status-indicator');
+                statusTitle = statusCard.querySelector('.status-title');
+                statusMessage = statusCard.querySelector('.status-message');
+                statusDetails = statusCard.querySelector('.status-details');
+                statusCounts = statusCard.querySelector('.status-counts');
+                qrSection = statusCard.querySelector('.qr-section');
+                return true;
+            }
+            
+            function updateStatus(data) {
+                if (!statusCard || !data) return;
+                
+                const state = (data.state || 'unknown').toLowerCase();
+                const stateDisplay = state.toUpperCase();
+                const message = data.message || '';
+                const sessionId = data.session_id || null;
+                const url = data.url || null;
+                const counts = data.counts || {};
+                const volume = data.volume || null;
+                
+                // Update status indicator and title
+                if (statusIndicator) {
+                    statusIndicator.className = 'status-indicator ' + state;
+                }
+                if (statusTitle) {
+                    statusTitle.textContent = stateDisplay;
+                }
+                
+                // Update message
+                if (statusMessage) {
+                    if (message) {
+                        statusMessage.textContent = message;
+                        statusMessage.style.display = '';
+                    } else {
+                        statusMessage.style.display = 'none';
+                    }
+                }
+                
+                // Update details (session, volume)
+                if (statusDetails) {
+                    let detailsHTML = '';
+                    if (sessionId) {
+                        detailsHTML += '<div class="detail-item">\\n';
+                        detailsHTML += '    <div class="detail-label">Session</div>\\n';
+                        detailsHTML += '    <div class="detail-value"><code>' + escapeHtml(sessionId) + '</code></div>\\n';
+                        detailsHTML += '</div>\\n';
+                    }
+                    if (volume) {
+                        const volName = volume.split('/').pop();
+                        detailsHTML += '<div class="detail-item">\\n';
+                        detailsHTML += '    <div class="detail-label">Volume</div>\\n';
+                        detailsHTML += '    <div class="detail-value">' + escapeHtml(volName) + '</div>\\n';
+                        detailsHTML += '</div>\\n';
+                    }
+                    statusDetails.innerHTML = detailsHTML || '';
+                }
+                
+                // Update counts
+                if (statusCounts) {
+                    if (Object.keys(counts).length > 0) {
+                        let countsHTML = '';
+                        for (const [key, value] of Object.entries(counts).sort()) {
+                            const keyDisplay = key.replace(/_/g, ' ').replace(/\\b\\w/g, l => l.toUpperCase());
+                            countsHTML += '<div class="count-badge">\\n';
+                            countsHTML += '    <div class="count-label">' + escapeHtml(keyDisplay) + '</div>\\n';
+                            countsHTML += '    <div class="count-value">' + escapeHtml(String(value)) + '</div>\\n';
+                            countsHTML += '</div>\\n';
+                        }
+                        statusCounts.innerHTML = countsHTML;
+                        statusCounts.style.display = 'flex';
+                    } else {
+                        statusCounts.style.display = 'none';
+                    }
+                }
+                
+                // Update action button (gallery link)
+                let actionButton = statusCard.querySelector('.action-button');
+                if (url) {
+                    if (!actionButton) {
+                        // Create button if it doesn't exist
+                        const buttonContainer = document.createElement('div');
+                        buttonContainer.style.marginTop = '1rem';
+                        statusCard.appendChild(buttonContainer);
+                        actionButton = document.createElement('a');
+                        actionButton.className = 'action-button';
+                        actionButton.target = '_blank';
+                        buttonContainer.appendChild(actionButton);
+                    }
+                    actionButton.href = url;
+                    actionButton.textContent = 'View Gallery →';
+                    actionButton.style.display = 'inline-block';
+                } else if (actionButton) {
+                    actionButton.style.display = 'none';
+                }
+                
+                // Update QR code if URL or session changed
+                const qrPathStr = data.qr_path || null;
+                if (url && sessionId && qrPathStr) {
+                    const qrUrl = '/sessions/' + escapeHtml(sessionId) + '/share-qr.png';
+                    
+                    // Only update QR if session or URL changed
+                    if (sessionId !== currentSessionId || url !== currentUrl) {
+                        currentSessionId = sessionId;
+                        currentUrl = url;
+                        
+                        // Remove existing QR section
+                        if (qrSection) {
+                            qrSection.remove();
+                            qrSection = null;
+                        }
+                        
+                        // Create new QR section
+                        const qrDiv = document.createElement('div');
+                        qrDiv.className = 'qr-section';
+                        qrDiv.innerHTML = 
+                            '<div class="qr-title">Scan to Open Gallery</div>\\n' +
+                            '<a href="' + escapeHtml(url) + '" target="_blank" class="qr-code" aria-label="QR code for gallery link">\\n' +
+                            '    <img src="' + escapeHtml(qrUrl) + '" alt="QR code" loading="lazy">\\n' +
+                            '</a>\\n' +
+                            '<div class="qr-hint">Point your phone camera at the code</div>';
+                        statusCard.appendChild(qrDiv);
+                        qrSection = qrDiv;
+                    }
+                } else {
+                    // Remove QR section if no URL/session
+                    if (qrSection) {
+                        qrSection.remove();
+                        qrSection = null;
+                    }
+                    currentSessionId = null;
+                    currentUrl = null;
+                }
+            }
+            
+            function escapeHtml(text) {
+                const div = document.createElement('div');
+                div.textContent = text;
+                return div.innerHTML;
+            }
+            
+            async function pollStatus() {
+                try {
+                    const response = await fetch(STATUS_URL, {
+                        cache: 'no-store',
+                        headers: {
+                            'Cache-Control': 'no-cache'
+                        }
+                    });
+                    if (!response.ok) {
+                        throw new Error('Status fetch failed: ' + response.status);
+                    }
+                    const data = await response.json();
+                    updateStatus(data);
+                } catch (error) {
+                    // Silently handle errors - don't spam console
+                    // The page will just show the last known status
+                }
+            }
+            
+            function startPolling() {
+                if (!initElements()) {
+                    // Retry after a short delay if elements aren't ready yet
+                    setTimeout(startPolling, 500);
+                    return;
+                }
+                
+                // Poll immediately, then on interval
+                pollStatus();
+                pollTimer = setInterval(pollStatus, POLL_INTERVAL);
+                
+                // Stop polling when page is hidden (save resources)
+                document.addEventListener('visibilitychange', function() {
+                    if (document.hidden) {
+                        if (pollTimer) {
+                            clearInterval(pollTimer);
+                            pollTimer = null;
+                        }
+                    } else {
+                        if (!pollTimer) {
+                            pollStatus();
+                            pollTimer = setInterval(pollStatus, POLL_INTERVAL);
+                        }
+                    }
+                });
+            }
+            
+            // Start when DOM is ready
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', startPolling);
+            } else {
+                startPolling();
+            }
+        })();
+        </script>
+        """
+        
+        html += '    </div>\n'
         html += '</body>\n'
         html += '</html>'
         
