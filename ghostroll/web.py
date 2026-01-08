@@ -29,17 +29,34 @@ def _get_git_info(repo_dir: Path | None = None) -> tuple[str | None, str | None]
         # Try to determine repository directory
         if repo_dir is None:
             # Try to find the GhostRoll repo directory
-            # Check common locations
+            # Check common locations in order of preference
             possible_dirs = [
                 Path(__file__).parent.parent,  # ghostroll/../ (repo root)
                 Path("/home/pi/ghostroll"),    # Common Pi location
                 Path("/usr/local/src/ghostroll"),  # Pi-gen location
+                Path.cwd(),  # Current working directory (where Python was invoked)
             ]
             
-            for candidate in possible_dirs:
-                if (candidate / ".git").exists():
-                    repo_dir = candidate
+            # Walk up from __file__ to find .git directory
+            # This handles cases where the code is installed via pip install -e
+            current = Path(__file__).parent
+            for _ in range(5):  # Limit depth to avoid infinite loops
+                if (current / ".git").exists():
+                    possible_dirs.insert(0, current)
                     break
+                parent = current.parent
+                if parent == current:  # Reached root
+                    break
+                current = parent
+            
+            for candidate in possible_dirs:
+                try:
+                    if candidate.exists() and (candidate / ".git").exists():
+                        repo_dir = candidate
+                        break
+                except (OSError, PermissionError):
+                    # Skip directories we can't access
+                    continue
         else:
             if not (repo_dir / ".git").exists():
                 return None, None
@@ -93,9 +110,10 @@ def _get_git_info(repo_dir: Path | None = None) -> tuple[str | None, str | None]
 class GhostRollWebHandler(BaseHTTPRequestHandler):
     """HTTP request handler for GhostRoll web interface."""
     
-    def __init__(self, *args, status_path: Path, sessions_dir: Path, **kwargs):
+    def __init__(self, *args, status_path: Path, sessions_dir: Path, git_info: tuple[str | None, str | None] = (None, None), **kwargs):
         self.status_path = status_path
         self.sessions_dir = sessions_dir
+        self.git_info = git_info
         super().__init__(*args, **kwargs)
     
     def log_message(self, format, *args):
@@ -661,8 +679,8 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
         html += '            <a href="/status.png" class="footer-link">Status Image</a>\n'
         html += '            <a href="/sessions" class="footer-link">Sessions API</a>\n'
         
-        # Add git commit hash with link if available
-        commit_hash, repo_url = _get_git_info()
+        # Add git commit hash with link if available (use cached info from server startup)
+        commit_hash, repo_url = self.git_info
         if commit_hash:
             short_hash = commit_hash[:7]
             if repo_url:
@@ -832,6 +850,20 @@ class GhostRollWebServer:
         self.server: HTTPServer | None = None
         self.thread: threading.Thread | None = None
         self._running = False
+        # Cache git info at startup to avoid calling git on every request
+        self._cached_git_info: tuple[str | None, str | None] = _get_git_info()
+        # Log git info for debugging
+        commit_hash, repo_url = self._cached_git_info
+        if commit_hash:
+            short_hash = commit_hash[:7]
+            import sys
+            if repo_url:
+                print(f"ghostroll-web: Git commit: {short_hash} (repo: {repo_url})", file=sys.stderr)
+            else:
+                print(f"ghostroll-web: Git commit: {short_hash} (no repo URL)", file=sys.stderr)
+        else:
+            import sys
+            print("ghostroll-web: Git info not available (not in a git repo or git not installed)", file=sys.stderr)
     
     def start(self):
         """Start the web server in a background thread."""
@@ -843,6 +875,7 @@ class GhostRollWebServer:
                 *args,
                 status_path=self.status_path,
                 sessions_dir=self.sessions_dir,
+                git_info=self._cached_git_info,
                 **kwargs,
             )
         
