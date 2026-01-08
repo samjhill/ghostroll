@@ -15,7 +15,7 @@ if [[ "$AUTO" != "1" ]]; then
   exit 0
 fi
 
-REPO_DIR="${GHOSTROLL_REPO_DIR:-/usr/local/src/ghostroll}"
+REPO_DIR="${GHOSTROLL_REPO_DIR:-/home/pi/ghostroll}"
 REMOTE="${GHOSTROLL_GIT_REMOTE:-}"
 BRANCH="${GHOSTROLL_GIT_BRANCH:-main}"
 
@@ -74,6 +74,15 @@ fi
 
 "${PY_BIN}" -m pip install -U pip "${PIP_ARGS[@]}" >/dev/null 2>&1
 "${PY_BIN}" -m pip install -e "$REPO_DIR" "${PIP_ARGS[@]}" >/dev/null 2>&1
+
+# Verify boto3 is installed (required dependency)
+if ! "${PY_BIN}" -c "import boto3" 2>/dev/null; then
+  echo "ghostroll-update: warning: boto3 not found, installing explicitly..." >&2
+  "${PY_BIN}" -m pip install boto3>=1.34.0 "${PIP_ARGS[@]}" >/dev/null 2>&1 || {
+    echo "ghostroll-update: error: failed to install boto3" >&2
+    exit 1
+  }
+fi
 
 echo "ghostroll-update: restarting services..."
 

@@ -90,6 +90,16 @@ fi
 "${PY_BIN}" -m pip install -U pip "${PIP_ARGS[@]}" >/dev/null 2>&1
 "${PY_BIN}" -m pip install -e "$REPO_DIR" "${PIP_ARGS[@]}" >/dev/null 2>&1
 
+# Verify boto3 is installed (required dependency)
+if ! "${PY_BIN}" -c "import boto3" 2>/dev/null; then
+  echo "Warning: boto3 not found, installing explicitly..."
+  "${PY_BIN}" -m pip install boto3>=1.34.0 "${PIP_ARGS[@]}" >/dev/null 2>&1 || {
+    echo "Error: failed to install boto3" >&2
+    exit 1
+  }
+  echo "✓ boto3 installed"
+fi
+
 echo "Restarting GhostRoll services..."
 
 # Restart all GhostRoll services (only if they're active/enabled)

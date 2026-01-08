@@ -32,6 +32,15 @@ python3 -m pip install -U pip
 # Raspberry Pi OS Bookworm uses an "externally managed" system Python (PEP 668).
 # For the appliance image, allow pip to install system-wide.
 python3 -m pip install --break-system-packages -e /usr/local/src/ghostroll
+
+# Verify boto3 is installed (required dependency)
+if ! python3 -c "import boto3" 2>/dev/null; then
+  echo "stage-ghostroll: warning: boto3 not found, installing explicitly..." >&2
+  python3 -m pip install --break-system-packages boto3>=1.34.0 || {
+    echo "stage-ghostroll: error: failed to install boto3" >&2
+    exit 1
+  }
+fi
 # Waveshare e-ink Python driver (used by optional ghostroll-eink service)
 # Try pip first, fallback to GitHub repo if that fails
 python3 -m pip install --break-system-packages waveshare-epd || {
