@@ -20,3 +20,5 @@ def is_media(path: Path) -> bool:
     return s in JPEG_EXTS or s in RAW_EXTS
 
 
+
+

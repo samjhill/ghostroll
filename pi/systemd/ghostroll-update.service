@@ -9,3 +9,5 @@ EnvironmentFile=-/etc/ghostroll.env
 ExecStart=/usr/local/sbin/ghostroll-update.sh
 
 
+
+

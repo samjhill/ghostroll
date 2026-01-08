@@ -68,3 +68,5 @@ def extract_basic_exif(jpeg_path: Path) -> BasicExif:
         return BasicExif(captured_at=None, captured_at_display=None, camera=None)
 
 
+
+

@@ -9,6 +9,7 @@ and uploads the enhanced version to the enhanced/ prefix.
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +19,7 @@ from PIL import Image, ImageOps
 
 from enhancement import enhance_image_auto
 
-# Initialize S3 client
+# Initialize S3 client (reused for connection pooling)
 s3_client = boto3.client("s3")
 
 # Configuration from environment variables
@@ -56,18 +57,26 @@ def process_image(bucket: str, key: str) -> dict[str, Any]:
     """
     Download, enhance, and upload an image.
     
+    Cost optimizations:
+    - Early exit for non-JPEG files (saves compute time)
+    - Idempotency check (prevents duplicate processing)
+    - Efficient error handling
+    
     Returns:
         dict with status and metadata
     """
-    # Skip non-image files
+    start_time = time.time()
+    
+    # Early exit: Skip non-image files (saves Lambda compute time)
     if not key.lower().endswith((".jpg", ".jpeg")):
         return {
             "status": "skipped",
             "reason": "not_a_jpeg",
             "key": key,
+            "duration_ms": int((time.time() - start_time) * 1000),
         }
     
-    # Check if enhanced version already exists
+    # Idempotency check: Skip if already enhanced (prevents duplicate processing cost)
     enhanced_key = get_enhanced_key(key)
     try:
         s3_client.head_object(Bucket=bucket, Key=enhanced_key)
@@ -76,16 +85,31 @@ def process_image(bucket: str, key: str) -> dict[str, Any]:
             "reason": "already_enhanced",
             "key": key,
             "enhanced_key": enhanced_key,
+            "duration_ms": int((time.time() - start_time) * 1000),
         }
     except ClientError as e:
-        if e.response["Error"]["Code"] != "404":
-            raise  # Re-raise if it's not a "not found" error
+        # In some S3 configurations, HEAD on a missing key can return 403 instead of 404.
+        # Treat both as "not found" for idempotency purposes; we'll still fail later if
+        # the role truly lacks access to the source object or the destination prefix.
+        if e.response["Error"]["Code"] not in ("404", "403"):
+            raise  # Re-raise if it's not a "not found" / "forbidden" response
     
     # Download image to temporary file
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_input:
-        input_path = Path(tmp_input.name)
-        try:
-            s3_client.download_file(bucket, key, str(input_path))
+    input_path = None
+    output_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_input:
+            input_path = Path(tmp_input.name)
+            try:
+                s3_client.download_file(bucket, key, str(input_path))
+            except ClientError as e:
+                if e.response["Error"]["Code"] == "404":
+                    return {
+                        "status": "skipped",
+                        "reason": "source_not_found",
+                        "key": key,
+                    }
+                raise  # Re-raise other errors
             
             # Enhance image
             with Image.open(input_path) as img:
@@ -120,26 +144,40 @@ def process_image(bucket: str, key: str) -> dict[str, Any]:
                         },
                     )
                     
-                    # Clean up
+                    # Clean up output file immediately after upload
                     output_path.unlink()
+                    output_path = None
             
+            duration_ms = int((time.time() - start_time) * 1000)
             return {
                 "status": "success",
                 "key": key,
                 "enhanced_key": enhanced_key,
+                "duration_ms": duration_ms,
             }
             
-        finally:
-            # Clean up input file
-            if input_path.exists():
+    finally:
+        # Clean up input file
+        if input_path and input_path.exists():
+            try:
                 input_path.unlink()
+            except Exception:
+                pass  # Ignore cleanup errors
+        # Clean up output file if still exists (error case)
+        if output_path and output_path.exists():
+            try:
+                output_path.unlink()
+            except Exception:
+                pass
 
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """
-    Lambda handler for S3 event notifications.
+    Lambda handler for S3 object-created notifications.
     
-    Expected event structure (S3 EventBridge):
+    Supported event structures:
+    
+    1) S3 notification (direct S3 → Lambda):
     {
         "Records": [
             {
@@ -150,16 +188,56 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             }
         ]
     }
+    
+    2) EventBridge (S3 → EventBridge → Lambda):
+    {
+        "source": "aws.s3",
+        "detail-type": "Object Created",
+        "detail": {
+            "bucket": {"name": "bucket-name"},
+            "object": {"key": "sessions/.../share/IMG_001.jpg"}
+        }
+    }
+    
+    Cost optimizations:
+    - Early exit for non-JPEG files
+    - Early exit for files not in share/ prefix
+    - Idempotency check (skip if already enhanced)
+    - Efficient error handling to avoid unnecessary processing
     """
     results = []
     errors = []
     
-    # Get bucket from environment or first record
+    def _normalize_records(evt: dict[str, Any]) -> list[dict[str, Any]]:
+        """Return a list of pseudo-S3-records in the shape of evt['Records'][]."""
+        if isinstance(evt, dict) and isinstance(evt.get("Records"), list):
+            return [r for r in evt["Records"] if isinstance(r, dict)]
+        # EventBridge S3 Object Created event (single record)
+        if (
+            isinstance(evt, dict)
+            and evt.get("source") == "aws.s3"
+            and isinstance(evt.get("detail"), dict)
+        ):
+            detail = evt["detail"]
+            bucket_name = (detail.get("bucket") or {}).get("name")
+            object_key = (detail.get("object") or {}).get("key")
+            if bucket_name and object_key:
+                return [
+                    {
+                        "s3": {
+                            "bucket": {"name": bucket_name},
+                            "object": {"key": object_key},
+                        }
+                    }
+                ]
+        return []
+    
+    records = _normalize_records(event)
+    
+    # Get bucket from environment or from the first record
     bucket = S3_BUCKET
-    if not bucket:
-        # Try to get from event
-        if "Records" in event and len(event["Records"]) > 0:
-            bucket = event["Records"][0]["s3"]["bucket"]["name"]
+    if not bucket and records:
+        bucket = (records[0].get("s3") or {}).get("bucket", {}).get("name", "")
     
     if not bucket:
         return {
@@ -167,8 +245,18 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "body": json.dumps({"error": "S3_BUCKET not configured"}),
         }
     
-    # Process each S3 event record
-    records = event.get("Records", [])
+    # Early exit if no records (unsupported event shape or empty payload)
+    if not records:
+        return {
+            "statusCode": 200,
+            "body": json.dumps({
+                "processed": 0,
+                "success": 0,
+                "skipped": 0,
+                "errors": 0,
+                "results": [],
+            }),
+        }
     
     for record in records:
         try:
