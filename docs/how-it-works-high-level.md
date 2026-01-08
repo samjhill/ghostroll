@@ -103,7 +103,7 @@ S3 bucket structure (after upload and optional enhancement):
 15. Upload `share.zip` to S3.
 16. Build a **local** `index.html` that references `derived/thumbs/...` and `derived/share/...` via relative paths (works offline / locally).
 
-### 7) Create an S3-shareable gallery (presigned URLs)
+### 6) Create an S3-shareable gallery (presigned URLs)
 
 17. Compute an S3 prefix like `sessions/<SESSION_ID>/` (configurable root + session id).
 18. Generate presigned URLs for:
