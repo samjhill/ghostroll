@@ -936,39 +936,41 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
                                     updateGalleryLinks(shareUrl.trim(), sessionId, data.qr_path || null);
                                 } else {
                                     // Try getting latest session
-                                    tryLatestSessionShare();
+                                    tryLatestSessionShare(data.qr_path || null);
                                 }
                             })
                             .catch(() => {
                                 // Try getting latest session
-                                tryLatestSessionShare();
+                                tryLatestSessionShare(data.qr_path || null);
                             });
                     } else {
                         // No sessionId, try getting latest session from sessions API
-                        tryLatestSessionShare();
+                        tryLatestSessionShare(data.qr_path || null);
                     }
                 }
                 
-                function tryLatestSessionShare() {
+                function tryLatestSessionShare(qrPathStr) {
                     fetch('/sessions')
                         .then(response => response.json())
-                        .then(data => {
-                            if (data && data.sessions && data.sessions.length > 0) {
-                                const latestSession = data.sessions[0];
-                                return fetch('/sessions/' + escapeHtml(latestSession) + '/share.txt');
+                        .then(sessionsData => {
+                            if (sessionsData && sessionsData.sessions && sessionsData.sessions.length > 0) {
+                                const latestSession = sessionsData.sessions[0];
+                                return fetch('/sessions/' + escapeHtml(latestSession) + '/share.txt')
+                                    .then(response => {
+                                        if (response.ok) {
+                                            return response.text().then(shareUrl => ({
+                                                url: shareUrl,
+                                                sessionId: latestSession
+                                            }));
+                                        }
+                                        return null;
+                                    });
                             }
                             return null;
                         })
-                        .then(response => {
-                            if (response && response.ok) {
-                                return response.text();
-                            }
-                            return null;
-                        })
-                        .then(shareUrl => {
-                            if (shareUrl && shareUrl.trim() && shareUrl.trim().startsWith('https://')) {
-                                const latestSessionId = data.session_id || (data.sessions && data.sessions[0]) || null;
-                                updateGalleryLinks(shareUrl.trim(), latestSessionId, data.qr_path || null);
+                        .then(result => {
+                            if (result && result.url && result.url.trim() && result.url.trim().startsWith('https://')) {
+                                updateGalleryLinks(result.url.trim(), result.sessionId, qrPathStr);
                             }
                         })
                         .catch(() => {
