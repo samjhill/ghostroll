@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import shutil
 import sqlite3
 import subprocess
+import threading
 import time
 import zipfile
 from dataclasses import dataclass
@@ -953,6 +955,20 @@ def run_pipeline(
             rel = _safe_rel_under(dcim_dir, src).with_suffix(".jpg")
             proc_tasks.append((src, rel, derived_share_dir / rel, derived_thumbs_dir / rel))
 
+        # PARALLEL PROCESSING + UPLOADING: Process and upload images in parallel
+        # Upload workers start uploading as soon as images are processed (upload-as-ready)
+        
+        # Prepare upload queue and tracking
+        upload_queue: queue.Queue[tuple[Path, str] | None] = queue.Queue()  # None signals end of uploads
+        uploaded_keys: set[str] = set()
+        uploaded_keys_lock = threading.Lock()
+        processed_count = 0
+        processed_count_lock = threading.Lock()
+        uploaded_count_lock = threading.Lock()  # Separate lock for uploaded_ok counter
+        
+        # Map gallery items to their S3 keys for progressive updates (built as we process)
+        gallery_to_s3_keys: dict[tuple[str, str, str, str, float], tuple[str, str]] = {}
+        
         def _process_one(task: tuple[Path, Path, Path, Path]) -> tuple[str, float, str, str]:
             src, rel, share_out, thumb_out = task
             logger.debug(f"Processing image: {src.name}")
@@ -995,48 +1011,121 @@ def run_pipeline(
             title = rel.as_posix()
             parts = [p for p in [ex.captured_at_display, ex.camera] if p]
             subtitle = " · ".join(parts)
-            logger.debug(f"  Processed: {src.name} -> {rel.as_posix()}")
-            return (rel.as_posix(), sort_ts, title, subtitle)
+            rel_posix = rel.as_posix()
+            
+            # As soon as processing is complete, queue the upload tasks
+            thumb_rel = rel_posix
+            share_rel = rel_posix
+            thumb_path = derived_thumbs_dir / thumb_rel
+            share_path = derived_share_dir / share_rel
+            thumb_key = f"{prefix}/thumbs/{thumb_rel}"
+            share_key = f"{prefix}/share/{share_rel}"
+            
+            # Queue upload tasks immediately (upload workers are waiting)
+            upload_queue.put((thumb_path, thumb_key))
+            upload_queue.put((share_path, share_key))
+            
+            logger.debug(f"  Processed and queued for upload: {src.name} -> {rel_posix}")
+            return (rel_posix, sort_ts, title, subtitle)
 
         gallery_items_local: list[tuple[str, str, str, str, float]] = []
+        
         if proc_tasks:
-            logger.info(f"Processing {len(proc_tasks)} new JPEGs with {cfg.process_workers} workers...")
+            logger.info(f"Processing and uploading {len(proc_tasks)} new JPEGs in parallel ({cfg.process_workers} process workers, {cfg.upload_workers} upload workers)...")
             if status is not None:
                 status.write(
                     Status(
                         state="running",
                         step="process",
-                        message="Generating share images + thumbnails…",
+                        message="Processing and uploading in parallel…",
                         session_id=session_id,
                         volume=str(volume_path),
-                        counts={"new": len(new_files_with_hashes), "skipped": skipped, "processed_done": 0, "processed_total": len(proc_tasks)},
-                        url=url,  # Include URL so QR code remains visible
-                        qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,  # Include QR path so QR code remains visible
+                        counts={"new": len(new_files_with_hashes), "skipped": skipped, "processed_done": 0, "processed_total": len(proc_tasks), "uploaded_done": uploaded_ok},
+                        url=url,
+                        qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,
                     )
                 )
-            with ThreadPoolExecutor(max_workers=max(1, cfg.process_workers)) as ex:
-                futures = [ex.submit(_process_one, t) for t in proc_tasks]
+            
+            # Start upload workers in parallel (they wait on the queue)
+            upload_workers_finished = threading.Event()
+            upload_errors: list[str] = []
+            
+            def upload_worker():
+                """Worker thread that consumes upload tasks from the queue."""
+                nonlocal uploaded_ok
+                while True:
+                    task = upload_queue.get()
+                    if task is None:  # Sentinel: end of uploads
+                        upload_queue.task_done()
+                        break
+                    
+                    local_path, s3_key = task
+                    try:
+                        uploaded, err = _upload_one((local_path, s3_key))
+                        if uploaded:
+                            with uploaded_keys_lock:
+                                uploaded_keys.add(s3_key)
+                            with uploaded_count_lock:
+                                uploaded_ok += 1
+                            logger.info(f"Uploaded: {local_path.name} -> {s3_key}")
+                        if err:
+                            upload_errors.append(err)
+                            logger.error(f"Upload failed: {local_path.name} -> {s3_key}: {err}")
+                    except Exception as e:
+                        error_msg = f"{local_path.name} -> {s3_key}: {type(e).__name__}: {e}"
+                        upload_errors.append(error_msg)
+                        logger.error(f"Upload error: {error_msg}")
+                    finally:
+                        upload_queue.task_done()
+                
+                upload_workers_finished.set()
+            
+            # Start upload worker threads
+            upload_threads = []
+            for _ in range(max(1, cfg.upload_workers)):
+                thread = threading.Thread(target=upload_worker, daemon=False)
+                thread.start()
+                upload_threads.append(thread)
+            
+            # Start processing in parallel
+            with ThreadPoolExecutor(max_workers=max(1, cfg.process_workers)) as process_ex:
+                futures = [process_ex.submit(_process_one, t) for t in proc_tasks]
                 last_ui = time.time()
                 for fut in as_completed(futures):
                     try:
                         rel_posix, sort_ts, title, subtitle = fut.result()
                         thumb_href = f"derived/thumbs/{rel_posix}"
                         share_href = f"derived/share/{rel_posix}"
+                        
+                        # Track gallery items
                         gallery_items_local.append((thumb_href, share_href, title, subtitle, sort_ts))
-                        processed += 1
+                        
+                        # Map to S3 keys for progressive gallery updates
+                        thumb_rel = thumb_href.replace("derived/thumbs/", "")
+                        share_rel = share_href.replace("derived/share/", "")
+                        gallery_to_s3_keys[(thumb_href, share_href, title, subtitle, sort_ts)] = (
+                            f"{prefix}/thumbs/{thumb_rel}",
+                            f"{prefix}/share/{share_rel}",
+                        )
+                        
+                        with processed_count_lock:
+                            processed += 1
                         logger.debug(f"Processed [{processed}/{len(proc_tasks)}]: {rel_posix}")
                     except Exception as e:
                         # Handle processing errors for individual files gracefully
                         # Don't fail the entire pipeline if one file is corrupted
                         logger.warning(f"Failed to process one image file (skipping): {e}")
                         continue
+                    
                     if status is not None and (time.time() - last_ui) > 0.75:
                         last_ui = time.time()
+                        with uploaded_count_lock:
+                            current_uploaded = uploaded_ok
                         status.write(
                             Status(
                                 state="running",
                                 step="process",
-                                message="Generating share images + thumbnails…",
+                                message="Processing and uploading in parallel…",
                                 session_id=session_id,
                                 volume=str(volume_path),
                                 counts={
@@ -1044,18 +1133,51 @@ def run_pipeline(
                                     "skipped": skipped,
                                     "processed_done": processed,
                                     "processed_total": len(proc_tasks),
+                                    "uploaded_done": current_uploaded,
                                 },
-                                url=url,  # Include URL so QR code remains visible
-                                qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,  # Include QR path so QR code remains visible
+                                url=url,
+                                qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,
                             )
                         )
-        logger.info(f"Processed JPEGs (share+thumb): {processed}")
-
-        # Build a downloadable zip of share images (for local + S3 download-all).
+            
+            logger.info(f"Processing complete: {processed}/{len(proc_tasks)} images processed")
+            
+            # Wait for all upload tasks in queue to be processed
+            upload_queue.join()
+            logger.info("All upload tasks queued, waiting for upload workers to complete...")
+            
+            # Signal upload workers to stop (send sentinel for each worker)
+            for _ in range(len(upload_threads)):
+                upload_queue.put(None)
+            
+            # Wait for all upload workers to finish
+            for thread in upload_threads:
+                thread.join(timeout=300)  # 5 minute timeout per thread
+                if thread.is_alive():
+                    logger.warning(f"Upload worker thread did not finish within timeout")
+            
+            # Collect upload failures
+            if upload_errors:
+                upload_failures.extend(upload_errors)
+            
+            logger.info(f"Upload complete: {uploaded_ok} objects uploaded")
+        
+        # Build a downloadable zip of share images (after all processing/uploads complete)
         logger.info(f"Building share.zip from {derived_share_dir}...")
         _build_share_zip(share_dir=derived_share_dir, out_zip=share_zip)
         zip_size = share_zip.stat().st_size if share_zip.exists() else 0
         logger.info(f"Created share.zip: {share_zip} ({zip_size:,} bytes)")
+        
+        # Upload the share.zip
+        share_zip_key = f"{prefix}/share.zip"
+        logger.info(f"Uploading share.zip...")
+        uploaded, err = _upload_one((share_zip, share_zip_key))
+        if uploaded:
+            uploaded_ok += 1
+            uploaded_keys.add(share_zip_key)
+        if err:
+            upload_failures.append(err)
+            logger.error(f"Failed to upload share.zip: {err}")
 
         # Gallery (local): sort by capture time (if available) then filename.
         gallery_items_local.sort(key=lambda x: (x[4], x[2]))
@@ -1068,52 +1190,12 @@ def run_pipeline(
         )
         logger.info(f"Generated gallery: {index_html}")
 
-        # Upload photos (retry-tolerant) with per-key upload dedupe (idempotent if re-run)
-        # Note: Loading page and QR code were already uploaded/generated earlier after session creation.
-        if status is not None:
-            status.write(
-                Status(
-                    state="running",
-                    step="upload",
-                    message="Uploading photos to S3…",
-                    session_id=session_id,
-                    volume=str(volume_path),
-                    counts={"uploaded_done": uploaded_ok, "uploaded_total": 0},
-                    url=url,
-                    qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,
-                )
-            )
-        # Note: prefix, uploaded_ok, upload_failures, _upload_one, and url are already defined earlier
-        # (after session creation, when loading page was uploaded and QR code was generated).
-        upload_tasks: list[tuple[Path, str]] = []
-        # Use the gallery items we already have to build upload tasks efficiently
-        for thumb_href, share_href, _title, _subtitle in local_items:
-            # Convert "derived/thumbs/100CANON/IMG_0001.jpg" -> actual paths
-            thumb_rel = thumb_href.replace("derived/thumbs/", "")
-            share_rel = share_href.replace("derived/share/", "")
-            upload_tasks.append((derived_thumbs_dir / thumb_rel, f"{prefix}/thumbs/{thumb_rel}"))
-            upload_tasks.append((derived_share_dir / share_rel, f"{prefix}/share/{share_rel}"))
-        # Also upload the "download all" zip
-        upload_tasks.append((share_zip, f"{prefix}/share.zip"))
-
-        # Map gallery items to their S3 keys for progressive updates.
-        # gallery_items_local has (thumb_href, share_href, title, subtitle, sort_ts)
-        # where hrefs are like "derived/thumbs/100CANON/IMG_0001.jpg"
-        gallery_to_s3_keys: dict[tuple[str, str, str, str, float], tuple[str, str]] = {}
-        for thumb_href, share_href, title, subtitle, sort_ts in gallery_items_local:
-            # Convert "derived/thumbs/100CANON/IMG_0001.jpg" -> "100CANON/IMG_0001.jpg"
-            thumb_rel = thumb_href.replace("derived/thumbs/", "")
-            share_rel = share_href.replace("derived/share/", "")
-            gallery_to_s3_keys[(thumb_href, share_href, title, subtitle, sort_ts)] = (
-                f"{prefix}/thumbs/{thumb_rel}",
-                f"{prefix}/share/{share_rel}",
-            )
-
-        def _refresh_gallery_progressively(uploaded_keys: set[str]) -> None:
+        # Progressive gallery refresh function (uses uploaded_keys from parallel upload)
+        def _refresh_gallery_progressively(keys: set[str]) -> None:
             """Build and upload a partial gallery with only images that have both thumb and share uploaded."""
             ready_items: list[tuple[str, str, str, str, float]] = []
             for item, (thumb_key, share_key) in gallery_to_s3_keys.items():
-                if thumb_key in uploaded_keys and share_key in uploaded_keys:
+                if thumb_key in keys and share_key in keys:
                     ready_items.append(item)
 
             if not ready_items:
@@ -1164,7 +1246,7 @@ def run_pipeline(
 
             # Build partial gallery (no download zip yet if not uploaded)
             download_href = None
-            if f"{prefix}/share.zip" in uploaded_keys:
+            if f"{prefix}/share.zip" in keys:
                 try:
                     download_href = s3_presign_url(
                         bucket=cfg.s3_bucket,
@@ -1189,75 +1271,12 @@ def run_pipeline(
             elif err:
                 logger.warning(f"Failed to upload partial gallery: {err}")
 
-        if upload_tasks:
-            logger.info(f"Uploading {len(upload_tasks)} objects with {cfg.upload_workers} workers...")
-            # uploaded_ok already includes early uploads (status.json and loading index.html)
-            # The total count should include all uploads: the 2 early ones + the file uploads
-            # Note: uploaded_ok may be 0, 1, or 2 depending on whether early uploads succeeded,
-            # but the total should always include both early uploads in the count
-            EARLY_UPLOADS_COUNT = 2  # status.json and loading index.html
-            upload_total_with_early = len(upload_tasks) + EARLY_UPLOADS_COUNT
-            if status is not None:
-                status.write(
-                    Status(
-                        state="running",
-                        step="upload",
-                        message="Uploading to S3…",
-                        session_id=session_id,
-                        volume=str(volume_path),
-                        counts={"uploaded_done": uploaded_ok, "uploaded_total": upload_total_with_early},
-                        url=url,  # Include URL so QR code remains visible
-                        qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,  # Include QR path so QR code remains visible
-                    )
-                )
-            uploaded_keys: set[str] = set()
-            last_gallery_refresh = time.time()
-            GALLERY_REFRESH_INTERVAL = 30.0  # seconds
-
-            with ThreadPoolExecutor(max_workers=max(1, cfg.upload_workers)) as ex:
-                futures = {ex.submit(_upload_one, t): t for t in upload_tasks}
-                last_ui = time.time()
-                for fut in as_completed(futures):
-                    uploaded, err = fut.result()
-                    task = futures[fut]
-                    if uploaded:
-                        uploaded_ok += 1
-                        # Track which key was uploaded (task is (Path, s3_key))
-                        uploaded_keys.add(task[1])
-                        logger.info(f"Uploaded [{uploaded_ok}/{upload_total_with_early}]: {task[0].name} -> {task[1]}")
-                    if err:
-                        upload_failures.append(err)
-                        logger.error(f"Upload failed [{uploaded_ok}/{upload_total_with_early}]: {task[0].name} -> {task[1]}: {err}")
-
-                    # Periodic gallery refresh (every 30 seconds)
-                    now = time.time()
-                    if now - last_gallery_refresh >= GALLERY_REFRESH_INTERVAL:
-                        last_gallery_refresh = now
-                        try:
-                            _refresh_gallery_progressively(uploaded_keys)
-                        except Exception as e:
-                            logger.warning(f"Failed to refresh gallery progressively: {e}")
-
-                    if status is not None and (time.time() - last_ui) > 0.75:
-                        last_ui = time.time()
-                        status.write(
-                            Status(
-                                state="running",
-                                step="upload",
-                                message="Uploading to S3…",
-                                session_id=session_id,
-                                volume=str(volume_path),
-                                counts={"uploaded_done": uploaded_ok, "uploaded_total": upload_total_with_early},
-                                url=url,  # Include URL so QR code remains visible
-                                qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,  # Include QR path so QR code remains visible
-                            )
-                        )
-
-            # Final progressive refresh after all uploads complete (in case some finished in last 30s)
+        # Progressive gallery refresh after all uploads complete
+        if proc_tasks and gallery_to_s3_keys:
             try:
                 _refresh_gallery_progressively(uploaded_keys)
             except Exception as e:
-                logger.warning(f"Failed to do final progressive gallery refresh: {e}")
+                logger.warning(f"Failed to refresh gallery progressively: {e}")
 
         if upload_failures:
             logger.error("Upload failures:\n" + "\n".join(upload_failures))
