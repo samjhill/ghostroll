@@ -205,12 +205,43 @@ You can configure via env vars (CLI flags override env):
 - `GHOSTROLL_UPLOAD_WORKERS` (default `4`)
 - `GHOSTROLL_PRESIGN_WORKERS` (default `8`)
 
+Web interface settings (optional):
+- `GHOSTROLL_WEB_ENABLED` (default `false`) — enable web interface
+- `GHOSTROLL_WEB_HOST` (default `127.0.0.1`) — bind address (use `0.0.0.0` for network access)
+- `GHOSTROLL_WEB_PORT` (default `8080`) — port number
+
 Image settings:
 
 - `GHOSTROLL_SHARE_MAX_LONG_EDGE` (default `2048`)
 - `GHOSTROLL_SHARE_QUALITY` (default `90`)
 - `GHOSTROLL_THUMB_MAX_LONG_EDGE` (default `512`)
 - `GHOSTROLL_THUMB_QUALITY` (default `85`)
+
+## Web Interface (Optional)
+
+GhostRoll includes a lightweight web interface that provides easy access to status and session galleries without impacting performance.
+
+**To enable:**
+```bash
+export GHOSTROLL_WEB_ENABLED=true
+ghostroll watch
+```
+
+Or use command-line flags:
+```bash
+ghostroll watch --web-enabled --web-host 0.0.0.0 --web-port 8080
+```
+
+**Features:**
+- View current status (`/status.json`, `/status.png`)
+- List all sessions (`/sessions`)
+- View local session galleries (`/sessions/<session-id>/`)
+- Access QR codes and session files
+
+**Performance Impact:**
+The web server runs in a separate thread and only serves existing files — it has virtually no impact on the main pipeline performance. It uses Python's built-in `http.server`, requires minimal memory (~5–10 MB), and doesn't interfere with image processing or uploads.
+
+**Default URL:** `http://localhost:8080` (or `http://<pi-ip>:8080` if bound to `0.0.0.0`)
 
 ## Raspberry Pi / e‑ink
 

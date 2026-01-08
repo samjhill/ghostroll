@@ -30,6 +30,10 @@ This document is intended as input to an LLM to generate a visual (architecture 
 - **Status outputs (optional, especially for Raspberry Pi / e-ink)**:
   - `status.json` (machine-readable)
   - `status.png` (simple display image showing current step/progress)
+- **Web interface (optional)**:
+  - Lightweight HTTP server for viewing status and sessions via browser
+  - Runs in background thread with minimal performance impact
+  - Serves existing files (status.json, status.png, session galleries)
 
 ## Key data model: “Session”
 

@@ -15,6 +15,7 @@ from .pipeline import PipelineError, run_pipeline
 from .status import Status, StatusWriter, get_hostname, get_ip_address
 from .volume_watch import find_candidate_mounts, pick_mount_with_dcim
 from .watchdog_watcher import WatchdogWatcher
+from .web import GhostRollWebServer
 
 
 def _is_mounted(where: Path) -> bool:
@@ -374,6 +375,9 @@ def cmd_watch(args: argparse.Namespace) -> int:
         status_path=args.status_path,
         status_image_path=args.status_image_path,
         status_image_size=args.status_image_size,
+        web_enabled=args.web_enabled if hasattr(args, "web_enabled") else None,
+        web_host=args.web_host if hasattr(args, "web_host") else None,
+        web_port=args.web_port if hasattr(args, "web_port") else None,
     )
     logger = setup_logging(session_dir=None, verbose=not args.quiet)
     status = StatusWriter(
@@ -388,6 +392,24 @@ def cmd_watch(args: argparse.Namespace) -> int:
     logger.info(f"Polling interval: {cfg.poll_seconds}s")
     logger.info(f"Session directory: {cfg.sessions_dir}")
     logger.info(f"S3 bucket: {cfg.s3_bucket}")
+    
+    # Start web server if enabled
+    web_server = None
+    if cfg.web_enabled:
+        web_server = GhostRollWebServer(
+            status_path=cfg.status_path,
+            sessions_dir=cfg.sessions_dir,
+            host=cfg.web_host,
+            port=cfg.web_port,
+        )
+        if web_server.start():
+            web_url = web_server.get_url()
+            logger.info(f"Web interface enabled: {web_url}")
+            logger.info(f"  Status: {web_url}/status.json")
+            logger.info(f"  Sessions: {web_url}/sessions")
+        else:
+            logger.warning(f"Failed to start web server on {cfg.web_host}:{cfg.web_port} (port may be in use)")
+            web_server = None
     
     # Try to unmount any stale mounts before starting
     logger.debug("Checking for stale mounts before starting...")
@@ -565,6 +587,9 @@ def cmd_watch(args: argparse.Namespace) -> int:
         # Clean up Watchdog watcher
         if use_watchdog:
             watcher.stop()
+        # Clean up web server
+        if web_server is not None:
+            web_server.stop()
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     rc, results = run_doctor(
@@ -715,6 +740,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_args(p_watch)
     p_watch.add_argument("--poll-seconds", type=float, default=None, help="Polling interval (default: 2)")
     p_watch.add_argument("--always-create-session", action="store_true", help="Create a session even if no new files")
+    p_watch.add_argument("--web-enabled", action="store_true", help="Enable web interface (or set GHOSTROLL_WEB_ENABLED=true)")
+    p_watch.add_argument("--web-host", default=None, help="Web interface host (default: 127.0.0.1, or GHOSTROLL_WEB_HOST)")
+    p_watch.add_argument("--web-port", type=int, default=None, help="Web interface port (default: 8080, or GHOSTROLL_WEB_PORT)")
     p_watch.set_defaults(func=cmd_watch)
 
     return p

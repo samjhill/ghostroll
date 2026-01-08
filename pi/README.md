@@ -309,6 +309,13 @@ Start conservative and tune up:
 - `GHOSTROLL_UPLOAD_WORKERS=4`
 - `GHOSTROLL_PRESIGN_WORKERS=8`
 
+Web interface (optional):
+- `GHOSTROLL_WEB_ENABLED=1` (enable lightweight web interface)
+- `GHOSTROLL_WEB_HOST=0.0.0.0` (bind to all interfaces for network access) or `127.0.0.1` (local only)
+- `GHOSTROLL_WEB_PORT=8081` (default: 8080, but use different port if WiFi portal is enabled)
+
+The web interface provides easy access to status and session galleries without impacting performance. Access it at `http://<pi-ip>:<port>/` when enabled. See main README for details.
+
 Then restart:
 
 ```bash

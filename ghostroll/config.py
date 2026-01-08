@@ -62,6 +62,11 @@ class Config:
     presign_workers: int
     hash_workers: int
     copy_workers: int
+    
+    # Web interface settings
+    web_enabled: bool
+    web_host: str
+    web_port: int
 
     @property
     def sessions_dir(self) -> Path:
@@ -95,6 +100,9 @@ def load_config(
     presign_workers: int | None = None,
     hash_workers: int | None = None,
     copy_workers: int | None = None,
+    web_enabled: bool | None = None,
+    web_host: str | None = None,
+    web_port: int | None = None,
 ) -> Config:
     env = os.environ
 
@@ -164,6 +172,15 @@ def load_config(
     copy_workers = int(
         copy_workers if copy_workers is not None else env.get("GHOSTROLL_COPY_WORKERS", "6")
     )
+    
+    # Web interface settings
+    web_enabled = (
+        web_enabled if web_enabled is not None else env.get("GHOSTROLL_WEB_ENABLED", "false").lower() in ("true", "1", "yes")
+    )
+    web_host = web_host or env.get("GHOSTROLL_WEB_HOST", "127.0.0.1")
+    web_port = int(
+        web_port if web_port is not None else env.get("GHOSTROLL_WEB_PORT", "8080")
+    )
 
     cfg = Config(
         sd_label=sd_label,
@@ -186,6 +203,9 @@ def load_config(
         presign_workers=presign_workers,
         hash_workers=hash_workers,
         copy_workers=copy_workers,
+        web_enabled=web_enabled,
+        web_host=web_host,
+        web_port=web_port,
     )
 
     cfg.base_output_dir.mkdir(parents=True, exist_ok=True)
