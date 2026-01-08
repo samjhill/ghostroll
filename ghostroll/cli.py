@@ -397,7 +397,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
     # Start web server if enabled
     # Debug: Check what environment variables are actually set
     web_enabled_env = os.environ.get("GHOSTROLL_WEB_ENABLED", "NOT_SET")
-    logger.debug(f"Environment GHOSTROLL_WEB_ENABLED={web_enabled_env!r} (type: {type(web_enabled_env).__name__})")
+    logger.info(f"Environment GHOSTROLL_WEB_ENABLED={web_enabled_env!r} (type: {type(web_enabled_env).__name__})")
     logger.info(f"Web interface configuration: enabled={cfg.web_enabled}, host={cfg.web_host}, port={cfg.web_port}")
     web_server = None
     if cfg.web_enabled:

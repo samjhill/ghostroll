@@ -105,6 +105,28 @@ def load_config(
     web_port: int | None = None,
 ) -> Config:
     env = os.environ
+    
+    # Fallback: If systemd didn't load /etc/ghostroll.env, try reading it directly
+    # This helps when EnvironmentFile doesn't work as expected
+    if not env.get("GHOSTROLL_WEB_ENABLED") and Path("/etc/ghostroll.env").exists():
+        try:
+            env_file_content = Path("/etc/ghostroll.env").read_text(encoding="utf-8")
+            for line in env_file_content.splitlines():
+                line = line.strip()
+                # Skip comments and empty lines
+                if not line or line.startswith("#"):
+                    continue
+                # Parse KEY=VALUE
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    key = key.strip()
+                    value = value.strip()
+                    # Only set if not already in environment (don't override)
+                    if key.startswith("GHOSTROLL_") and key not in env:
+                        env[key] = value
+        except Exception:
+            # If reading fails, continue with just os.environ
+            pass
 
     sd_label = sd_label or env.get("GHOSTROLL_SD_LABEL", "auto-import")
     base_output_dir = base_output_dir or env.get("GHOSTROLL_BASE_DIR", "~/ghostroll")
