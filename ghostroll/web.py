@@ -720,10 +720,7 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
             # Only show QR code if URL is a valid S3 presigned URL (not a local path)
             if qr_path_str and url and (url.startswith("https://") or url.startswith("http://")):
                 # Ensure it's not a local path
-                if url.startswith("/sessions/") or url.startswith("http://localhost") or url.startswith("http://127.0.0.1"):
-                    # Skip QR code for local paths
-                    pass
-                else:
+                if not (url.startswith("/sessions/") or url.startswith("http://localhost") or url.startswith("http://127.0.0.1")):
                 # Check if QR code file exists and is accessible
                 qr_path = Path(qr_path_str)
                 if qr_path.exists() and qr_path.is_file() and qr_path.stat().st_size > 0:
