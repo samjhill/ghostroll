@@ -106,9 +106,11 @@ def load_config(
 ) -> Config:
     env = os.environ
     
-    # Fallback: If systemd didn't load /etc/ghostroll.env, try reading it directly
+    # Fallback: If systemd didn't load /etc/ghostroll.env properly, try reading it directly
     # This helps when EnvironmentFile doesn't work as expected
-    if not env.get("GHOSTROLL_WEB_ENABLED") and Path("/etc/ghostroll.env").exists():
+    # Check if key web interface vars are missing or empty (systemd might pass empty strings)
+    web_enabled_from_env = env.get("GHOSTROLL_WEB_ENABLED", "").strip()
+    if not web_enabled_from_env and Path("/etc/ghostroll.env").exists():
         try:
             env_file_content = Path("/etc/ghostroll.env").read_text(encoding="utf-8")
             for line in env_file_content.splitlines():
@@ -120,13 +122,16 @@ def load_config(
                 if "=" in line:
                     key, value = line.split("=", 1)
                     key = key.strip()
-                    value = value.strip()
-                    # Only set if not already in environment (don't override)
-                    if key.startswith("GHOSTROLL_") and key not in env:
-                        env[key] = value
-        except Exception:
-            # If reading fails, continue with just os.environ
-            pass
+                    value = value.strip().strip('"').strip("'")  # Remove quotes if present
+                    # Set in environment if not already set or if current value is empty
+                    if key.startswith("GHOSTROLL_"):
+                        current_value = env.get(key, "").strip()
+                        if not current_value:  # If not set or empty, use file value
+                            os.environ[key] = value
+        except Exception as e:
+            # Log error but continue - don't break startup if file read fails
+            import sys
+            print(f"ghostroll-config: Warning: Could not read /etc/ghostroll.env: {e}", file=sys.stderr)
 
     sd_label = sd_label or env.get("GHOSTROLL_SD_LABEL", "auto-import")
     base_output_dir = base_output_dir or env.get("GHOSTROLL_BASE_DIR", "~/ghostroll")
