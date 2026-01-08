@@ -80,7 +80,12 @@ def get_ip_address() -> str | None:
 
 def get_pisugar_battery() -> dict[str, int | bool] | None:
     """
-    Get battery status from PiSugar 2 via the PiSugar Power Manager socket API.
+    Get battery status from PiSugar via the PiSugar Power Manager API.
+    
+    Tries multiple methods in order:
+    1. Unix socket API (piSugar-server.sock)
+    2. HTTP API (port 8421) with authentication
+    3. Alternative methods (sysfs, etc.)
     
     Returns a dict with:
     - percentage: int (0-100)
@@ -89,102 +94,249 @@ def get_pisugar_battery() -> dict[str, int | bool] | None:
     
     Returns None if PiSugar is not available or if there's an error.
     """
+    # Method 1: Try Unix socket API first (fastest and most common)
     pisugar_socket = Path("/tmp/pisugar-server.sock")
-    
-    # Check if PiSugar Power Manager is available
-    if not pisugar_socket.exists():
-        return None
-    
-    try:
-        # Try using Python socket first (more portable)
+    if pisugar_socket.exists():
         try:
-            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            sock.settimeout(2.0)
-            sock.connect(str(pisugar_socket))
-            sock.sendall(b"get battery\n")
-            
-            # Read response
-            response_bytes = b""
-            while True:
-                chunk = sock.recv(1024)
-                if not chunk:
-                    break
-                response_bytes += chunk
-                # Stop if we have a reasonable amount of data
-                if len(response_bytes) > 512:
-                    break
-            
-            sock.close()
-            response = response_bytes.decode("utf-8", errors="ignore").strip()
-        except (OSError, socket.error, Exception):
-            # Fallback to netcat if socket library fails
+            # Try using Python socket first (more portable)
             try:
-                result = subprocess.run(
-                    ["nc", "-U", "/tmp/pisugar-server.sock"],
-                    input="get battery\n",
-                    capture_output=True,
-                    text=True,
-                    timeout=2,
-                )
-                if result.returncode != 0:
-                    return None
-                response = result.stdout.strip()
-            except (subprocess.TimeoutExpired, FileNotFoundError, OSError, Exception):
-                return None
-        
-        if not response:
-            return None
-        
-        # Try to parse as JSON first
-        try:
-            data = json.loads(response)
-            percentage = data.get("percentage") or data.get("battery") or data.get("level")
-            is_charging = data.get("charging") or data.get("is_charging") or False
-            voltage = data.get("voltage") or data.get("voltage_mv")
-            
-            if percentage is not None:
-                return {
-                    "percentage": int(percentage),
-                    "is_charging": bool(is_charging),
-                    "voltage": int(voltage) if voltage is not None else None,
-                }
-        except (json.JSONDecodeError, ValueError, TypeError):
-            # Try parsing key-value format
-            # Example: "battery: 85\ncharging: false"
-            percentage = None
-            is_charging = False
-            voltage = None
-            
-            for line in response.splitlines():
-                if ":" in line:
-                    key, value = line.split(":", 1)
-                    key = key.strip().lower()
-                    value = value.strip()
-                    
-                    if "battery" in key or "percentage" in key or "level" in key:
+                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                sock.settimeout(2.0)
+                sock.connect(str(pisugar_socket))
+                sock.sendall(b"get battery\n")
+                
+                # Read response - PiSugar returns just a number like "95"
+                response_bytes = b""
+                while True:
+                    chunk = sock.recv(1024)
+                    if not chunk:
+                        break
+                    response_bytes += chunk
+                    # Stop if we have a reasonable amount of data
+                    if len(response_bytes) > 512:
+                        break
+                
+                sock.close()
+                response = response_bytes.decode("utf-8", errors="ignore").strip()
+                
+                # PiSugar socket API returns just a number (0-100) for "get battery"
+                # Try to parse as integer first
+                try:
+                    percentage = int(float(response))
+                    if 0 <= percentage <= 100:
+                        # Get charging status separately
+                        is_charging = False
                         try:
-                            percentage = int(float(value))
+                            sock2 = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                            sock2.settimeout(1.0)
+                            sock2.connect(str(pisugar_socket))
+                            sock2.sendall(b"get battery_charging\n")
+                            charge_response = b""
+                            while True:
+                                chunk = sock2.recv(256)
+                                if not chunk:
+                                    break
+                                charge_response += chunk
+                                if len(charge_response) > 128:
+                                    break
+                            sock2.close()
+                            charge_str = charge_response.decode("utf-8", errors="ignore").strip().lower()
+                            # PiSugar returns "true" or "false" for charging status
+                            is_charging = charge_str in ("true", "1", "yes")
+                        except Exception:
+                            pass  # If we can't get charging status, just use False
+                        
+                        return {
+                            "percentage": percentage,
+                            "is_charging": is_charging,
+                            "voltage": None,
+                        }
+                except (ValueError, TypeError):
+                    pass  # Not a plain number, try other parsing methods
+                
+                # Try parsing as JSON (in case response format changed)
+                if response:
+                    try:
+                        data = json.loads(response)
+                        percentage = data.get("percentage") or data.get("battery") or data.get("level")
+                        is_charging = data.get("charging") or data.get("is_charging") or False
+                        voltage = data.get("voltage") or data.get("voltage_mv")
+                        
+                        if percentage is not None:
+                            return {
+                                "percentage": int(percentage),
+                                "is_charging": bool(is_charging),
+                                "voltage": int(voltage) if voltage is not None else None,
+                            }
+                    except (json.JSONDecodeError, ValueError, TypeError):
+                        # Try parsing key-value format
+                        # Example: "battery: 85\ncharging: false"
+                        percentage = None
+                        is_charging = False
+                        voltage = None
+                        
+                        for line in response.splitlines():
+                            if ":" in line:
+                                key, value = line.split(":", 1)
+                                key = key.strip().lower()
+                                value = value.strip()
+                                
+                                if "battery" in key or "percentage" in key or "level" in key:
+                                    try:
+                                        percentage = int(float(value))
+                                    except (ValueError, TypeError):
+                                        pass
+                                elif "charging" in key:
+                                    is_charging = value.lower() in ("true", "1", "yes", "on")
+                                elif "voltage" in key:
+                                    try:
+                                        voltage = int(float(value))
+                                    except (ValueError, TypeError):
+                                        pass
+                        
+                        if percentage is not None:
+                            return {
+                                "percentage": percentage,
+                                "is_charging": is_charging,
+                                "voltage": voltage,
+                            }
+            except (OSError, socket.error, Exception):
+                # Socket failed, try netcat fallback
+                try:
+                    result = subprocess.run(
+                        ["nc", "-U", "/tmp/pisugar-server.sock"],
+                        input="get battery\n",
+                        capture_output=True,
+                        text=True,
+                        timeout=2,
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
+                        response = result.stdout.strip()
+                        try:
+                            percentage = int(float(response))
+                            if 0 <= percentage <= 100:
+                                # Try to get charging status
+                                is_charging = False
+                                try:
+                                    charge_result = subprocess.run(
+                                        ["nc", "-U", "/tmp/pisugar-server.sock"],
+                                        input="get battery_charging\n",
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=1,
+                                    )
+                                    if charge_result.returncode == 0:
+                                        charge_str = charge_result.stdout.strip().lower()
+                                        is_charging = charge_str in ("true", "1", "yes")
+                                except Exception:
+                                    pass
+                                
+                                return {
+                                    "percentage": percentage,
+                                    "is_charging": is_charging,
+                                    "voltage": None,
+                                }
                         except (ValueError, TypeError):
                             pass
-                    elif "charging" in key:
-                        is_charging = value.lower() in ("true", "1", "yes", "on")
-                    elif "voltage" in key:
-                        try:
-                            voltage = int(float(value))
-                        except (ValueError, TypeError):
-                            pass
-            
-            if percentage is not None:
-                return {
-                    "percentage": percentage,
-                    "is_charging": is_charging,
-                    "voltage": voltage,
-                }
-        
-        return None
+                except (subprocess.TimeoutExpired, FileNotFoundError, OSError, Exception):
+                    pass
+        except Exception:
+            pass
+    
+    # Method 2: Try HTTP API (port 8421) if socket failed
+    # First try to get authentication token
+    try:
+        # Try default username/password (often empty or "pi")
+        for username, password in [("pi", ""), ("", ""), ("admin", "admin")]:
+            try:
+                import urllib.request
+                import urllib.parse
+                
+                login_url = f"http://127.0.0.1:8421/login?username={urllib.parse.quote(username)}&password={urllib.parse.quote(password)}"
+                req = urllib.request.Request(login_url, method="POST")
+                with urllib.request.urlopen(req, timeout=2) as response:
+                    token = response.read().decode("utf-8").strip()
+                    if token:
+                        # Got token, now execute get battery command
+                        exec_url = f"http://127.0.0.1:8421/exec?token={urllib.parse.quote(token)}"
+                        exec_data = "get battery".encode("utf-8")
+                        exec_req = urllib.request.Request(
+                            exec_url,
+                            data=exec_data,
+                            headers={"Content-Type": "text/plain"},
+                            method="POST",
+                        )
+                        with urllib.request.urlopen(exec_req, timeout=2) as exec_response:
+                            response_text = exec_response.read().decode("utf-8").strip()
+                            try:
+                                percentage = int(float(response_text))
+                                if 0 <= percentage <= 100:
+                                    # Try to get charging status
+                                    is_charging = False
+                                    try:
+                                        charge_data = "get battery_charging".encode("utf-8")
+                                        charge_req = urllib.request.Request(
+                                            exec_url,
+                                            data=charge_data,
+                                            headers={"Content-Type": "text/plain"},
+                                            method="POST",
+                                        )
+                                        with urllib.request.urlopen(charge_req, timeout=2) as charge_response:
+                                            charge_text = charge_response.read().decode("utf-8").strip().lower()
+                                            is_charging = charge_text in ("true", "1", "yes")
+                                    except Exception:
+                                        pass
+                                    
+                                    return {
+                                        "percentage": percentage,
+                                        "is_charging": is_charging,
+                                        "voltage": None,
+                                    }
+                            except (ValueError, TypeError):
+                                pass
+                        break  # Successfully tried HTTP API, don't try other credentials
+            except Exception:
+                continue
     except Exception:
-        # PiSugar not available or error reading
-        return None
+        pass
+    
+    # Method 3: Try alternative methods (sysfs, etc.)
+    # Check for sysfs battery interface
+    try:
+        # PiSugar might expose battery info via sysfs
+        sysfs_paths = [
+            Path("/sys/class/power_supply/pisugar/battery_percentage"),
+            Path("/sys/class/power_supply/pisugar/capacity"),
+            Path("/sys/class/power_supply/battery/capacity"),
+        ]
+        for sysfs_path in sysfs_paths:
+            if sysfs_path.exists():
+                try:
+                    percentage_str = sysfs_path.read_text(encoding="utf-8").strip()
+                    percentage = int(float(percentage_str))
+                    if 0 <= percentage <= 100:
+                        # Try to get charging status
+                        is_charging = False
+                        status_path = sysfs_path.parent / "status"
+                        if status_path.exists():
+                            try:
+                                status = status_path.read_text(encoding="utf-8").strip().lower()
+                                is_charging = status == "charging"
+                            except Exception:
+                                pass
+                        
+                        return {
+                            "percentage": percentage,
+                            "is_charging": is_charging,
+                            "voltage": None,
+                        }
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    
+    # All methods failed
+    return None
 
 
 @dataclass

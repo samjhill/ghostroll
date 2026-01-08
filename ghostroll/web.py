@@ -319,6 +319,36 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
             margin-top: 1rem;
         }
         
+        .battery-info {
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .battery-value {
+            font-weight: 600;
+            font-size: 1.1rem;
+        }
+        
+        .battery-value.battery-normal {
+            color: var(--status-running);
+        }
+        
+        .battery-value.battery-low {
+            color: #f59e0b;
+        }
+        
+        .battery-value.battery-critical {
+            color: var(--status-error);
+            font-weight: 700;
+        }
+        
+        .charging-indicator {
+            font-size: 0.85rem;
+            font-weight: 400;
+            color: var(--text-secondary);
+            margin-left: 0.5rem;
+        }
+        
         .detail-item {
             flex: 1;
             min-width: 150px;
@@ -680,6 +710,23 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
             
             html += '            <div class="status-details">\n'
             
+            # Battery information (if available)
+            battery_percentage = status_data.get("battery_percentage")
+            battery_charging = status_data.get("battery_charging", False)
+            if battery_percentage is not None:
+                battery_icon = "🔋" if not battery_charging else "🔌"
+                battery_class = "battery-low" if battery_percentage < 20 else "battery-normal"
+                if battery_percentage < 10:
+                    battery_class = "battery-critical"
+                html += '                <div class="detail-item battery-info">\n'
+                html += f'                    <div class="detail-label">{battery_icon} Battery</div>\n'
+                html += f'                    <div class="detail-value battery-value {battery_class}">'
+                html += f'{battery_percentage}%'
+                if battery_charging:
+                    html += ' <span class="charging-indicator">(charging)</span>'
+                html += '</div>\n'
+                html += '                </div>\n'
+            
             if session_id:
                 html += '                <div class="detail-item">\n'
                 html += '                    <div class="detail-label">Session</div>\n'
@@ -889,9 +936,32 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
                     }
                 }
                 
-                // Update details (session, volume)
+                // Update details (battery, session, volume)
                 if (statusDetails) {
                     let detailsHTML = '';
+                    
+                    // Battery information
+                    const batteryPercentage = data.battery_percentage;
+                    const batteryCharging = data.battery_charging || false;
+                    if (batteryPercentage !== null && batteryPercentage !== undefined) {
+                        const batteryIcon = batteryCharging ? '🔌' : '🔋';
+                        let batteryClass = 'battery-normal';
+                        if (batteryPercentage < 10) {
+                            batteryClass = 'battery-critical';
+                        } else if (batteryPercentage < 20) {
+                            batteryClass = 'battery-low';
+                        }
+                        detailsHTML += '<div class="detail-item battery-info">\\n';
+                        detailsHTML += '    <div class="detail-label">' + batteryIcon + ' Battery</div>\\n';
+                        detailsHTML += '    <div class="detail-value battery-value ' + batteryClass + '">';
+                        detailsHTML += escapeHtml(String(batteryPercentage)) + '%';
+                        if (batteryCharging) {
+                            detailsHTML += ' <span class="charging-indicator">(charging)</span>';
+                        }
+                        detailsHTML += '</div>\\n';
+                        detailsHTML += '</div>\\n';
+                    }
+                    
                     if (sessionId) {
                         detailsHTML += '<div class="detail-item">\\n';
                         detailsHTML += '    <div class="detail-label">Session</div>\\n';
