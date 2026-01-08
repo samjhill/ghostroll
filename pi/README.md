@@ -309,10 +309,10 @@ Start conservative and tune up:
 - `GHOSTROLL_UPLOAD_WORKERS=4`
 - `GHOSTROLL_PRESIGN_WORKERS=8`
 
-Web interface (optional):
-- `GHOSTROLL_WEB_ENABLED=1` (enable lightweight web interface)
+Web interface (enabled by default):
+- `GHOSTROLL_WEB_ENABLED=1` (enabled by default; set to `0` to disable)
 - `GHOSTROLL_WEB_HOST=0.0.0.0` (bind to all interfaces for network access) or `127.0.0.1` (local only)
-- `GHOSTROLL_WEB_PORT=8081` (default: 8080, but use different port if WiFi portal is enabled)
+- `GHOSTROLL_WEB_PORT=8081` (default: 8081 on Pi to avoid conflict with WiFi portal on port 8080)
 
 The web interface provides easy access to status and session galleries without impacting performance. Access it at `http://<pi-ip>:<port>/` when enabled. See main README for details.
 

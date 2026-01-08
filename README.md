@@ -205,10 +205,10 @@ You can configure via env vars (CLI flags override env):
 - `GHOSTROLL_UPLOAD_WORKERS` (default `4`)
 - `GHOSTROLL_PRESIGN_WORKERS` (default `8`)
 
-Web interface settings (optional):
-- `GHOSTROLL_WEB_ENABLED` (default `false`) — enable web interface
+Web interface settings (enabled by default):
+- `GHOSTROLL_WEB_ENABLED` (default `true`) — enable/disable web interface
 - `GHOSTROLL_WEB_HOST` (default `127.0.0.1`) — bind address (use `0.0.0.0` for network access)
-- `GHOSTROLL_WEB_PORT` (default `8080`) — port number
+- `GHOSTROLL_WEB_PORT` (default `8080`, `8081` on Pi if WiFi portal enabled) — port number
 
 Image settings:
 
@@ -217,20 +217,22 @@ Image settings:
 - `GHOSTROLL_THUMB_MAX_LONG_EDGE` (default `512`)
 - `GHOSTROLL_THUMB_QUALITY` (default `85`)
 
-## Web Interface (Optional)
+## Web Interface (Enabled by Default)
 
-GhostRoll includes a lightweight web interface that provides easy access to status and session galleries without impacting performance.
+GhostRoll includes a lightweight web interface that provides easy access to status and session galleries without impacting performance. The web interface is **enabled by default**.
 
-**To enable:**
+**To disable:**
 ```bash
-export GHOSTROLL_WEB_ENABLED=true
+export GHOSTROLL_WEB_ENABLED=false
 ghostroll watch
 ```
 
 Or use command-line flags:
 ```bash
-ghostroll watch --web-enabled --web-host 0.0.0.0 --web-port 8080
+ghostroll watch --web-host 0.0.0.0 --web-port 8080
 ```
+
+Note: On Raspberry Pi, if the WiFi portal is enabled (uses port 8080), the web interface defaults to port 8081 to avoid conflicts.
 
 **Features:**
 - View current status (`/status.json`, `/status.png`)

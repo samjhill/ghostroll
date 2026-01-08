@@ -173,9 +173,9 @@ def load_config(
         copy_workers if copy_workers is not None else env.get("GHOSTROLL_COPY_WORKERS", "6")
     )
     
-    # Web interface settings
+    # Web interface settings (enabled by default)
     web_enabled = (
-        web_enabled if web_enabled is not None else env.get("GHOSTROLL_WEB_ENABLED", "false").lower() in ("true", "1", "yes")
+        web_enabled if web_enabled is not None else env.get("GHOSTROLL_WEB_ENABLED", "true").lower() in ("true", "1", "yes")
     )
     web_host = web_host or env.get("GHOSTROLL_WEB_HOST", "127.0.0.1")
     web_port = int(
