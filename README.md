@@ -184,8 +184,14 @@ See `aws-lambda/README.md` for deployment instructions.
 
 GhostRoll keeps a persistent SQLite DB keyed by **SHA-256 of file bytes** (default `~/.ghostroll/ghostroll.db`).
 
-- Re-insert same card with no new photos: it will quickly report “No new files detected”.
+- Re-insert same card with no new photos: it will quickly report "No new files detected".
 - Add new photos: only the new files are copied/processed/uploaded.
+
+## File filtering
+
+GhostRoll automatically filters out:
+- **macOS metadata files** (`._*`): Resource fork files created by macOS when copying files. These are not real images and are skipped during processing.
+- **Corrupted/truncated images**: Files that cannot be processed are skipped with a warning in the log.
 
 ## Configuration
 
