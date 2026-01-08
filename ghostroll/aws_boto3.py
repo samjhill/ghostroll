@@ -103,7 +103,7 @@ def _parse_boto3_error(error: ClientError) -> str:
     return f"Error code: {error_code}"
 
 
-def s3_upload_file(local_path: Path, *, bucket: str, key: str, retries: int = 3) -> None:
+def s3_upload_file(local_path: Path, *, bucket: str, key: str, retries: int = 3, content_type: str | None = None) -> None:
     """Upload a file to S3 using boto3 (faster than AWS CLI subprocess).
     
     Args:
@@ -111,12 +111,38 @@ def s3_upload_file(local_path: Path, *, bucket: str, key: str, retries: int = 3)
         bucket: S3 bucket name
         key: S3 object key (path)
         retries: Number of retry attempts (handled by boto3 config)
+        content_type: MIME type for the file (e.g., 'text/html', 'image/png'). 
+                     If None, boto3 will attempt to guess from file extension.
     
     Raises:
         AwsBoto3Error: If upload fails
     """
     client = _get_s3_client()
     file_size = local_path.stat().st_size
+    
+    # Auto-detect content type from file extension if not provided
+    if content_type is None:
+        suffix = local_path.suffix.lower()
+        if suffix == ".html":
+            content_type = "text/html; charset=utf-8"
+        elif suffix == ".json":
+            content_type = "application/json; charset=utf-8"
+        elif suffix == ".png":
+            content_type = "image/png"
+        elif suffix in (".jpg", ".jpeg"):
+            content_type = "image/jpeg"
+        elif suffix == ".txt":
+            content_type = "text/plain; charset=utf-8"
+        elif suffix == ".log":
+            content_type = "text/plain; charset=utf-8"
+        elif suffix == ".zip":
+            content_type = "application/zip"
+        # Default to binary if we can't determine
+        if content_type is None:
+            content_type = "application/octet-stream"
+    
+    # Prepare ExtraArgs for metadata
+    extra_args = {"ContentType": content_type}
     
     # Use multipart upload for large files (>100MB) for better performance and error recovery
     transfer_config = None
@@ -135,13 +161,15 @@ def s3_upload_file(local_path: Path, *, bucket: str, key: str, retries: int = 3)
                     str(local_path),
                     bucket,
                     key,
+                    ExtraArgs=extra_args,
                     Config=transfer_config
                 )
             else:
                 client.upload_file(
                     str(local_path),
                     bucket,
-                    key
+                    key,
+                    ExtraArgs=extra_args
                 )
             return  # Success
         except ClientError as e:
