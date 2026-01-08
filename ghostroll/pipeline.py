@@ -23,6 +23,7 @@ from .gallery import build_index_html_from_items, build_index_html_loading, buil
 from .hashing import sha256_file
 from .image_processing import render_jpeg_derivative
 from .logging_utils import attach_session_logfile
+from .log_uploader import ensure_log_upload, LogUploader
 from .qr import QrError, render_qr_ascii, write_qr_png
 from .status import Status, StatusWriter
 
@@ -672,6 +673,24 @@ def run_pipeline(
         originals_dir.mkdir(parents=True, exist_ok=True)
         derived_share_dir.mkdir(parents=True, exist_ok=True)
         derived_thumbs_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Set up bulletproof log uploader (uploads periodically and on crash/exit)
+        log_file = session_dir / "ghostroll.log"
+        log_key = f"{prefix}/logs/ghostroll.log"
+        log_uploader: LogUploader | None = None
+        if log_file.exists():
+            try:
+                log_uploader = ensure_log_upload(
+                    log_file=log_file,
+                    s3_bucket=cfg.s3_bucket,
+                    s3_key=log_key,
+                    upload_interval=30.0,  # Upload every 30 seconds during processing
+                )
+                log_uploader.start()
+                logger.info(f"Started bulletproof log uploader (periodic uploads to s3://{cfg.s3_bucket}/{log_key})")
+            except Exception as e:
+                logger.warning(f"Failed to start log uploader: {e} (logs will still be uploaded at end)")
+                log_uploader = None
 
         # Early QR code generation: publish the gallery link (loading page) immediately after session creation,
         # before processing files, so the QR code is available as soon as possible.
@@ -1291,7 +1310,7 @@ def run_pipeline(
                         counts={"uploaded": uploaded_ok},
                     )
                 )
-            total_attempted = len(upload_tasks)
+            total_attempted = len(proc_tasks) if proc_tasks else 0
             success_rate = (uploaded_ok / total_attempted * 100) if total_attempted > 0 else 0
             raise PipelineError(
                 f"Upload failed for {len(upload_failures)} of {total_attempted} objects ({success_rate:.1f}% succeeded).\n"
@@ -1462,9 +1481,21 @@ def run_pipeline(
         if err:
             logger.warning(f"Failed to update S3 status.json to complete: {err}")
 
-        # Upload session log to S3 in logs folder
+        # Ensure log is uploaded (stop periodic uploader and do final upload)
+        if log_uploader is not None:
+            try:
+                log_uploader.stop()
+                # Final upload with flush
+                if log_uploader.upload_now(force_flush=True):
+                    logger.info(f"Final session log upload succeeded")
+                else:
+                    logger.warning(f"Final session log upload failed")
+            except Exception as e:
+                logger.warning(f"Error during final log upload: {e}")
+        
+        # Fallback: upload log manually if uploader wasn't started or failed
         log_file = session_dir / "ghostroll.log"
-        if log_file.exists():
+        if log_file.exists() and (log_uploader is None or log_uploader.get_stats()["upload_count"] == 0):
             log_key = f"{prefix}/logs/ghostroll.log"
             logger.info(f"Uploading session log to s3://{cfg.s3_bucket}/{log_key}...")
             # Flush all log handlers to ensure log file is complete before upload
@@ -1525,6 +1556,15 @@ def run_pipeline(
 
         return sp, url
     finally:
+        # Ensure log is uploaded even if pipeline crashes
+        if 'log_uploader' in locals() and log_uploader is not None:
+            try:
+                log_uploader.stop()
+                log_uploader.upload_now(force_flush=True)
+                logger.debug("Log uploaded in finally block")
+            except Exception as e:
+                # Don't fail the finally block if log upload fails
+                logger.debug(f"Error uploading log in finally block: {e}")
         conn.close()
 
 
