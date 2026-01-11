@@ -39,8 +39,16 @@ CREATE INDEX IF NOT EXISTS idx_failed_files_size_bytes ON failed_files(size_byte
 """
 
 
-def connect(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db_path))
+def connect(db_path: Path, timeout: float = 30.0) -> sqlite3.Connection:
+    """
+    Create a database connection with timeout support.
+    
+    Args:
+        db_path: Path to the database file
+        timeout: Timeout in seconds for database operations (default: 30.0)
+                 This is the busy timeout for lock acquisition, not I/O timeout
+    """
+    conn = sqlite3.connect(str(db_path), timeout=timeout)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
     return conn

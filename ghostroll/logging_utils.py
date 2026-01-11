@@ -4,6 +4,22 @@ import logging
 from pathlib import Path
 
 
+def attach_logfile(logger: logging.Logger, logfile: Path) -> None:
+    """
+    Adds a logfile handler at an explicit path if one is not already present.
+    """
+    logfile.parent.mkdir(parents=True, exist_ok=True)
+    for h in logger.handlers:
+        if isinstance(h, logging.FileHandler) and Path(h.baseFilename) == logfile:
+            return
+
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    fh = logging.FileHandler(logfile)
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(fmt)
+    logger.addHandler(fh)
+
+
 def setup_logging(*, session_dir: Path | None = None, verbose: bool = True) -> logging.Logger:
     """
     Set up logging for GhostRoll.
@@ -40,14 +56,6 @@ def attach_session_logfile(logger: logging.Logger, session_dir: Path) -> None:
     """
     session_dir.mkdir(parents=True, exist_ok=True)
     logfile = session_dir / "ghostroll.log"
-    for h in logger.handlers:
-        if isinstance(h, logging.FileHandler) and Path(h.baseFilename) == logfile:
-            return
-
-    fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-    fh = logging.FileHandler(logfile)
-    fh.setLevel(logging.DEBUG)
-    fh.setFormatter(fmt)
-    logger.addHandler(fh)
+    attach_logfile(logger, logfile)
 
 

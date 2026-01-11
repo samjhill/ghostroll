@@ -7,12 +7,60 @@ import logging
 import signal
 import threading
 import time
+import weakref
 from pathlib import Path
 
 from .aws_boto3 import s3_upload_file, AwsBoto3Error
 
 
 logger = logging.getLogger("ghostroll")
+
+_UPLOADERS: "weakref.WeakSet[LogUploader]" = weakref.WeakSet()
+_HANDLERS_INSTALLED = False
+_HANDLERS_LOCK = threading.Lock()
+
+
+def _upload_all(*, force_flush: bool) -> None:
+    # Best-effort: never raise from here.
+    for uploader in list(_UPLOADERS):
+        try:
+            uploader.stop()
+            uploader._upload_log(force_flush=force_flush)
+        except Exception:
+            pass
+
+
+def _global_signal_handler(signum, frame):
+    signal_name = signal.Signals(signum).name
+    logger.warning(f"Received signal {signal_name}, uploading logs before exit...")
+    _upload_all(force_flush=True)
+    # Re-raise the signal to allow normal cleanup
+    signal.signal(signum, signal.SIG_DFL)
+    signal.raise_signal(signum)
+
+
+def _global_atexit_handler():
+    # Logging may already be partially shut down at interpreter exit; avoid emitting logs here.
+    try:
+        _upload_all(force_flush=True)
+    except Exception:
+        pass
+
+
+def _ensure_global_handlers_installed() -> None:
+    global _HANDLERS_INSTALLED
+    with _HANDLERS_LOCK:
+        if _HANDLERS_INSTALLED:
+            return
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                signal.signal(sig, _global_signal_handler)
+                logger.debug(f"Registered global signal handler for {signal.Signals(sig).name}")
+            except (ValueError, OSError) as e:
+                logger.debug(f"Could not register global signal handler for {signal.Signals(sig).name}: {e}")
+        atexit.register(_global_atexit_handler)
+        logger.debug("Registered global atexit handler for log upload")
+        _HANDLERS_INSTALLED = True
 
 
 class LogUploader:
@@ -65,10 +113,16 @@ class LogUploader:
                 if force_flush:
                     root_logger = logging.getLogger("ghostroll")
                     for handler in root_logger.handlers:
-                        handler.flush()
+                        try:
+                            handler.flush()
+                        except Exception:
+                            pass
                     # Also flush root handlers
                     for handler in logging.root.handlers:
-                        handler.flush()
+                        try:
+                            handler.flush()
+                        except Exception:
+                            pass
                 
                 # Upload the log file
                 # s3_upload_file returns None on success, raises AwsBoto3Error on failure
@@ -83,10 +137,16 @@ class LogUploader:
                     self._upload_count += 1
                     return True
                 except AwsBoto3Error as e:
-                    logger.debug(f"Log upload failed: {e}")
+                    try:
+                        logger.debug(f"Log upload failed: {e}")
+                    except Exception:
+                        pass
                     return False
             except Exception as e:
-                logger.debug(f"Log upload exception: {e}")
+                try:
+                    logger.debug(f"Log upload exception: {e}")
+                except Exception:
+                    pass
                 return False
     
     def _periodic_upload_worker(self):
@@ -104,49 +164,16 @@ class LogUploader:
         # Final upload when stopping
         self._upload_log(force_flush=True)
     
-    def _signal_handler(self, signum, frame):
-        """Handle signals (SIGTERM, SIGINT, etc.) to ensure log upload."""
-        signal_name = signal.Signals(signum).name
-        logger.warning(f"Received signal {signal_name}, uploading log before exit...")
-        
-        # Stop periodic uploads
-        self.stop()
-        
-        # Force upload the log
-        self._upload_log(force_flush=True)
-        
-        # Re-raise the signal to allow normal cleanup
-        signal.signal(signum, signal.SIG_DFL)
-        signal.raise_signal(signum)
-    
-    def _atexit_handler(self):
-        """Handle normal program exit to ensure log upload."""
-        logger.debug("Program exiting, uploading log...")
-        self.stop()
-        self._upload_log(force_flush=True)
-    
     def register_handlers(self):
-        """Register signal and atexit handlers for automatic log upload on exit/crash."""
+        """Register global signal and atexit handlers for automatic log upload on exit/crash."""
         if self._registered_handlers:
             return
-        
-        # Register signal handlers for graceful shutdown
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            try:
-                # Save existing handler if any
-                old_handler = signal.signal(sig, self._signal_handler)
-                logger.debug(f"Registered signal handler for {signal.Signals(sig).name}")
-            except (ValueError, OSError) as e:
-                # Some signals may not be available on all platforms
-                logger.debug(f"Could not register signal handler for {signal.Signals(sig).name}: {e}")
-        
-        # Register atexit handler for normal exits
-        atexit.register(self._atexit_handler)
-        logger.debug("Registered atexit handler for log upload")
-        
+
+        _UPLOADERS.add(self)
+        _ensure_global_handlers_installed()
         self._registered_handlers = True
     
-    def start(self):
+    def start(self, *, upload_immediately: bool = True):
         """Start periodic log uploads in background thread."""
         if self._upload_thread is not None and self._upload_thread.is_alive():
             return
@@ -159,6 +186,9 @@ class LogUploader:
         )
         self._upload_thread.start()
         logger.debug(f"Started periodic log uploader (interval: {self.upload_interval}s)")
+        if upload_immediately:
+            # Don't wait for the first interval; get something up to S3 right away.
+            self._upload_log(force_flush=True)
     
     def stop(self):
         """Stop periodic log uploads."""
@@ -226,4 +256,61 @@ def ensure_log_upload(
     uploader.register_handlers()
     
     return uploader
+
+
+def recover_session_logs(
+    *,
+    sessions_dir: Path,
+    s3_bucket: str,
+    s3_prefix_root: str,
+    max_sessions: int = 20,
+    logger: logging.Logger | None = None,
+) -> int:
+    """
+    Best-effort startup recovery: upload session `ghostroll.log` files that exist locally.
+
+    This covers cases where a prior run died abruptly (no atexit/signal handling) but the
+    device stayed on and the logfile was written to disk.
+    """
+    try:
+        if not sessions_dir.exists() or not sessions_dir.is_dir():
+            return 0
+    except Exception:
+        return 0
+
+    try:
+        # Most-recent-first so we cover the latest crash quickly.
+        session_dirs = [p for p in sessions_dir.iterdir() if p.is_dir()]
+        session_dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    except Exception:
+        return 0
+
+    uploaded = 0
+    prefix_root = s3_prefix_root or ""
+
+    for session_dir in session_dirs[:max_sessions]:
+        session_id = session_dir.name
+        log_file = session_dir / "ghostroll.log"
+        try:
+            if not log_file.exists() or log_file.stat().st_size <= 0:
+                continue
+        except Exception:
+            continue
+
+        prefix = f"{prefix_root}{session_id}".rstrip("/")
+        log_key = f"{prefix}/logs/ghostroll.log"
+
+        try:
+            s3_upload_file(local_path=log_file, bucket=s3_bucket, key=log_key, retries=3)
+            uploaded += 1
+            if logger:
+                logger.info(f"Recovered session log upload: s3://{s3_bucket}/{log_key}")
+        except AwsBoto3Error as e:
+            if logger:
+                logger.warning(f"Failed to recover-upload {log_file} -> s3://{s3_bucket}/{log_key}: {e}")
+        except Exception as e:
+            if logger:
+                logger.warning(f"Failed to recover-upload {log_file} -> s3://{s3_bucket}/{log_key}: {type(e).__name__}: {e}")
+
+    return uploaded
 

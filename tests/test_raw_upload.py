@@ -115,13 +115,17 @@ def test_end_to_end_with_raw_files(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     
     mock_s3_client.generate_presigned_url = fake_presign
     
+    class _FakeClientError(Exception):
+        def __init__(self, response, operation_name: str):
+            super().__init__(operation_name)
+            self.response = response
+
     # Mock head_object to return 404 for non-existent objects (for s3_object_exists)
     def fake_head_object(Bucket, Key):
         # For enhanced images check, return 404 (doesn't exist)
         if "enhanced" in Key:
-            from botocore.exceptions import ClientError
             error_response = {'Error': {'Code': '404', 'Message': 'Not Found'}}
-            raise ClientError(error_response, 'HeadObject')
+            raise _FakeClientError(error_response, 'HeadObject')
         # For other objects, assume they exist
         return {}
     

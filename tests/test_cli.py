@@ -15,6 +15,15 @@ from ghostroll.pipeline import PipelineError, run_pipeline
 from ghostroll.status import Status, StatusWriter
 
 
+def _set_status_env(monkeypatch: pytest.MonkeyPatch, base_dir: Path) -> None:
+    """
+    CLI writes status.json/status.png; keep tests hermetic by writing into tmp dirs.
+    """
+    monkeypatch.setenv("GHOSTROLL_STATUS_PATH", str(base_dir / "status.json"))
+    monkeypatch.setenv("GHOSTROLL_STATUS_IMAGE_PATH", str(base_dir / "status.png"))
+    monkeypatch.setenv("GHOSTROLL_STATUS_IMAGE_SIZE", "320x240")
+
+
 def test_build_parser():
     parser = build_parser()
     assert parser.prog == "ghostroll"
@@ -97,6 +106,7 @@ def test_cmd_run_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("GHOSTROLL_BASE_DIR", str(out))
     monkeypatch.setenv("GHOSTROLL_DB_PATH", str(out / "ghostroll.db"))
     monkeypatch.setenv("GHOSTROLL_S3_BUCKET", "test-bucket")
+    _set_status_env(monkeypatch, out)
     
     args = MagicMock()
     args.volume = str(vol)
@@ -140,6 +150,7 @@ def test_cmd_run_no_new_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("GHOSTROLL_BASE_DIR", str(out))
     monkeypatch.setenv("GHOSTROLL_DB_PATH", str(out / "ghostroll.db"))
     monkeypatch.setenv("GHOSTROLL_S3_BUCKET", "test-bucket")
+    _set_status_env(monkeypatch, out)
     
     args = MagicMock()
     args.volume = str(vol)
@@ -169,6 +180,7 @@ def test_cmd_run_pipeline_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("GHOSTROLL_BASE_DIR", str(out))
     monkeypatch.setenv("GHOSTROLL_DB_PATH", str(out / "ghostroll.db"))
     monkeypatch.setenv("GHOSTROLL_S3_BUCKET", "test-bucket")
+    _set_status_env(monkeypatch, out)
     
     args = MagicMock()
     args.volume = str(tmp_path / "vol")
@@ -198,6 +210,7 @@ def test_cmd_run_generic_exception(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("GHOSTROLL_BASE_DIR", str(out))
     monkeypatch.setenv("GHOSTROLL_DB_PATH", str(out / "ghostroll.db"))
     monkeypatch.setenv("GHOSTROLL_S3_BUCKET", "test-bucket")
+    _set_status_env(monkeypatch, out)
     
     args = MagicMock()
     args.volume = str(tmp_path / "vol")
@@ -249,6 +262,7 @@ def test_cmd_watch_basic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("GHOSTROLL_BASE_DIR", str(tmp_path))
     monkeypatch.setenv("GHOSTROLL_DB_PATH", str(tmp_path / "ghostroll.db"))
     monkeypatch.setenv("GHOSTROLL_S3_BUCKET", "test-bucket")
+    _set_status_env(monkeypatch, tmp_path)
     
     args = MagicMock()
     args.sd_label = None

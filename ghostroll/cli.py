@@ -11,12 +11,13 @@ from pathlib import Path
 
 from .config import load_config
 from .doctor import format_results, run_doctor
-from .logging_utils import setup_logging
+from .logging_utils import setup_logging, attach_logfile
 from .pipeline import PipelineError, run_pipeline
 from .status import Status, StatusWriter, get_hostname, get_ip_address
 from .volume_watch import find_candidate_mounts, pick_mount_with_dcim
 from .watchdog_watcher import WatchdogWatcher
 from .web import GhostRollWebServer
+from .log_uploader import ensure_log_upload, recover_session_logs
 
 
 def _is_mounted(where: Path) -> bool:
@@ -312,6 +313,35 @@ def cmd_run(args: argparse.Namespace) -> int:
     else:
         volume = Path(vol_arg).resolve()
     logger = setup_logging(session_dir=None, verbose=not args.quiet)
+    # Always-on service log (captures crashes before a session dir exists).
+    service_log = cfg.sessions_dir / "_service" / "ghostroll-run.log"
+    attach_logfile(logger, service_log)
+    service_uploader = None
+    try:
+        service_prefix = f"{cfg.s3_prefix_root}service/{get_hostname()}".rstrip("/")
+        service_key = f"{service_prefix}/ghostroll-run.log"
+        service_uploader = ensure_log_upload(
+            log_file=service_log,
+            s3_bucket=cfg.s3_bucket,
+            s3_key=service_key,
+            upload_interval=60.0,
+        )
+        service_uploader.start(upload_immediately=True)
+        logger.info(f"Started service log uploader: s3://{cfg.s3_bucket}/{service_key}")
+    except Exception as e:
+        logger.warning(f"Failed to start service log uploader: {e}")
+    # Startup recovery: upload prior session logs that exist locally.
+    try:
+        recovered = recover_session_logs(
+            sessions_dir=cfg.sessions_dir,
+            s3_bucket=cfg.s3_bucket,
+            s3_prefix_root=cfg.s3_prefix_root,
+            logger=logger,
+        )
+        if recovered:
+            logger.info(f"Recovered {recovered} prior session log(s) to S3")
+    except Exception:
+        pass
     status = StatusWriter(
         json_path=cfg.status_path,
         image_path=cfg.status_image_path,
@@ -361,6 +391,15 @@ def cmd_run(args: argparse.Namespace) -> int:
             )
         )
         return 2
+    finally:
+        # On normal completion, stop the service uploader to avoid background thread leaks
+        # (important for unit tests; in production the process usually exits immediately).
+        try:
+            if service_uploader is not None:
+                service_uploader.stop()
+                service_uploader.upload_now(force_flush=True)
+        except Exception:
+            pass
 
 
 def cmd_watch(args: argparse.Namespace) -> int:
@@ -381,6 +420,35 @@ def cmd_watch(args: argparse.Namespace) -> int:
         web_port=args.web_port if hasattr(args, "web_port") else None,
     )
     logger = setup_logging(session_dir=None, verbose=not args.quiet)
+    # Always-on service log (captures crashes before a session dir exists).
+    service_log = cfg.sessions_dir / "_service" / "ghostroll-watch.log"
+    attach_logfile(logger, service_log)
+    service_uploader = None
+    try:
+        service_prefix = f"{cfg.s3_prefix_root}service/{get_hostname()}".rstrip("/")
+        service_key = f"{service_prefix}/ghostroll-watch.log"
+        service_uploader = ensure_log_upload(
+            log_file=service_log,
+            s3_bucket=cfg.s3_bucket,
+            s3_key=service_key,
+            upload_interval=60.0,
+        )
+        service_uploader.start(upload_immediately=True)
+        logger.info(f"Started service log uploader: s3://{cfg.s3_bucket}/{service_key}")
+    except Exception as e:
+        logger.warning(f"Failed to start service log uploader: {e}")
+    # Startup recovery: upload prior session logs that exist locally.
+    try:
+        recovered = recover_session_logs(
+            sessions_dir=cfg.sessions_dir,
+            s3_bucket=cfg.s3_bucket,
+            s3_prefix_root=cfg.s3_prefix_root,
+            logger=logger,
+        )
+        if recovered:
+            logger.info(f"Recovered {recovered} prior session log(s) to S3")
+    except Exception:
+        pass
     status = StatusWriter(
         json_path=cfg.status_path,
         image_path=cfg.status_image_path,
@@ -595,6 +663,13 @@ def cmd_watch(args: argparse.Namespace) -> int:
                 )
             )
     finally:
+        # Stop service uploader on exit (tests rely on this to avoid thread leaks).
+        try:
+            if service_uploader is not None:
+                service_uploader.stop()
+                service_uploader.upload_now(force_flush=True)
+        except Exception:
+            pass
         # Clean up Watchdog watcher
         if use_watchdog:
             watcher.stop()

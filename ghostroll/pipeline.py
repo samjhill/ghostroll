@@ -1073,7 +1073,19 @@ def run_pipeline(
         logger.debug(f"Marking {len(db_inserts)} files as ingested in database...")
         if db_inserts:
             _db_mark_ingested_batch(conn, items=db_inserts)
-            conn.commit()
+            logger.debug(f"Committing {len(db_inserts)} file records to database...")
+            try:
+                conn.commit()
+            except Exception as e:
+                logger.error(f"Database commit failed while marking files as ingested: {e}")
+                logger.error("This may indicate filesystem issues. Files were copied but not marked in database.")
+                raise PipelineError(
+                    f"Database commit failed after marking {len(db_inserts)} files as ingested.\n"
+                    f"  Error: {e}\n"
+                    f"  This usually indicates filesystem problems (slow SD card or storage issues).\n"
+                    f"  Files were copied successfully but may not be marked in database.\n"
+                    f"  Try: Check storage health, ensure adequate disk space, or try a different SD card."
+                ) from e
         logger.info(f"Ingested originals: {copied} files copied ({copied_size:,} bytes), {len(db_inserts)} marked in DB -> {originals_dir}")
 
         # Process: only JPEGs that are newly ingested this run (fast + matches "new since last time" UX).
@@ -1468,11 +1480,12 @@ def run_pipeline(
                 ready_rel_paths.append((thumb_rel, share_rel, title, subtitle))
 
             # Presign URLs for ready images
-            presigned_ready: list[tuple[str, str, str, str, str | None]] = []
+            presigned_ready: list[tuple[str, str, str, str, str | None, str | None]] = []
             for thumb_rel, share_rel, title, subtitle in ready_rel_paths:
                 thumb_key = f"{prefix}/thumbs/{thumb_rel}"
                 share_key = f"{prefix}/share/{share_rel}"
                 enhanced_key = f"{prefix}/enhanced/{share_rel}"
+                tags_key = f"{prefix}/tags/{Path(share_rel).with_suffix('.json').as_posix()}"
                 try:
                     thumb_url = s3_presign_url(
                         bucket=cfg.s3_bucket,
@@ -1492,7 +1505,15 @@ def run_pipeline(
                             key=enhanced_key,
                             expires_in_seconds=cfg.presign_expiry_seconds,
                         )
-                    presigned_ready.append((thumb_url, share_url, title, subtitle, enhanced_url))
+                    # Check for tags sidecar
+                    tags_url = None
+                    if s3_object_exists(bucket=cfg.s3_bucket, key=tags_key):
+                        tags_url = s3_presign_url(
+                            bucket=cfg.s3_bucket,
+                            key=tags_key,
+                            expires_in_seconds=cfg.presign_expiry_seconds,
+                        )
+                    presigned_ready.append((thumb_url, share_url, title, subtitle, enhanced_url, tags_url))
                 except Exception as e:
                     logger.warning(f"Failed to presign {thumb_key}: {e}")
                     continue
@@ -1562,7 +1583,7 @@ def run_pipeline(
 
         # Build an S3-shareable gallery that embeds presigned URLs for assets (bucket remains private).
         # We keep the local index.html (relative paths) for offline/local browsing.
-        presigned_items: list[tuple[str, str, str, str]] = []
+        presigned_items: list[tuple[str, str, str, str, float, str | None, str | None]] = []
         thumb_files = sorted([p for p in derived_thumbs_dir.rglob("*") if p.is_file()])
         logger.info(f"Generating presigned asset URLs for {len(thumb_files)} images with {cfg.presign_workers} workers...")
         if status is not None:
@@ -1579,12 +1600,13 @@ def run_pipeline(
                 )
             )
 
-        def _presign_one(t: Path) -> tuple[str, str, str, str, float, str | None]:
+        def _presign_one(t: Path) -> tuple[str, str, str, str, float, str | None, str | None]:
             rel = t.relative_to(derived_thumbs_dir)
             thumb_key = f"{prefix}/thumbs/{rel.as_posix()}"
             logger.debug(f"Presigning: {rel.as_posix()}")
             share_key = f"{prefix}/share/{rel.with_suffix('.jpg').as_posix()}"
             enhanced_key = f"{prefix}/enhanced/{rel.with_suffix('.jpg').as_posix()}"
+            tags_key = f"{prefix}/tags/{rel.with_suffix('.json').as_posix()}"
             
             # Check if enhanced version exists
             enhanced_url = None
@@ -1595,6 +1617,15 @@ def run_pipeline(
                     expires_in_seconds=cfg.presign_expiry_seconds,
                 )
                 logger.debug(f"  Enhanced version available: {rel.as_posix()}")
+
+            # Check if tags sidecar exists
+            tags_url = None
+            if s3_object_exists(bucket=cfg.s3_bucket, key=tags_key):
+                tags_url = s3_presign_url(
+                    bucket=cfg.s3_bucket,
+                    key=tags_key,
+                    expires_in_seconds=cfg.presign_expiry_seconds,
+                )
             
             thumb_url = s3_presign_url(
                 bucket=cfg.s3_bucket,
@@ -1607,7 +1638,7 @@ def run_pipeline(
                 expires_in_seconds=cfg.presign_expiry_seconds,
             )
             title = rel.as_posix()
-            return (thumb_url, share_url, title, "", 9e18, enhanced_url)
+            return (thumb_url, share_url, title, "", 9e18, enhanced_url, tags_url)
 
         if thumb_files:
             with ThreadPoolExecutor(max_workers=max(1, cfg.presign_workers)) as ex:
@@ -1657,8 +1688,8 @@ def run_pipeline(
             )
 
         presigned_items.sort(key=lambda x: (x[4], x[2]))
-        # Convert to UI format: (thumb_url, share_url, title, subtitle, enhanced_url)
-        presigned_ui = [(a, b, c, d, e) for (a, b, c, d, _ts, e) in presigned_items]
+        # Convert to UI format: (thumb_url, share_url, title, subtitle, enhanced_url, tags_url)
+        presigned_ui = [(a, b, c, d, e, f) for (a, b, c, d, _ts, e, f) in presigned_items]
 
         index_for_s3 = session_dir / "index.s3.html"
         logger.info(f"Building final presigned gallery with {len(presigned_ui)} images...")
