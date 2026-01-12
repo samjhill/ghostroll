@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -269,4 +270,36 @@ def s3_presign_url(*, bucket: str, key: str, expires_in_seconds: int) -> str:
         raise AwsBoto3Error(
             f"Unexpected error generating presigned URL for s3://{bucket}/{key}: {e}"
         ) from e
+
+
+def s3_get_json(*, bucket: str, key: str) -> dict:
+    """
+    Fetch an S3 object and parse it as JSON.
+
+    This is used for lightweight control-plane reads like `status.json` during resume/recovery.
+    """
+    client = _get_s3_client()
+    try:
+        resp = client.get_object(Bucket=bucket, Key=key)
+        body = resp.get("Body")
+        if body is None:
+            raise AwsBoto3Error(f"Empty response body for s3://{bucket}/{key}")
+        raw = body.read()
+        if not raw:
+            raise AwsBoto3Error(f"Empty object for s3://{bucket}/{key}")
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except Exception as e:
+            raise AwsBoto3Error(f"Invalid JSON in s3://{bucket}/{key}: {e}") from e
+    except ClientError as e:
+        guidance = _parse_boto3_error(e)
+        error_msg = f"Failed to fetch s3://{bucket}/{key}"
+        if guidance:
+            error_msg += f"\n\n{guidance}\n"
+        error_msg += f"\nError: {e}"
+        raise AwsBoto3Error(error_msg) from e
+    except AwsBoto3Error:
+        raise
+    except Exception as e:
+        raise AwsBoto3Error(f"Unexpected error fetching s3://{bucket}/{key}: {e}") from e
 

@@ -12,7 +12,7 @@ from pathlib import Path
 from .config import load_config
 from .doctor import format_results, run_doctor
 from .logging_utils import setup_logging, attach_logfile
-from .pipeline import PipelineError, run_pipeline
+from .pipeline import PipelineError, run_pipeline, resume_incomplete_sessions
 from .status import Status, StatusWriter, get_hostname, get_ip_address
 from .volume_watch import find_candidate_mounts, pick_mount_with_dcim
 from .watchdog_watcher import WatchdogWatcher
@@ -347,6 +347,14 @@ def cmd_run(args: argparse.Namespace) -> int:
         image_path=cfg.status_image_path,
         image_size=cfg.status_image_size,
     )
+    # Best-effort crash recovery: finish any recently-started sessions that are still
+    # marked as `uploading: true` in S3 status.json (e.g. OOM-kill mid-upload).
+    try:
+        resumed = resume_incomplete_sessions(cfg=cfg, logger=logger, status=status, max_sessions=3)
+        if resumed:
+            logger.warning(f"Resumed and finalized {resumed} incomplete session(s) before starting a new run.")
+    except Exception as e:
+        logger.warning(f"Resume check failed (continuing): {type(e).__name__}: {e}")
     status.write(Status(state="running", step="start", message="Starting run…", volume=str(volume)))
     logger.info(f"Volume: {volume}")
     try:
@@ -454,6 +462,15 @@ def cmd_watch(args: argparse.Namespace) -> int:
         image_path=cfg.status_image_path,
         image_size=cfg.status_image_size,
     )
+
+    # Best-effort crash recovery on service startup: if a previous session is still marked
+    # `uploading: true` in S3, finalize it from local originals before entering watch mode.
+    try:
+        resumed = resume_incomplete_sessions(cfg=cfg, logger=logger, status=status, max_sessions=3)
+        if resumed:
+            logger.warning(f"Resumed and finalized {resumed} incomplete session(s) on startup.")
+    except Exception as e:
+        logger.warning(f"Resume check failed on startup (continuing): {type(e).__name__}: {e}")
 
     logger.info(
         f"GhostRoll watching for SD volume '{cfg.sd_label}' under: {', '.join([str(p) for p in cfg.mount_roots])}"

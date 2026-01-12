@@ -16,7 +16,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from . import media
-from .aws_boto3 import AwsBoto3Error, s3_upload_file, s3_presign_url, s3_object_exists
+from .aws_boto3 import AwsBoto3Error, s3_upload_file, s3_presign_url, s3_object_exists, s3_get_json
 from .config import Config
 from .db import connect
 from .exif_utils import extract_basic_exif
@@ -52,6 +52,57 @@ def _session_id_now() -> str:
     # local time for human readability
     # include microseconds to avoid collisions if runs start within the same second
     return "shoot-" + datetime.now().strftime("%Y-%m-%d_%H%M%S_%f")
+
+
+def _linux_mem_available_bytes() -> int | None:
+    """
+    Best-effort MemAvailable reader (Linux).
+
+    Returns bytes, or None if unavailable / not Linux.
+    """
+    try:
+        if os.name != "posix" or not Path("/proc/meminfo").exists():
+            return None
+        text = Path("/proc/meminfo").read_text(encoding="utf-8", errors="replace")
+        mem_kib = None
+        for line in text.splitlines():
+            # Example: "MemAvailable:   123456 kB"
+            if line.startswith("MemAvailable:"):
+                parts = line.split()
+                if len(parts) >= 2:
+                    mem_kib = int(parts[1])
+                break
+        if mem_kib is None:
+            return None
+        return mem_kib * 1024
+    except Exception:
+        return None
+
+
+def _auto_tune_process_workers(
+    *,
+    requested: int,
+    mem_available_bytes: int | None,
+    per_worker_mb: int = 220,
+    max_fraction: float = 0.60,
+) -> int:
+    """
+    Clamp process_workers to avoid OOM on constrained devices.
+
+    Heuristic:
+    - Only use up to `max_fraction` of MemAvailable for concurrent processing workers.
+    - Assume each processing worker can transiently need ~`per_worker_mb` (decoded images, buffers).
+    """
+    requested = max(1, int(requested))
+    if mem_available_bytes is None:
+        return requested
+    try:
+        usable = int(mem_available_bytes * float(max_fraction))
+        per_worker_bytes = int(max(1, per_worker_mb) * 1024 * 1024)
+        allowed = max(1, usable // per_worker_bytes)
+        return min(requested, allowed)
+    except Exception:
+        return requested
 
 
 def _safe_rel_under(root: Path, path: Path) -> Path:
@@ -140,6 +191,282 @@ def _build_raw_zip(*, originals_dir: Path, out_zip: Path, logger=None, progress_
                 logger.debug(f"Added {i}/{total_files} RAW files to zip...")
     
     return raw_count
+
+
+def _iter_session_dirs(*, sessions_dir: Path, max_sessions: int) -> list[Path]:
+    try:
+        dirs = [p for p in sessions_dir.iterdir() if p.is_dir() and p.name.startswith("shoot-")]
+        dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        return dirs[:max_sessions]
+    except Exception:
+        return []
+
+
+def _s3_session_is_incomplete(*, cfg: Config, session_id: str, logger=None) -> bool:
+    """
+    Decide whether a session appears incomplete in S3.
+
+    Primary signal: `status.json` exists and says `uploading: true`.
+    """
+    prefix = f"{cfg.s3_prefix_root}{session_id}".rstrip("/")
+    status_key = f"{prefix}/status.json"
+    try:
+        if not s3_object_exists(bucket=cfg.s3_bucket, key=status_key):
+            return False
+    except Exception as e:
+        if logger:
+            logger.debug(f"Could not check status.json existence for {session_id}: {e}")
+        return False
+
+    try:
+        payload = s3_get_json(bucket=cfg.s3_bucket, key=status_key)
+    except Exception as e:
+        if logger:
+            logger.debug(f"Could not read status.json for {session_id}: {e}")
+        return False
+
+    try:
+        return bool(payload.get("uploading") is True)
+    except Exception:
+        return False
+
+
+def _finalize_session_from_local_originals(
+    *,
+    cfg: Config,
+    session_id: str,
+    session_dir: Path,
+    logger,
+    status: StatusWriter | None = None,
+) -> None:
+    """
+    Finish an incomplete session using local originals.
+
+    This is used after crashes/OOM kills: it (re)generates derivatives from
+    `session_dir/originals/DCIM`, uploads thumbs/share, builds share.zip, uploads
+    the final presigned `index.html`, and flips `status.json` to uploading=false.
+
+    This intentionally uses conservative (low-memory) processing: sequential derivative
+    generation and uploads.
+    """
+    prefix = f"{cfg.s3_prefix_root}{session_id}".rstrip("/")
+    originals_dir = session_dir / "originals"
+    originals_dcim = originals_dir / "DCIM"
+    derived_share_dir = session_dir / "derived" / "share"
+    derived_thumbs_dir = session_dir / "derived" / "thumbs"
+    derived_share_dir.mkdir(parents=True, exist_ok=True)
+    derived_thumbs_dir.mkdir(parents=True, exist_ok=True)
+
+    status_key = f"{prefix}/status.json"
+    s3_index_key = f"{prefix}/index.html"
+
+    def _upload_one(local: Path, key: str) -> tuple[bool, str | None]:
+        file_size = local.stat().st_size if local.exists() else 0
+        logger.debug(f"[resume] Uploading: {local.name} -> s3://{cfg.s3_bucket}/{key} ({file_size:,} bytes)")
+
+        def do(conn2: sqlite3.Connection):
+            sha, size = sha256_file(local)
+            prev_sha = _db_uploaded_sha(conn2, s3_key=key)
+            if prev_sha == sha:
+                return ("skipped", None)
+            s3_upload_file(local, bucket=cfg.s3_bucket, key=key, retries=3)
+            _db_mark_uploaded(conn2, s3_key=key, local_sha256=sha, size_bytes=size)
+            conn2.commit()
+            return ("uploaded", None)
+
+        try:
+            outcome, _ = _db_with_retry(cfg.db_path, do)
+            return (outcome == "uploaded", None)
+        except AwsBoto3Error as e:
+            return (False, str(e).split("\n")[0])
+        except Exception as e:
+            return (False, f"{type(e).__name__}: {e}")
+
+    # Re-publish loading page (safe overwrite) to ensure the share link points at something.
+    try:
+        logger.info(f"[resume] Re-publishing loading page for {session_id}...")
+        s3_status_local = session_dir / "status.s3.json"
+        s3_status_local.write_text(
+            json.dumps({"uploading": True, "message": "Resuming upload…", "session_id": session_id}) + "\n",
+            encoding="utf-8",
+        )
+        _upload_one(s3_status_local, status_key)
+
+        status_url = s3_presign_url(bucket=cfg.s3_bucket, key=status_key, expires_in_seconds=cfg.presign_expiry_seconds)
+        index_loading = session_dir / "index.loading.s3.html"
+        build_index_html_loading(session_id=session_id, status_json_url=status_url, poll_seconds=cfg.poll_seconds, out_path=index_loading)
+        _upload_one(index_loading, s3_index_key)
+    except Exception as e:
+        logger.warning(f"[resume] Failed to republish loading page/status for {session_id}: {e}")
+
+    # Determine the share link (existing local share.txt if present; otherwise presign index key).
+    url: str | None = None
+    share_txt = session_dir / "share.txt"
+    try:
+        if share_txt.exists():
+            url = share_txt.read_text(encoding="utf-8", errors="replace").strip()
+        if not url:
+            url = s3_presign_url(bucket=cfg.s3_bucket, key=s3_index_key, expires_in_seconds=cfg.presign_expiry_seconds)
+            share_txt.write_text(url + os.linesep, encoding="utf-8")
+    except Exception:
+        url = None
+
+    if status is not None:
+        status.write(Status(state="running", step="resume", message="Resuming incomplete upload…", session_id=session_id))
+
+    if not originals_dcim.exists():
+        raise PipelineError(f"[resume] Cannot resume {session_id}: missing originals/DCIM at {originals_dcim}")
+
+    # Build list of JPEG sources from local originals.
+    jpeg_sources = sorted([p for p in originals_dcim.rglob("*") if p.is_file() and media.is_jpeg(p)])
+    logger.info(f"[resume] Finalizing {session_id} from local originals: {len(jpeg_sources)} JPEGs")
+
+    presign_items: list[tuple[str, str, str, str, float, str | None, str | None]] = []
+    processed = 0
+
+    for src in jpeg_sources:
+        rel = src.relative_to(originals_dcim).with_suffix(".jpg")
+        share_out = derived_share_dir / rel
+        thumb_out = derived_thumbs_dir / rel
+        share_out.parent.mkdir(parents=True, exist_ok=True)
+        thumb_out.parent.mkdir(parents=True, exist_ok=True)
+
+        # Low-memory sequential derivative generation.
+        if not share_out.exists():
+            render_jpeg_derivative(src, dst_path=share_out, max_long_edge=cfg.share_max_long_edge, quality=cfg.share_quality)
+        if not thumb_out.exists():
+            render_jpeg_derivative(src, dst_path=thumb_out, max_long_edge=cfg.thumb_max_long_edge, quality=cfg.thumb_quality)
+
+        thumb_key = f"{prefix}/thumbs/{rel.as_posix()}"
+        share_key = f"{prefix}/share/{rel.as_posix()}"
+        _upload_one(thumb_out, thumb_key)
+        _upload_one(share_out, share_key)
+
+        ex = extract_basic_exif(src)
+        sort_ts = ex.captured_at.timestamp() if ex.captured_at is not None else 9e18
+        title = rel.as_posix()
+        parts = [p for p in [ex.captured_at_display, ex.camera] if p]
+        subtitle = " · ".join(parts)
+
+        processed += 1
+        if status is not None and processed % 10 == 0:
+            status.write(
+                Status(
+                    state="running",
+                    step="resume",
+                    message=f"Resuming… ({processed}/{len(jpeg_sources)})",
+                    session_id=session_id,
+                    counts={"processed_done": processed, "processed_total": len(jpeg_sources)},
+                    url=url,
+                )
+            )
+
+        # We'll presign later once share.zip exists, but keep metadata order here.
+        presign_items.append(
+            (
+                f"derived/thumbs/{rel.as_posix()}",
+                f"derived/share/{rel.as_posix()}",
+                title,
+                subtitle,
+                sort_ts,
+                None,
+                None,
+            )
+        )
+
+    # Build and upload share.zip.
+    share_zip = session_dir / "share.zip"
+    try:
+        logger.info(f"[resume] Building share.zip for {session_id}...")
+        _build_share_zip(share_dir=derived_share_dir, out_zip=share_zip)
+        _upload_one(share_zip, f"{prefix}/share.zip")
+    except Exception as e:
+        raise PipelineError(f"[resume] Failed to build/upload share.zip for {session_id}: {e}") from e
+
+    # Presign thumbs/share + share.zip to build final index.
+    try:
+        download_zip_url = s3_presign_url(bucket=cfg.s3_bucket, key=f"{prefix}/share.zip", expires_in_seconds=cfg.presign_expiry_seconds)
+    except Exception as e:
+        raise PipelineError(f"[resume] Failed to presign share.zip for {session_id}: {e}") from e
+
+    presigned_items: list[tuple[str, str, str, str, float, str | None, str | None]] = []
+    for (thumb_href, share_href, title, subtitle, sort_ts, _enh, _tags) in presign_items:
+        thumb_key = f"{prefix}/thumbs/{thumb_href.replace('derived/thumbs/', '')}"
+        share_key = f"{prefix}/share/{share_href.replace('derived/share/', '')}"
+        try:
+            thumb_url = s3_presign_url(bucket=cfg.s3_bucket, key=thumb_key, expires_in_seconds=cfg.presign_expiry_seconds)
+            share_url = s3_presign_url(bucket=cfg.s3_bucket, key=share_key, expires_in_seconds=cfg.presign_expiry_seconds)
+        except Exception as e:
+            raise PipelineError(f"[resume] Failed to presign image for {session_id}: {e}") from e
+        presigned_items.append((thumb_url, share_url, title, subtitle, sort_ts, None, None))
+
+    presigned_items.sort(key=lambda x: (x[4], x[2]))
+    presigned_ui = [(a, b, c, d, e, f) for (a, b, c, d, _ts, e, f) in presigned_items]
+
+    index_for_s3 = session_dir / "index.s3.html"
+    build_index_html_presigned(session_id=session_id, items=presigned_ui, download_href=download_zip_url, out_path=index_for_s3)
+    uploaded, err = _upload_one(index_for_s3, s3_index_key)
+    if err:
+        raise PipelineError(f"[resume] Failed to upload final index.html for {session_id}: {err}")
+
+    # Mark complete in status.json so loading page refreshes.
+    try:
+        s3_status_local = session_dir / "status.s3.json"
+        s3_status_local.write_text(
+            json.dumps({"uploading": False, "message": "Upload complete.", "session_id": session_id}) + "\n",
+            encoding="utf-8",
+        )
+        _upload_one(s3_status_local, status_key)
+    except Exception as e:
+        logger.warning(f"[resume] Failed to mark status complete for {session_id}: {e}")
+
+    # Optionally upload RAW zip (non-critical), mirroring normal pipeline.
+    if cfg.upload_raw_files:
+        try:
+            raw_zip = session_dir / "originals-raw.zip"
+            logger.info(f"[resume] Compressing RAW files to {raw_zip.name}...")
+            raw_files_list: list[Path] = []
+            if originals_dcim.exists():
+                raw_files_list = sorted([p for p in originals_dcim.rglob("*") if p.is_file() and media.is_raw(p)])
+            raw_count = _build_raw_zip(originals_dir=originals_dir, out_zip=raw_zip, logger=logger, raw_files_list=raw_files_list)
+            if raw_count > 0:
+                _upload_one(raw_zip, f"{prefix}/originals/raw.zip")
+        except Exception as e:
+            logger.warning(f"[resume] RAW upload failed (non-critical): {type(e).__name__}: {e}")
+
+    logger.info(f"[resume] Session finalized: {session_id}")
+
+
+def resume_incomplete_sessions(
+    *,
+    cfg: Config,
+    logger,
+    status: StatusWriter | None = None,
+    max_sessions: int = 3,
+    finalize_fn=_finalize_session_from_local_originals,
+) -> int:
+    """
+    Best-effort crash recovery: finish incomplete sessions from local originals.
+
+    We look at the most recent local `shoot-*` session dirs and, for each one,
+    check S3 `status.json`. If it exists and says `uploading: true`, we attempt
+    to finalize that session from local originals.
+    """
+    resumed = 0
+    for session_dir in _iter_session_dirs(sessions_dir=cfg.sessions_dir, max_sessions=max_sessions):
+        session_id = session_dir.name
+        originals_dcim = session_dir / "originals" / "DCIM"
+        if not originals_dcim.exists():
+            continue
+        if not _s3_session_is_incomplete(cfg=cfg, session_id=session_id, logger=logger):
+            continue
+        logger.warning(f"[resume] Detected incomplete session in S3: {session_id} — attempting to finalize from local originals")
+        try:
+            finalize_fn(cfg=cfg, session_id=session_id, session_dir=session_dir, logger=logger, status=status)
+            resumed += 1
+        except Exception as e:
+            logger.warning(f"[resume] Failed to finalize {session_id}: {type(e).__name__}: {e}")
+    return resumed
 
 
 def _db_has_ingested(conn: sqlite3.Connection, sha256: str) -> bool:
@@ -1119,6 +1446,18 @@ def run_pipeline(
 
         # PARALLEL PROCESSING + UPLOADING: Process and upload images in parallel
         # Upload workers start uploading as soon as images are processed (upload-as-ready)
+        mem_avail = _linux_mem_available_bytes()
+        effective_process_workers = _auto_tune_process_workers(
+            requested=cfg.process_workers,
+            mem_available_bytes=mem_avail,
+        )
+        # In low-memory mode, avoid per-image parallel derivative generation to reduce peak RSS.
+        inner_derivative_workers = 1 if effective_process_workers <= 1 else 2
+        if mem_avail is not None and effective_process_workers < cfg.process_workers:
+            logger.warning(
+                f"Low-memory mode: auto-tuned process workers {cfg.process_workers} -> {effective_process_workers} "
+                f"(MemAvailable ~{mem_avail / (1024 * 1024):.0f} MB)"
+            )
         
         # Prepare upload queue and tracking
         upload_queue: queue.Queue[tuple[Path, str] | None] = queue.Queue()  # None signals end of uploads
@@ -1162,7 +1501,7 @@ def run_pipeline(
             
             # Generate both in parallel (2 workers for share + thumb)
             try:
-                with ThreadPoolExecutor(max_workers=2) as inner_ex:
+                with ThreadPoolExecutor(max_workers=inner_derivative_workers) as inner_ex:
                     share_future = inner_ex.submit(gen_share)
                     thumb_future = inner_ex.submit(gen_thumb)
                     # Wait for both to complete
@@ -1210,7 +1549,10 @@ def run_pipeline(
         gallery_items_local: list[tuple[str, str, str, str, float]] = []
         
         if proc_tasks:
-            logger.info(f"Processing and uploading {len(proc_tasks)} new JPEGs in parallel ({cfg.process_workers} process workers, {cfg.upload_workers} upload workers)...")
+            logger.info(
+                f"Processing and uploading {len(proc_tasks)} new JPEGs in parallel "
+                f"({effective_process_workers} process workers, {cfg.upload_workers} upload workers)..."
+            )
             if status is not None:
                 status.write(
                     Status(
@@ -1294,7 +1636,7 @@ def run_pipeline(
             
             try:
                 # Start processing in parallel
-                with ThreadPoolExecutor(max_workers=max(1, cfg.process_workers)) as process_ex:
+                with ThreadPoolExecutor(max_workers=max(1, effective_process_workers)) as process_ex:
                     futures = [process_ex.submit(_process_one, t) for t in proc_tasks]
                     last_ui = time.time()
                     processing_start = time.time()
