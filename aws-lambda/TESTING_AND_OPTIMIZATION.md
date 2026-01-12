@@ -11,7 +11,7 @@ All 7 comprehensive tests pass:
 3. ✅ **Skip Wrong Prefix**: Filters out non-share/ files immediately
 4. ✅ **Error Handling**: Gracefully handles missing files and errors
 5. ✅ **Memory Cleanup**: No memory leaks, temp files properly cleaned up
-6. ✅ **Performance**: Processes 2048px images in <0.5s locally, <2s in Lambda
+6. ✅ **Performance**: Processes ~2660px images in <0.5s locally, <2s in Lambda
 7. ✅ **Batch Processing**: Handles multiple images in one invocation
 
 ### Gallery Integration Tests

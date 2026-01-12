@@ -4,12 +4,12 @@
 
 Currently, GhostRoll:
 - ✅ **Detects** RAW files (`.arw`, `.cr2`, `.cr3`, `.nef`, `.dng`, `.raf`, `.rw2`)
-- ✅ **Copies** RAW files to local `originals/DCIM/` directory (preserving structure)
+- ✅why **Copies** RAW files to local `originals/DCIM/` directory (preserving structure)
 - ✅ **Tracks** RAW files in database for deduplication
 - ❌ **Does NOT upload** RAW files to S3 (only JPEG derivatives are uploaded)
 
 **What gets uploaded to S3:**
-- `sessions/<SESSION_ID>/share/` - Share-friendly JPEGs (max ~2048px)
+- `sessions/<SESSION_ID>/share/` - Share-friendly JPEGs (max ~2660px)
 - `sessions/<SESSION_ID>/thumbs/` - Thumbnails (max ~512px)
 - `sessions/<SESSION_ID>/enhanced/` - Auto-enhanced versions (via Lambda)
 - `sessions/<SESSION_ID>/share.zip` - Downloadable zip

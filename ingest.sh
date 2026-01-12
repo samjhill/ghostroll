@@ -50,7 +50,7 @@ while true; do
     echo "🧪 Processing JPEGs -> share/thumbs"
     find "$ORIG" -type f \( -iname "*.jpg" -o -iname "*.jpeg" \) -print0 | while IFS= read -r -d '' f; do
       base="$(basename "$f")"
-      magick "$f" -auto-orient -resize 2048x2048\> -strip -quality 90 "$SHARE/$base"
+      magick "$f" -auto-orient -resize 2660x2660\> -strip -quality 90 "$SHARE/$base"
       magick "$f" -auto-orient -resize 512x512\> -strip -quality 85 "$THUMBS/$base"
     done
 

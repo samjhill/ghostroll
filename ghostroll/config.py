@@ -152,7 +152,7 @@ def load_config(
     share_max_long_edge = int(
         share_max_long_edge
         if share_max_long_edge is not None
-        else env.get("GHOSTROLL_SHARE_MAX_LONG_EDGE", "2048")
+        else env.get("GHOSTROLL_SHARE_MAX_LONG_EDGE", "2660")
     )
     share_quality = int(
         share_quality if share_quality is not None else env.get("GHOSTROLL_SHARE_QUALITY", "90")

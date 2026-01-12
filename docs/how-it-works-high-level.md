@@ -93,7 +93,7 @@ S3 bucket structure (after upload and optional enhancement):
    - RAW files are still ingested as originals but generally not used to generate share/thumb images.
 11. **Parallel processing and uploading** starts:
     - Processing workers generate derivatives concurrently:
-      - `derived/share/<same relpath>.jpg` (e.g. max long edge ~2048, quality ~90, auto-orient, metadata stripped)
+      - `derived/share/<same relpath>.jpg` (e.g. max long edge ~2660, quality ~90, auto-orient, metadata stripped)
       - `derived/thumbs/<same relpath>.jpg` (e.g. max long edge ~512, quality ~85, auto-orient, metadata stripped)
     - **As soon as each image is processed**, it's immediately queued for upload (upload-as-ready pattern)
     - Upload workers consume from the queue and upload to S3 in parallel with ongoing processing

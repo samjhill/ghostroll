@@ -137,5 +137,5 @@ Pillow and numpy are large. For faster cold starts, use a Lambda Layer:
 ### Timeout errors
 
 - Increase timeout (edit `template.yaml`, set `Timeout: 600`)
-- Check image sizes (should be ~2048px max from share images)
+- Check image sizes (should be ~2660px max from share images)
 

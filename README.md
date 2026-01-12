@@ -158,7 +158,7 @@ Default location:
 Contents:
 
 - `originals/` (copied from the card; preserves structure)
-- `derived/share/` (max 2048px long edge, quality ~90, auto-oriented, metadata stripped)
+- `derived/share/` (max ~2660px long edge, quality ~90, auto-oriented, metadata stripped)
 - `derived/thumbs/` (max 512px long edge, quality ~85, auto-oriented, metadata stripped)
 - `index.html` (local gallery)
 - `share.txt` (the link you share)
@@ -219,7 +219,7 @@ Web interface settings (enabled by default):
 
 Image settings:
 
-- `GHOSTROLL_SHARE_MAX_LONG_EDGE` (default `2048`)
+- `GHOSTROLL_SHARE_MAX_LONG_EDGE` (default `2660`)
 - `GHOSTROLL_SHARE_QUALITY` (default `90`)
 - `GHOSTROLL_THUMB_MAX_LONG_EDGE` (default `512`)
 - `GHOSTROLL_THUMB_QUALITY` (default `85`)

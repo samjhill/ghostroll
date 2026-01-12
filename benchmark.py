@@ -242,7 +242,7 @@ def benchmark_image_processing(num_images: int = 10) -> BenchmarkResult:
             render_jpeg_derivative(
                 test_file,
                 dst_path=dst_file,
-                max_long_edge=2048,
+                max_long_edge=2660,
                 quality=90,
             )
             proc_elapsed = time.perf_counter() - proc_start
@@ -283,7 +283,7 @@ def benchmark_image_processing_parallel(num_images: int = 10, workers: int = 4) 
             render_jpeg_derivative(
                 src,
                 dst_path=dst,
-                max_long_edge=2048,
+                max_long_edge=2660,
                 quality=90,
             )
             return time.perf_counter() - proc_start
