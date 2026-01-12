@@ -218,6 +218,16 @@ def s3_object_exists(*, bucket: str, key: str) -> bool:
             return False
         # Re-raise other errors
         raise
+    except Exception as e:
+        # Tests (and some wrappers) may raise a ClientError-like exception type that still
+        # exposes a botocore-style `.response` dict. Treat 404 as "not found".
+        try:
+            code = getattr(e, "response", {}).get("Error", {}).get("Code")
+        except Exception:
+            code = None
+        if code == "404":
+            return False
+        raise
 
 
 def s3_presign_url(*, bucket: str, key: str, expires_in_seconds: int) -> str:

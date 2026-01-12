@@ -12,9 +12,12 @@ def _posix(p: Path) -> str:
 def _write_gallery_html(
     *,
     session_id: str,
-    # list of (thumb_src, full_href, title, subtitle, enhanced_href)
-    # enhanced_href can be None if not available
-    items: list[tuple[str, str, str, str, str | None]],
+    # list of:
+    # - (thumb_src, full_href, title, subtitle)
+    # - (thumb_src, full_href, title, subtitle, enhanced_href)
+    # - (thumb_src, full_href, title, subtitle, enhanced_href, tags_href)
+    # enhanced_href/tags_href can be None if not available
+    items: list[tuple],
     download_href: str | None = None,
     out_path: Path,
 ) -> None:
@@ -68,6 +71,11 @@ def _write_gallery_html(
             ".lb-info{display:flex;flex-direction:column;gap:4px}"
             ".lb-cap{font-weight:600}"
             ".lb-sub{opacity:.8;font-size:12px}"
+            ".lb-tags{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px}"
+            ".chip{appearance:none;border:1px solid rgba(255,255,255,.22);background:rgba(0,0,0,.25);color:#fff;"
+            "padding:6px 10px;border-radius:999px;cursor:pointer;font-size:12px;font-family:inherit;line-height:1}"
+            ".chip:hover{background:rgba(0,0,0,.4)}"
+            ".chip:focus{outline:2px solid #fff;outline-offset:2px}"
             ".lb-counter{opacity:.8;font-size:12px;margin-top:4px}"
             ".lb-controls{display:flex;gap:8px;flex-wrap:wrap}"
             ".lb-btn{appearance:none;border:1px solid rgba(255,255,255,.22);background:rgba(0,0,0,.25);color:#fff;"
@@ -103,6 +111,12 @@ def _write_gallery_html(
             "@media (max-width:600px){"
             ".qr-code{width:140px;height:140px}"
             "}"
+            ".filter{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:10px 0 14px}"
+            ".filter label{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;font-weight:700}"
+            ".filter input{flex:1;min-width:220px;max-width:520px;border-radius:999px;border:1px solid var(--border);"
+            "background:var(--card);color:var(--fg);padding:10px 12px;font-size:14px}"
+            ".filter input:focus{outline:2px solid #3b82f6;outline-offset:2px}"
+            ".filter .status{font-size:12px;color:var(--muted)}"
             "</style>\n"
         )
         f.write("</head><body>\n")
@@ -118,6 +132,8 @@ def _write_gallery_html(
             )
         # Check if any images have enhanced versions
         has_enhanced = any(item[4] for item in items if len(item) > 4)
+        # Check if any images have tags sidecars
+        has_tags = any(item[5] for item in items if len(item) > 5)
         if has_enhanced:
             f.write(
                 ' · <button class="btn" id="enhanceToggle" type="button" aria-label="Toggle enhanced images">'
@@ -126,6 +142,15 @@ def _write_gallery_html(
             )
         f.write("</div>")
         f.write("</div>\n")
+
+        if has_tags:
+            f.write(
+                "<div class=\"filter\">"
+                "<label for=\"tagFilter\">Filter</label>"
+                "<input id=\"tagFilter\" type=\"search\" placeholder=\"Filter gallery by AI tags\" autocomplete=\"off\">"
+                "<div class=\"status\" id=\"tagFilterStatus\" aria-live=\"polite\"></div>"
+                "</div>\n"
+            )
         
         # Check if QR code exists in the same directory as the output file
         qr_code_path = out_path.parent / "share-qr.png"
@@ -138,12 +163,10 @@ def _write_gallery_html(
         else:
             f.write("<div class=\"grid\" id=\"grid\">\n")
             for i, item in enumerate(items):
-                # Handle both old format (4 items) and new format (5 items with enhanced)
-                if len(item) >= 5:
-                    thumb_src, full_href, title, subtitle, enhanced_href = item
-                else:
-                    thumb_src, full_href, title, subtitle = item[:4]
-                    enhanced_href = None
+                # Back-compat: accept 4/5/6-tuples
+                thumb_src, full_href, title, subtitle = item[:4]
+                enhanced_href = item[4] if len(item) >= 5 else None
+                tags_href = item[5] if len(item) >= 6 else None
                 
                 # Generate better alt text: use subtitle if available, otherwise descriptive text
                 alt_text = subtitle if subtitle else (f"Gallery image {i + 1}" if not title or "/" in title or "\\" in title else title)
@@ -152,6 +175,8 @@ def _write_gallery_html(
                 data_attrs = f'data-full="{html.escape(full_href)}"'
                 if enhanced_href:
                     data_attrs += f' data-enhanced="{html.escape(enhanced_href)}"'
+                if tags_href:
+                    data_attrs += f' data-tags="{html.escape(tags_href)}"'
                 
                 f.write(
                     "<a class=\"tile\" href=\"{full}\" {data_attrs} data-cap=\"{cap}\" data-sub=\"{sub}\" "
@@ -208,6 +233,7 @@ def _write_gallery_html(
             "<div class=\"lb-info\">"
             "<div class=\"lb-cap\" id=\"lbCap\"></div>"
             "<div class=\"lb-sub\" id=\"lbSub\"></div>"
+            "<div class=\"lb-tags\" id=\"lbTags\"></div>"
             "<div class=\"lb-counter\" id=\"lbCounter\"></div>"
             "</div>"
             "<div class=\"lb-controls\">"
@@ -229,6 +255,7 @@ def _write_gallery_html(
             "const img=document.getElementById('lbImg');"
             "const cap=document.getElementById('lbCap');"
             "const sub=document.getElementById('lbSub');"
+            "const tags=document.getElementById('lbTags');"
             "const counter=document.getElementById('lbCounter');"
             "const loading=document.getElementById('lbLoading');"
             "const downloadBtn=document.getElementById('downloadBtn');"
@@ -236,6 +263,8 @@ def _write_gallery_html(
             "const prevBtn=document.getElementById('prevBtn');"
             "const nextBtn=document.getElementById('nextBtn');"
             "const tiles=[...document.querySelectorAll('#grid .tile')];"
+            "const filterInput=document.getElementById('tagFilter');"
+            "const filterStatus=document.getElementById('tagFilterStatus');"
             "let idx=-1;"
             "let lastFocusedElement=null;"
             "const enhanceToggle=document.getElementById('enhanceToggle');"
@@ -259,6 +288,38 @@ def _write_gallery_html(
             "  });"
             "}"
             "if(!lb||!img||!cap||!sub||!counter||!loading) return;"
+            "const tagsJsonCache=new Map();"
+            "const tileTags=new Map();"
+            "let tagsLoadStarted=false;"
+            "function setTagsLoading(){if(tags) tags.textContent='Tags: loading…';}"
+            "function setTagsUnavailable(){if(tags) tags.textContent='Tags: unavailable';}"
+            "function setTagsNone(){if(tags) tags.textContent='Tags: (none)';}"
+            "function setTagsChips(names){"
+            "  if(!tags) return;"
+            "  tags.textContent='';"
+            "  while(tags.firstChild) tags.removeChild(tags.firstChild);"
+            "  if(!names||!names.length){setTagsNone();return;}"
+            "  const label=document.createElement('span');"
+            "  label.textContent='Tags:';"
+            "  label.style.opacity='0.9';"
+            "  tags.appendChild(label);"
+            "  names.slice(0,12).forEach((name)=>{"
+            "    const b=document.createElement('button');"
+            "    b.type='button';"
+            "    b.className='chip';"
+            "    b.textContent=name;"
+            "    b.addEventListener('click',(e)=>{"
+            "      e.preventDefault();"
+            "      if(filterInput){"
+            "        filterInput.value=name;"
+            "        filterInput.dispatchEvent(new Event('input',{bubbles:true}));"
+            "        try{close();}catch(_){ }"
+            "        setTimeout(()=>{try{filterInput.focus();}catch(_){ }},0);"
+            "      }"
+            "    });"
+            "    tags.appendChild(b);"
+            "  });"
+            "}"
             "function getImageUrl(tile){"
             "  if(useEnhanced&&tile.dataset.enhanced){return tile.dataset.enhanced;}"
             "  return tile.dataset.full;"
@@ -278,12 +339,32 @@ def _write_gallery_html(
             "idx=(i+tiles.length)%tiles.length;"
             "const t=tiles[idx];"
             "showLoading();"
-            "img.onload=function(){hideLoading();img.classList.remove('error');}"
-            "img.onerror=function(){hideLoading();img.classList.add('error');img.alt='Failed to load image';}"
+            "img.onload=function(){hideLoading();img.classList.remove('error');};"
+            "img.onerror=function(){hideLoading();img.classList.add('error');img.alt='Failed to load image';};"
             "img.src=getImageUrl(t);"
             "img.alt=t.dataset.cap||'';"
             "cap.textContent=t.dataset.cap||'';"
             "sub.textContent=t.dataset.sub||'';"
+            "if(tags){"
+            "  tags.textContent='';"
+            "  const tagsUrl=t.dataset.tags;"
+            "  if(tagsUrl){"
+            "    const cached=tagsJsonCache.get(tagsUrl);"
+            "    if(cached&&cached.names){setTagsChips(cached.names);}"
+            "    else{"
+            "      setTagsLoading();"
+            "      fetch(tagsUrl,{cache:'no-store'})"
+            "        .then(r=>r.ok?r.json():null)"
+            "        .then(j=>{"
+            "          const labels=(j&&j.labels&&Array.isArray(j.labels))?j.labels:[];"
+            "          const names=labels.map(x=>x&&x.name).filter(Boolean).map(s=>String(s));"
+            "          tagsJsonCache.set(tagsUrl,{names});"
+            "          if(idx>=0&&tiles[idx]===t){setTagsChips(names);}"
+            "        })"
+            "        .catch(()=>{ if(idx>=0&&tiles[idx]===t){setTagsUnavailable();} });"
+            "    }"
+            "  }"
+            "}"
             "updateCounter();"
             "if(downloadBtn){downloadBtn.style.display='inline-flex';downloadBtn.href=getImageUrl(t);downloadBtn.download='';}"
             "lb.classList.add('open');"
@@ -323,6 +404,69 @@ def _write_gallery_html(
             "t.setAttribute('tabindex','0');"
             "t.addEventListener('keydown',(e)=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openAt(idx);}});"
             "});"
+            "function setFilterStatus(txt){if(filterStatus) filterStatus.textContent=txt||'';}"
+            "function parseTerms(q){return (q||'').toLowerCase().split(/\\s+/).map(s=>s.trim()).filter(Boolean);}"
+            "function tileMatchesTerms(tile, terms){"
+            "  if(!terms.length) return true;"
+            "  const tagsArr=tileTags.get(tile);"
+            "  if(!tagsArr) return false;"
+            "  const hay=tagsArr.join(' ');"
+            "  return terms.every(t=>hay.includes(t));"
+            "}"
+            "function applyFilter(){"
+            "  if(!filterInput) return;"
+            "  const terms=parseTerms(filterInput.value);"
+            "  if(!terms.length){"
+            "    tiles.forEach(t=>{t.style.display='';});"
+            "    setFilterStatus('');"
+            "    return;"
+            "  }"
+            "  let shown=0;"
+            "  tiles.forEach(t=>{"
+            "    const ok=tileMatchesTerms(t,terms);"
+            "    t.style.display=ok?'':'none';"
+            "    if(ok) shown++;"
+            "  });"
+            "  setFilterStatus('Showing '+shown+' / '+tiles.length);"
+            "}"
+            "async function loadTagsForTile(tile){"
+            "  if(tileTags.has(tile)) return;"
+            "  const url=tile.dataset.tags;"
+            "  if(!url){tileTags.set(tile,[]);return;}"
+            "  try{"
+            "    const r=await fetch(url,{cache:'no-store'});"
+            "    if(!r.ok){tileTags.set(tile,[]);return;}"
+            "    const j=await r.json();"
+            "    const labels=(j&&j.labels&&Array.isArray(j.labels))?j.labels:[];"
+            "    const names=labels.map(x=>x&&x.name).filter(Boolean).map(s=>String(s).toLowerCase());"
+            "    tileTags.set(tile,names);"
+            "  }catch(e){tileTags.set(tile,[]);}"
+            "}"
+            "async function ensureAllTagsLoaded(){"
+            "  if(tagsLoadStarted) return;"
+            "  tagsLoadStarted=true;"
+            "  const withUrls=tiles.filter(t=>t.dataset.tags);"
+            "  if(!withUrls.length){return;}"
+            "  setFilterStatus('Loading tags…');"
+            "  const concurrency=6;"
+            "  let i=0;"
+            "  const workers=new Array(concurrency).fill(0).map(async()=>{"
+            "    while(i<withUrls.length){"
+            "      const t=withUrls[i++];"
+            "      await loadTagsForTile(t);"
+            "      applyFilter();"
+            "    }"
+            "  });"
+            "  await Promise.all(workers);"
+            "  applyFilter();"
+            "}"
+            "if(filterInput){"
+            "  filterInput.addEventListener('input',()=>{"
+            "    const terms=parseTerms(filterInput.value);"
+            "    if(terms.length){ensureAllTagsLoaded();}"
+            "    applyFilter();"
+            "  });"
+            "}"
             "if(closeBtn) closeBtn.addEventListener('click', close);"
             "if(nextBtn) nextBtn.addEventListener('click', next);"
             "if(prevBtn) prevBtn.addEventListener('click', prev);"
@@ -330,7 +474,7 @@ def _write_gallery_html(
             "lb.addEventListener('click',(e)=>{if(e.target===lb) close();});"
             "document.addEventListener('keydown',(e)=>{"
             "if(!lb.classList.contains('open')){"
-            "  // Keyboard shortcuts when lightbox is closed: arrow keys to navigate gallery"
+            "  /* Keyboard shortcuts when lightbox is closed: arrow keys to navigate gallery */"
             "  if(e.key==='ArrowRight'||e.key==='ArrowLeft'){"
             "    e.preventDefault();"
             "    const currentIndex=document.activeElement instanceof Element&&tiles.includes(document.activeElement)?tiles.indexOf(document.activeElement):0;"
@@ -367,13 +511,13 @@ def build_index_html(*, session_id: str, thumbs_dir: Path, out_path: Path) -> No
     if thumbs_dir.exists():
         thumbs = sorted([p for p in thumbs_dir.rglob("*") if p.is_file()])
 
-    items: list[tuple[str, str, str, str]] = []
+    items: list[tuple[str, str, str, str, None, None]] = []
     for t in thumbs:
         rel = t.relative_to(thumbs_dir)
         thumb_href = _posix(Path("thumbs") / rel)
         share_href = _posix(Path("share") / rel.with_suffix(".jpg"))
         title = rel.as_posix()
-        items.append((thumb_href, share_href, title, ""))
+        items.append((thumb_href, share_href, title, "", None, None))
 
     _write_gallery_html(session_id=session_id, items=items, out_path=out_path)
 
@@ -381,7 +525,7 @@ def build_index_html(*, session_id: str, thumbs_dir: Path, out_path: Path) -> No
 def build_index_html_from_items(
     *,
     session_id: str,
-    items: list[tuple[str, str, str, str]],
+    items: list[tuple],
     download_href: str | None,
     out_path: Path,
 ) -> None:
@@ -391,13 +535,13 @@ def build_index_html_from_items(
 def build_index_html_presigned(
     *,
     session_id: str,
-    items: list[tuple[str, str, str, str, str | None]],
+    items: list[tuple],
     download_href: str | None = None,
     out_path: Path,
 ) -> None:
     """
-    items: list of (thumb_url, share_url, title, subtitle, enhanced_url) — URLs should be fully-qualified.
-    enhanced_url can be None if enhanced version doesn't exist.
+    items: list of (thumb_url, share_url, title, subtitle, enhanced_url, tags_url) — URLs should be fully-qualified.
+    enhanced_url/tags_url can be None if enhanced version doesn't exist.
     """
     _write_gallery_html(session_id=session_id, items=items, download_href=download_href, out_path=out_path)
 

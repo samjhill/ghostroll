@@ -1,0 +1,22 @@
+{
+  "Records": [
+    {
+      "s3": {
+        "bucket": { "name": "photo-ingest-project" },
+        "object": { "key": "sessions/shoot-2024-01-01_120000/share/IMG_001.jpg" }
+      }
+    }
+  ]
+}
+
+{
+  "Records": [
+    {
+      "s3": {
+        "bucket": { "name": "photo-ingest-project" },
+        "object": { "key": "sessions/shoot-2024-01-01_120000/share/IMG_001.jpg" }
+      }
+    }
+  ]
+}
+
