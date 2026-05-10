@@ -187,6 +187,8 @@ def test_build_index_html_presigned_includes_tag_filter_strip(tmp_path: Path):
     assert "tagFilter" in html
     assert "tagStripInnerFaces" in html
     assert "tagStripInnerLabels" in html
+    assert "tagFacesEmptyHelp" in html
+    assert "refreshPeopleEmptyHelp" in html
     assert "People" in html
     assert "Other tags" in html
     assert "tagChipAll" in html
