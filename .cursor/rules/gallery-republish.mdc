@@ -1,0 +1,15 @@
+---
+description: Re-upload S3 gallery HTML after editing embedded gallery code
+globs: ghostroll/gallery.py
+alwaysApply: false
+---
+
+# S3 gallery republish
+
+When you materially change `ghostroll/gallery.py` (HTML/CSS/JS for the share gallery), finish by running `ghostroll republish-gallery <session-id>` and print the new presigned URL on stdout unless the user asked not to deploy.
+
+If the user is iterating on gallery markup, mention they can keep a terminal open with:
+
+`ghostroll republish-gallery <session-id> --watch`
+
+so each save under `ghostroll/` triggers a debounced re-upload automatically.

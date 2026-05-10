@@ -4,11 +4,16 @@ Rebuild and upload S3-hosted gallery ``index.html`` for a session (e.g. after HT
 Lists ``{prefix}/thumbs/**/*.jpg`` in the bucket, presigns thumb/share/enhanced/tags URLs like the
 main pipeline, embeds a fresh presigned URL for the gallery page in the share strip, and uploads
 ``index.html`` over the existing object.
+
+Use ``ghostroll republish-gallery SESSION --watch`` to re-upload whenever you save a ``ghostroll/*.py``
+file (debounced), for fast iteration against S3.
 """
 
 from __future__ import annotations
 
 import tempfile
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -130,3 +135,101 @@ def republish_session_gallery_s3(*, cfg: Config, session_id: str) -> str:
         )
 
     return gallery_page_url
+
+
+def _ghostroll_package_dir() -> Path:
+    import ghostroll
+
+    return Path(ghostroll.__file__).resolve().parent
+
+
+def _watchable_py_path(path: str) -> bool:
+    p = path.replace("\\", "/")
+    if "__pycache__" in p or "/." in p:
+        return False
+    return p.endswith(".py")
+
+
+def watch_session_and_republish(
+    *,
+    cfg: Config,
+    session_id: str,
+    debounce: float,
+    logger,
+) -> None:
+    """
+    Watch the ``ghostroll`` package tree for ``.py`` writes and call :func:`republish_session_gallery_s3`
+    after ``debounce`` seconds without further changes. Prints the new presigned URL on stdout each time.
+    """
+    from watchdog.events import FileSystemEventHandler
+    from watchdog.observers import Observer
+
+    watch_root = _ghostroll_package_dir()
+    debounce = max(0.5, min(60.0, float(debounce)))
+    lock = threading.Lock()
+    change_version = 0
+    last_change_mono = 0.0
+    stop = threading.Event()
+
+    def arm() -> None:
+        nonlocal change_version, last_change_mono
+        with lock:
+            change_version += 1
+            last_change_mono = time.monotonic()
+
+    class _Handler(FileSystemEventHandler):
+        def on_modified(self, event: object) -> None:
+            if getattr(event, "is_directory", False):
+                return
+            src = getattr(event, "src_path", "") or ""
+            if _watchable_py_path(src):
+                arm()
+
+        def on_created(self, event: object) -> None:
+            self.on_modified(event)
+
+    def worker() -> None:
+        last_republished_version = 0
+        while not stop.wait(0.25):
+            with lock:
+                ver = change_version
+                t0 = last_change_mono
+            if ver == 0 or ver == last_republished_version:
+                continue
+            if time.monotonic() - t0 < debounce:
+                continue
+            try:
+                url = republish_session_gallery_s3(cfg=cfg, session_id=session_id)
+                print(url, flush=True)
+                logger.info("watch-republish uploaded s3://%s/%s%s/index.html", cfg.s3_bucket, cfg.s3_prefix_root, session_id)
+            except Exception:
+                logger.exception("watch-republish failed")
+            with lock:
+                if change_version == ver:
+                    change_version = 0
+                    last_republished_version = 0
+                else:
+                    last_republished_version = ver
+
+    t = threading.Thread(target=worker, name="ghostroll-republish-watch", daemon=True)
+    t.start()
+    h = _Handler()
+    obs = Observer()
+    obs.schedule(h, str(watch_root), recursive=True)
+    obs.start()
+    logger.info("Watching %s (debounce=%ss); Ctrl+C to stop", watch_root, debounce)
+    print(
+        f"Watching {watch_root} — save any ghostroll/*.py file to republish session {session_id!r} "
+        f"after {debounce}s quiet. Ctrl+C to exit.\n",
+        flush=True,
+    )
+    try:
+        while True:
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        logger.info("watch-republish interrupted")
+    finally:
+        stop.set()
+        obs.stop()
+        obs.join(timeout=5.0)
+        t.join(timeout=5.0)

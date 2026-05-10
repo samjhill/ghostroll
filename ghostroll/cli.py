@@ -855,9 +855,17 @@ def cmd_republish_gallery(args: argparse.Namespace) -> int:
         status_image_size=args.status_image_size,
     )
     logger = setup_logging(session_dir=None, verbose=not args.quiet)
-    from .republish_gallery import republish_session_gallery_s3
+    from .republish_gallery import republish_session_gallery_s3, watch_session_and_republish
 
     session_id = str(args.session_id).strip()
+    if getattr(args, "watch", False):
+        watch_session_and_republish(
+            cfg=cfg,
+            session_id=session_id,
+            debounce=float(getattr(args, "watch_debounce", 2.0)),
+            logger=logger,
+        )
+        return 0
     try:
         url = republish_session_gallery_s3(cfg=cfg, session_id=session_id)
     except Exception as e:
@@ -1050,6 +1058,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_repub.add_argument(
         "session_id",
         help="Session id (e.g. shoot-2026-05-10_084154_979366)",
+    )
+    p_repub.add_argument(
+        "--watch",
+        action="store_true",
+        help="Watch ghostroll/*.py for saves and re-upload this session's gallery after each change (debounced)",
+    )
+    p_repub.add_argument(
+        "--watch-debounce",
+        type=float,
+        default=2.0,
+        metavar="SEC",
+        help="Seconds with no further .py writes before republish when using --watch (default: 2)",
     )
     p_repub.set_defaults(func=cmd_republish_gallery)
 

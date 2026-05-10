@@ -38,6 +38,17 @@ def test_build_parser():
         parser.parse_args([])
 
 
+def test_republish_gallery_watch_flags():
+    parser = build_parser()
+    args = parser.parse_args(
+        ["republish-gallery", "shoot-test", "--watch", "--watch-debounce", "1.5"]
+    )
+    assert args.cmd == "republish-gallery"
+    assert args.session_id == "shoot-test"
+    assert args.watch is True
+    assert args.watch_debounce == 1.5
+
+
 def test_is_mounted(tmp_path: Path):
     import subprocess
     import platform
