@@ -17,23 +17,27 @@ echo -e "${BLUE}GhostRoll Setup${NC}"
 echo "================"
 echo ""
 
-# Check Python version
+# Check Python version (prefer 3.10+; macOS Xcode python is often 3.9)
 echo -e "${BLUE}Checking Python version...${NC}"
-if ! command -v python3 &> /dev/null; then
-    echo -e "${RED}Error: python3 not found. Please install Python 3.10 or later.${NC}"
+PYTHON_CMD="${GHOSTROLL_PYTHON:-}"
+if [ -z "$PYTHON_CMD" ]; then
+    for cand in python3.14 python3.13 python3.12 python3.11 python3.10 python3; do
+        if command -v "$cand" &> /dev/null; then
+            if "$cand" -c 'import sys; assert sys.version_info >= (3, 10)' 2>/dev/null; then
+                PYTHON_CMD=$(command -v "$cand")
+                break
+            fi
+        fi
+    done
+fi
+if [ -z "$PYTHON_CMD" ]; then
+    echo -e "${RED}Error: Python 3.10+ not found (python3 is often 3.9 on macOS).${NC}"
+    echo "  Install e.g. Homebrew Python, then re-run, or set GHOSTROLL_PYTHON=/path/to/python3.12"
     exit 1
 fi
 
-PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-PYTHON_MAJOR=$(echo $PYTHON_VERSION | cut -d. -f1)
-PYTHON_MINOR=$(echo $PYTHON_VERSION | cut -d. -f2)
-
-if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 10 ]); then
-    echo -e "${RED}Error: Python 3.10 or later required. Found Python $PYTHON_VERSION${NC}"
-    exit 1
-fi
-
-echo -e "${GREEN}✓ Python $PYTHON_VERSION found${NC}"
+PYTHON_VERSION=$("$PYTHON_CMD" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+echo -e "${GREEN}✓ Using $PYTHON_CMD (Python $PYTHON_VERSION)${NC}"
 echo ""
 
 # Create virtual environment
@@ -44,13 +48,13 @@ if [ -d "$VENV_NAME" ]; then
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         rm -rf "$VENV_NAME"
-        python3 -m venv "$VENV_NAME"
+        "$PYTHON_CMD" -m venv "$VENV_NAME"
         echo -e "${GREEN}✓ Virtual environment created${NC}"
     else
         echo -e "${YELLOW}Using existing virtual environment${NC}"
     fi
 else
-    python3 -m venv "$VENV_NAME"
+    "$PYTHON_CMD" -m venv "$VENV_NAME"
     echo -e "${GREEN}✓ Virtual environment created${NC}"
 fi
 echo ""

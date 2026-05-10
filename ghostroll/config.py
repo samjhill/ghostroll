@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import multiprocessing
 import os
+import platform
 from dataclasses import dataclass
 from pathlib import Path
-import multiprocessing
 
 
 def _expand(p: str) -> Path:
@@ -34,6 +35,22 @@ def _clamp(n: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, n))
 
 
+def _default_mount_settle_seconds() -> float:
+    """
+    Short pause after the volume looks ready so USB SD readers (common on Raspberry Pi)
+    enumerate DCIM reliably; macOS tends to stabilize faster.
+    """
+    try:
+        system = platform.system().lower()
+        if system == "linux":
+            return 1.25
+        if system == "darwin":
+            return 0.35
+    except Exception:
+        pass
+    return 0.85
+
+
 @dataclass(frozen=True)
 class Config:
     sd_label: str
@@ -50,6 +67,7 @@ class Config:
     thumb_quality: int
 
     poll_seconds: float
+    mount_settle_seconds: float
 
     mount_roots: list[Path]
 
@@ -94,6 +112,7 @@ def load_config(
     thumb_max_long_edge: int | None = None,
     thumb_quality: int | None = None,
     poll_seconds: float | None = None,
+    mount_settle_seconds: float | None = None,
     mount_roots: str | None = None,
     status_path: str | None = None,
     status_image_path: str | None = None,
@@ -152,10 +171,10 @@ def load_config(
     share_max_long_edge = int(
         share_max_long_edge
         if share_max_long_edge is not None
-        else env.get("GHOSTROLL_SHARE_MAX_LONG_EDGE", "2660")
+        else env.get("GHOSTROLL_SHARE_MAX_LONG_EDGE", "3840")
     )
     share_quality = int(
-        share_quality if share_quality is not None else env.get("GHOSTROLL_SHARE_QUALITY", "90")
+        share_quality if share_quality is not None else env.get("GHOSTROLL_SHARE_QUALITY", "93")
     )
     thumb_max_long_edge = int(
         thumb_max_long_edge
@@ -169,6 +188,15 @@ def load_config(
     poll_seconds = float(
         poll_seconds if poll_seconds is not None else env.get("GHOSTROLL_POLL_SECONDS", "2")
     )
+
+    mount_settle_raw = env.get("GHOSTROLL_MOUNT_SETTLE_SECONDS", "").strip()
+    if mount_settle_seconds is not None:
+        settle = float(mount_settle_seconds)
+    elif mount_settle_raw:
+        settle = float(mount_settle_raw)
+    else:
+        settle = _default_mount_settle_seconds()
+    settle = max(0.0, min(60.0, settle))
 
     mount_roots = mount_roots or env.get("GHOSTROLL_MOUNT_ROOTS", "")
     if mount_roots.strip():
@@ -268,6 +296,7 @@ def load_config(
         thumb_max_long_edge=thumb_max_long_edge,
         thumb_quality=thumb_quality,
         poll_seconds=poll_seconds,
+        mount_settle_seconds=settle,
         mount_roots=mount_roots_list,
         status_path=_expand(status_path),
         status_image_path=_expand(status_image_path),

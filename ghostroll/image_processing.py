@@ -55,13 +55,18 @@ def render_jpeg_derivative(
                 new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
                 im = im.resize(new_size, resampling)
 
-            im.save(
-                dst_path,
-                format="JPEG",
-                quality=int(quality),
-                optimize=True,
-                progressive=True,
-            )
+            # Thumbs: default chroma subsampling keeps files small. Share-size: 4:4:4 preserves reds/blues
+            # when recompressing (PIL otherwise uses 4:2:0 at quality <= 95).
+            save_kw: dict = {
+                "format": "JPEG",
+                "quality": int(quality),
+                "optimize": True,
+                "progressive": True,
+            }
+            if max_long_edge > 512:
+                save_kw["subsampling"] = 0  # 4:4:4
+
+            im.save(dst_path, **save_kw)
     except Exception as e:  # noqa: BLE001 - we want a clean error surface
         error_type = type(e).__name__
         error_msg = str(e)

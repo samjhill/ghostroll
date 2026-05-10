@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import queue
@@ -113,12 +114,33 @@ def _safe_rel_under(root: Path, path: Path) -> Path:
     return rel
 
 
-def _copy2_ignore_existing(src: Path, dst: Path) -> bool:
+def _copy2_ignore_existing(src: Path, dst: Path, *, logger=None) -> bool:
+    """
+    Copy with retries for transient reader errors (slow USB SD paths on Raspberry Pi).
+    """
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.exists():
         return False
-    shutil.copy2(src, dst)
-    return True
+
+    transient = {errno.EIO, errno.EAGAIN, errno.EBUSY}
+    if hasattr(errno, "ESTALE"):
+        transient.add(errno.ESTALE)
+
+    for attempt in range(5):
+        try:
+            shutil.copy2(src, dst)
+            return True
+        except OSError as e:
+            code = e.errno
+            if code is None or code not in transient or attempt >= 4:
+                raise
+            delay = 0.1 * (1.6**attempt)
+            if logger is not None:
+                logger.debug(
+                    f"Transient copy error (retry {attempt + 1}/4) {src.name}: {e}; sleeping {delay:.2f}s"
+                )
+            time.sleep(delay)
+    raise RuntimeError("copy2 retry loop exited unexpectedly")  # pragma: no cover
 
 
 def _build_share_zip(*, share_dir: Path, out_zip: Path) -> None:
@@ -848,7 +870,13 @@ def run_pipeline(
                     f"  Error: {e}\n"
                     f"  Try: Verify the SD card is properly mounted and readable."
                 ) from e
-        
+
+        if cfg.mount_settle_seconds > 0:
+            logger.debug(
+                f"Mount settle: sleeping {cfg.mount_settle_seconds}s for stable media enumeration…"
+            )
+            time.sleep(cfg.mount_settle_seconds)
+
         logger.debug(f"Scanning DCIM directory: {dcim_dir}")
         all_media = _iter_media_files(dcim_dir, logger=logger)
         logger.info(f"Discovered {len(all_media)} media files in {dcim_dir}")
@@ -937,6 +965,8 @@ def run_pipeline(
         except Exception as e:
             logger.debug(f"Error checking for existing originals: {e}")
         
+        mem_avail = _linux_mem_available_bytes()
+
         logger.info(f"Hashing {len(all_files_to_hash)} files ({len(files_to_check)} need duplicate check, {len(files_known_new)} known new)...")
         
         # Hash all files to check for duplicates (parallelized)
@@ -963,7 +993,19 @@ def run_pipeline(
         failed_files: list[tuple[Path, int]] = []  # Files that failed to hash
         # Use dedicated hash workers (default 8) for better I/O parallelism
         # Adaptive: scale down for small batches to avoid overhead
-        hash_workers = min(cfg.hash_workers, max(1, len(all_files_to_hash) // 5))
+        requested_hash_workers = min(cfg.hash_workers, max(1, len(all_files_to_hash) // 5))
+        tuned_hash = _auto_tune_process_workers(
+            requested=requested_hash_workers,
+            mem_available_bytes=mem_avail,
+            per_worker_mb=40,
+            max_fraction=0.42,
+        )
+        if tuned_hash < requested_hash_workers and mem_avail is not None:
+            logger.warning(
+                f"Low-memory mode: auto-tuned hash workers {requested_hash_workers} -> {tuned_hash} "
+                f"(MemAvailable ~{mem_avail / (1024 * 1024):.0f} MB)"
+            )
+        hash_workers = tuned_hash
         
         # Track which files need duplicate checking
         files_to_check_set = {(p, size) for p, size in files_to_check}
@@ -1328,7 +1370,7 @@ def run_pipeline(
             
             try:
                 # Hash is already computed (size-based pre-filtering disabled)
-                copied_file = _copy2_ignore_existing(src, dst)
+                copied_file = _copy2_ignore_existing(src, dst, logger=logger)
                 return (copied_file, size if copied_file else 0, src, sha)
             except (OSError, IOError) as e:
                 error_code = getattr(e, 'errno', None)
@@ -1356,7 +1398,19 @@ def run_pipeline(
         
         # Use dedicated copy workers (default 6) for better I/O parallelism
         # Adaptive: scale down for small batches to avoid overhead
-        copy_workers = min(cfg.copy_workers, max(1, len(new_files) // 3))
+        requested_copy_workers = min(cfg.copy_workers, max(1, len(new_files) // 3))
+        tuned_copy = _auto_tune_process_workers(
+            requested=requested_copy_workers,
+            mem_available_bytes=mem_avail,
+            per_worker_mb=28,
+            max_fraction=0.38,
+        )
+        if tuned_copy < requested_copy_workers and mem_avail is not None:
+            logger.warning(
+                f"Low-memory mode: auto-tuned copy workers {requested_copy_workers} -> {tuned_copy} "
+                f"(MemAvailable ~{mem_avail / (1024 * 1024):.0f} MB)"
+            )
+        copy_workers = tuned_copy
         db_inserts: list[tuple[str, int, str]] = []  # (sha, size, source_hint)
         
         try:
@@ -1446,7 +1500,6 @@ def run_pipeline(
 
         # PARALLEL PROCESSING + UPLOADING: Process and upload images in parallel
         # Upload workers start uploading as soon as images are processed (upload-as-ready)
-        mem_avail = _linux_mem_available_bytes()
         effective_process_workers = _auto_tune_process_workers(
             requested=cfg.process_workers,
             mem_available_bytes=mem_avail,

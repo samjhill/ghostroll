@@ -112,6 +112,32 @@ def test_config_creates_directories(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert status_dir.exists()
 
 
+def test_mount_settle_seconds_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("GHOSTROLL_MOUNT_SETTLE_SECONDS", "2.5")
+    cfg = load_config()
+    assert cfg.mount_settle_seconds == 2.5
+
+
+def test_mount_settle_seconds_arg_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("GHOSTROLL_MOUNT_SETTLE_SECONDS", "9")
+    cfg = load_config(mount_settle_seconds=0.25)
+    assert cfg.mount_settle_seconds == 0.25
+
+
+def test_mount_settle_seconds_clamped_high(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("GHOSTROLL_MOUNT_SETTLE_SECONDS", "999")
+    cfg = load_config()
+    assert cfg.mount_settle_seconds == 60.0
+
+
+def test_share_image_quality_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("GHOSTROLL_SHARE_MAX_LONG_EDGE", raising=False)
+    monkeypatch.delenv("GHOSTROLL_SHARE_QUALITY", raising=False)
+    cfg = load_config()
+    assert cfg.share_max_long_edge == 3840
+    assert cfg.share_quality == 93
+
+
 def test_hash_workers_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Test that hash_workers is configurable via environment variable."""
     # Default should be 8

@@ -6,6 +6,8 @@ import platform
 import subprocess
 from pathlib import Path
 
+from .mount_check import is_real_device_mount
+
 # Use the main ghostroll logger so our messages are visible
 logger = logging.getLogger("ghostroll.volume_watch")
 
@@ -47,7 +49,9 @@ def _is_actually_mounted(volume_path: Path) -> bool:
         # /media and /run/media are typically always mounts
         if vol_str.startswith("/media/") or vol_str.startswith("/run/media/"):
             return True
-        # For /mnt and other paths, check /proc/mounts
+        # /mnt and similar: use findmnt-based check (avoids autofs placeholders on Pi)
+        if vol_str.startswith("/mnt/"):
+            return is_real_device_mount(volume_path, trigger_automount=True)
         try:
             with open("/proc/mounts", "r") as f:
                 for line in f:
