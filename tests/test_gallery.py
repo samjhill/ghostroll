@@ -185,7 +185,10 @@ def test_build_index_html_presigned_includes_tag_filter_strip(tmp_path: Path):
     )
     html = out_path.read_text("utf-8")
     assert "tagFilter" in html
-    assert "tagStripInner" in html
+    assert "tagStripInnerFaces" in html
+    assert "tagStripInnerLabels" in html
+    assert "People" in html
+    assert "Other tags" in html
     assert "tagChipAll" in html
     assert "rebuildTagChipsBar" in html
     assert "tag-panel" in html

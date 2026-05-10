@@ -66,5 +66,7 @@ def test_build_index_html_includes_face_filter_placeholder(tmp_path: Path):
     out = tmp_path / "index.html"
     build_index_html_from_items(session_id="s", items=items, download_href=None, out_path=out)
     html = out.read_text(encoding="utf-8")
-    assert "Filter by tags or people" in html
+    assert "Filter by person or tag" in html
+    assert "tagStripInnerFaces" in html
+    assert "tagStripInnerLabels" in html
     assert "tags/x.json" in html
