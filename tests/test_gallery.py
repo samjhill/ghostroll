@@ -191,6 +191,7 @@ def test_build_index_html_presigned_includes_tag_filter_strip(tmp_path: Path):
     assert "Other tags" in html
     assert "tagChipAll" in html
     assert "rebuildTagChipsBar" in html
+    assert "isPersonClusterTagName" in html
     assert "tag-panel" in html
     assert "tagPanel" in html
 
