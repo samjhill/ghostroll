@@ -44,6 +44,22 @@ if [[ -z "$PYTHON_CMD" ]]; then
     fi
   done
 fi
+# If PATH points at this repo's venv, `command -v python3.x` can resolve to Python we are about to delete.
+venv_python_prefix="$SCRIPT_DIR/$VENV_NAME/bin/"
+if [[ -n "${PYTHON_CMD:-}" ]] && [[ "$PYTHON_CMD" == "$venv_python_prefix"* ]]; then
+  echo -e "${YELLOW}Ignoring Python inside ${VENV_NAME} (will be recreated). Using system/Homebrew PATH…${NC}"
+  PYTHON_CMD=""
+  PATH="/opt/homebrew/bin:/opt/homebrew/opt/python@3.13/bin:/opt/homebrew/opt/python@3.12/bin:/usr/local/bin:/usr/bin:/bin"
+  export PATH
+  for cand in python3.14 python3.13 python3.12 python3.11 python3.10 python3; do
+    if command -v "$cand" &> /dev/null; then
+      if "$cand" -c 'import sys; assert sys.version_info >= (3, 10)' 2>/dev/null; then
+        PYTHON_CMD=$(command -v "$cand")
+        break
+      fi
+    fi
+  done
+fi
 if [[ -z "$PYTHON_CMD" ]]; then
   echo -e "${RED}Error: Python 3.10+ not found.${NC} Install Homebrew Python or set GHOSTROLL_PYTHON=/path/to/python3.12"
   exit 1
