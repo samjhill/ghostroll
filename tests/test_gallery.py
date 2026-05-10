@@ -193,7 +193,6 @@ def test_build_index_html_presigned_includes_tag_filter_strip(tmp_path: Path):
     assert "rebuildTagChipsBar" in html
     assert "isPersonClusterTagName" in html
     assert "tag-panel" in html
-    assert 'id="tagPanel" open' in html
     assert "tagPanel" in html
 
 

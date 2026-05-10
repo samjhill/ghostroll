@@ -213,9 +213,9 @@ def _write_gallery_html(
 
         if has_tags:
             f.write(
-                "<details class=\"tag-panel\" id=\"tagPanel\" open>"
+                "<details class=\"tag-panel\" id=\"tagPanel\">"
                 "<summary><span>Tags &amp; filter</span>"
-                "<span class=\"tag-panel-hint\">Collapse / expand</span></summary>"
+                "<span class=\"tag-panel-hint\">Show / hide</span></summary>"
                 "<div class=\"tag-panel-body\">"
                 "<div class=\"filter\">"
                 "<label for=\"tagFilter\">Filter</label>"
