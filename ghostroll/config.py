@@ -35,6 +35,38 @@ def _clamp(n: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, n))
 
 
+def _default_share_and_thumb_params() -> tuple[int, int, int, int]:
+    """
+    Defaults when GHOSTROLL_SHARE_* / GHOSTROLL_THUMB_* env vars are unset.
+
+    Returns (share_max_long_edge, share_quality, thumb_max_long_edge, thumb_quality).
+
+    ``GHOSTROLL_SHARE_HOST_PROFILE`` overrides auto-detection:
+    - high / desktop / max / studio — large share JPEGs + sharper gallery thumbnails (Mac / workstation).
+    - balanced / pi / embedded / low — smaller outputs for Raspberry Pi-class hosts.
+    """
+    env = os.environ
+    prof = env.get("GHOSTROLL_SHARE_HOST_PROFILE", "").strip().lower()
+    if prof in ("high", "desktop", "max", "studio"):
+        return 8192, 98, 1600, 93
+    if prof in ("balanced", "pi", "embedded", "low"):
+        return 3840, 93, 512, 85
+    try:
+        system = platform.system().lower()
+        machine = platform.machine().lower()
+        if system == "darwin":
+            return 8192, 98, 1600, 93
+        if system == "linux" and (
+            machine.startswith("arm") or machine in ("aarch64", "armv7l", "armv6l")
+        ):
+            return 3840, 93, 512, 85
+        if system in ("linux", "windows"):
+            return 8192, 98, 1600, 93
+    except Exception:
+        pass
+    return 8192, 98, 1600, 93
+
+
 def _default_mount_settle_seconds() -> float:
     """
     Short pause after the volume looks ready so USB SD readers (common on Raspberry Pi)
@@ -89,6 +121,9 @@ class Config:
     # RAW file upload settings
     upload_raw_files: bool
 
+    # Face clustering (optional OpenCV); adds Person N labels to tags/*.json for gallery filters
+    face_tagging: bool
+
     @property
     def sessions_dir(self) -> Path:
         return self.base_output_dir
@@ -126,6 +161,7 @@ def load_config(
     web_host: str | None = None,
     web_port: int | None = None,
     upload_raw_files: bool | None = None,
+    face_tagging: bool | None = None,
 ) -> Config:
     env = os.environ
     
@@ -168,21 +204,22 @@ def load_config(
         else env.get("GHOSTROLL_PRESIGN_EXPIRY_SECONDS", "604800")
     )
 
+    d_share, d_share_q, d_thumb, d_thumb_q = _default_share_and_thumb_params()
     share_max_long_edge = int(
         share_max_long_edge
         if share_max_long_edge is not None
-        else env.get("GHOSTROLL_SHARE_MAX_LONG_EDGE", "3840")
+        else env.get("GHOSTROLL_SHARE_MAX_LONG_EDGE", str(d_share))
     )
     share_quality = int(
-        share_quality if share_quality is not None else env.get("GHOSTROLL_SHARE_QUALITY", "93")
+        share_quality if share_quality is not None else env.get("GHOSTROLL_SHARE_QUALITY", str(d_share_q))
     )
     thumb_max_long_edge = int(
         thumb_max_long_edge
         if thumb_max_long_edge is not None
-        else env.get("GHOSTROLL_THUMB_MAX_LONG_EDGE", "512")
+        else env.get("GHOSTROLL_THUMB_MAX_LONG_EDGE", str(d_thumb))
     )
     thumb_quality = int(
-        thumb_quality if thumb_quality is not None else env.get("GHOSTROLL_THUMB_QUALITY", "85")
+        thumb_quality if thumb_quality is not None else env.get("GHOSTROLL_THUMB_QUALITY", str(d_thumb_q))
     )
 
     poll_seconds = float(
@@ -284,6 +321,14 @@ def load_config(
         # Default to enabled
         upload_raw_files = True
 
+    face_tagging_env = env.get("GHOSTROLL_FACE_TAGGING", "")
+    if face_tagging is not None:
+        face_tagging = bool(face_tagging)
+    elif face_tagging_env.strip():
+        face_tagging = str(face_tagging_env).strip().lower() in ("true", "1", "yes", "on", "enabled")
+    else:
+        face_tagging = False
+
     cfg = Config(
         sd_label=sd_label,
         base_output_dir=_expand(base_output_dir),
@@ -310,6 +355,7 @@ def load_config(
         web_host=web_host,
         web_port=web_port,
         upload_raw_files=upload_raw_files,
+        face_tagging=face_tagging,
     )
 
     cfg.base_output_dir.mkdir(parents=True, exist_ok=True)

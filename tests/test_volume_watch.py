@@ -10,6 +10,7 @@ from ghostroll.volume_watch import (
     find_candidate_volumes,
     pick_mount_with_dcim,
     pick_volume_with_dcim,
+    volume_has_accessible_dcim,
 )
 
 
@@ -145,6 +146,20 @@ def test_pick_mount_with_dcim_no_dcim(tmp_path: Path):
     
     result = pick_mount_with_dcim([mount_root], label="auto-import")
     assert result is None
+
+
+def test_volume_has_accessible_dcim_true(tmp_path: Path):
+    vol = tmp_path / "cam"
+    vol.mkdir()
+    (vol / "DCIM").mkdir()
+    (vol / "DCIM" / "a.jpg").touch()
+    assert volume_has_accessible_dcim(vol) is True
+
+
+def test_volume_has_accessible_dcim_no_dcim(tmp_path: Path):
+    vol = tmp_path / "cam"
+    vol.mkdir()
+    assert volume_has_accessible_dcim(vol) is False
 
 
 def test_pick_mount_with_dcim_multiple_roots(tmp_path: Path):

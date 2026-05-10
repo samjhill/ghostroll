@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import stat
 import textwrap
@@ -8,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ghostroll.cli import _is_mounted, build_parser, cmd_doctor, cmd_run, cmd_watch, main
+from ghostroll.cli import _is_mounted, _volume_from_status_json, build_parser, cmd_doctor, cmd_run, cmd_watch, main
 from ghostroll.config import Config
 from ghostroll.doctor import CheckResult, run_doctor
 from ghostroll.pipeline import PipelineError, run_pipeline
@@ -285,6 +286,24 @@ def test_cmd_watch_basic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         with patch("ghostroll.cli.time.sleep"):
             with pytest.raises(KeyboardInterrupt):
                 cmd_watch(args)
+
+
+def test_volume_from_status_json_ok(tmp_path: Path):
+    vol = tmp_path / "auto-import"
+    vol.mkdir()
+    (vol / "DCIM").mkdir()
+    (vol / "DCIM" / "x.jpg").touch()
+    status_path = tmp_path / "status.json"
+    status_path.write_text(json.dumps({"volume": str(vol)}), encoding="utf-8")
+    assert _volume_from_status_json(status_path) == vol
+
+
+def test_volume_from_status_json_missing_dcim(tmp_path: Path):
+    vol = tmp_path / "auto-import"
+    vol.mkdir()
+    status_path = tmp_path / "status.json"
+    status_path.write_text(json.dumps({"volume": str(vol)}), encoding="utf-8")
+    assert _volume_from_status_json(status_path) is None
 
 
 def test_main():

@@ -34,6 +34,10 @@ class PipelineError(RuntimeError):
     pass
 
 
+# Serialize ingest runs (watch + one-shot + web "re-ingest") — avoids SQLite / S3 races.
+_ingest_pipeline_lock = threading.Lock()
+
+
 @dataclass(frozen=True)
 class SessionPaths:
     session_id: str
@@ -426,7 +430,13 @@ def _finalize_session_from_local_originals(
     presigned_ui = [(a, b, c, d, e, f) for (a, b, c, d, _ts, e, f) in presigned_items]
 
     index_for_s3 = session_dir / "index.s3.html"
-    build_index_html_presigned(session_id=session_id, items=presigned_ui, download_href=download_zip_url, out_path=index_for_s3)
+    build_index_html_presigned(
+        session_id=session_id,
+        items=presigned_ui,
+        download_href=download_zip_url,
+        out_path=index_for_s3,
+        share_page_url=url,
+    )
     uploaded, err = _upload_one(index_for_s3, s3_index_key)
     if err:
         raise PipelineError(f"[resume] Failed to upload final index.html for {session_id}: {err}")
@@ -785,9 +795,13 @@ def run_pipeline(
     status: StatusWriter | None = None,
     always_create_session: bool = False,
     session_id: str | None = None,
+    force_reingest: bool = False,
 ) -> tuple[SessionPaths | None, str | None]:
     """
     Returns (session_paths or None if no-op, presigned_url or None).
+
+    If ``force_reingest`` is True, files on the card are treated as new for this run even when
+    already present in the dedupe database (creates a fresh session and re-copies / re-derives).
     """
     dcim_dir = volume_path / "DCIM"
     try:
@@ -831,7 +845,12 @@ def run_pipeline(
         )
 
     conn = connect(cfg.db_path)
+    _ingest_pipeline_lock.acquire()
     try:
+        if force_reingest:
+            logger.warning(
+                "Force re-ingest: ignoring ingested_files dedupe for this run (new session, full copy + derivatives)."
+            )
         # Reconnect to the mount by accessing it (wakes up automount if needed)
         # This is important because we may have unmounted the volume earlier
         try:
@@ -1073,7 +1092,7 @@ def run_pipeline(
         # mark them in DB immediately to prevent re-hashing on next run
         crash_recovery_items: list[tuple[str, int, str]] = []
         for p, sha, size in hashed_files:
-            if sha in existing_shas:
+            if not force_reingest and sha in existing_shas:
                 skipped += 1
                 logger.debug(f"  Skipped (already ingested): {p.name} (SHA256: {sha[:16]}...)")
                 continue
@@ -1361,7 +1380,8 @@ def run_pipeline(
         total_size = sum(size for (_, _, size) in new_files)
         copied_size = 0
         logger.info(f"Copying {len(new_files)} files ({total_size:,} bytes total) to {originals_dir}...")
-        
+        last_copy_ui = 0.0
+
         # Parallelize file copying (I/O bound operation)
         def _copy_one(item: tuple[Path, str, int]) -> tuple[bool, int, Path, str]:
             src, sha, size = item
@@ -1429,6 +1449,30 @@ def run_pipeline(
                         # Always mark as ingested in database (even if already exists at destination,
                         # so we can deduplicate by hash in future runs)
                         db_inserts.append((sha, item[2], str(src)))
+                        if status is not None and new_files and (
+                            (time.time() - last_copy_ui) >= 0.65 or i == len(new_files)
+                        ):
+                            last_copy_ui = time.time()
+                            status.write(
+                                Status(
+                                    state="running",
+                                    step="ingest",
+                                    message=f"Copying originals… ({i}/{len(new_files)})",
+                                    session_id=session_id,
+                                    volume=str(volume_path),
+                                    counts={
+                                        "discovered": len(all_media),
+                                        "new": len(new_files),
+                                        "skipped": skipped,
+                                        "ingest_done": i,
+                                        "ingest_total": len(new_files),
+                                    },
+                                    url=url,
+                                    qr_path=str(qr_png)
+                                    if qr_png and qr_png.exists() and qr_png.stat().st_size > 0
+                                    else None,
+                                )
+                            )
                     except PipelineError:
                         # Device removal detected - re-raise to stop copying
                         raise
@@ -1602,6 +1646,8 @@ def run_pipeline(
         gallery_items_local: list[tuple[str, str, str, str, float]] = []
         
         if proc_tasks:
+            # S3 objects for this wave: status.json + loading index (2) + thumb + share per processed JPEG.
+            parallel_s3_upload_total = 2 + 2 * len(proc_tasks)
             logger.info(
                 f"Processing and uploading {len(proc_tasks)} new JPEGs in parallel "
                 f"({effective_process_workers} process workers, {cfg.upload_workers} upload workers)..."
@@ -1614,7 +1660,14 @@ def run_pipeline(
                         message="Processing and uploading in parallel…",
                         session_id=session_id,
                         volume=str(volume_path),
-                        counts={"new": len(new_files_with_hashes), "skipped": skipped, "processed_done": 0, "processed_total": len(proc_tasks), "uploaded_done": uploaded_ok},
+                        counts={
+                            "new": len(new_files_with_hashes),
+                            "skipped": skipped,
+                            "processed_done": 0,
+                            "processed_total": len(proc_tasks),
+                            "uploaded_done": uploaded_ok,
+                            "uploaded_total": parallel_s3_upload_total,
+                        },
                         url=url,
                         qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,
                     )
@@ -1748,6 +1801,7 @@ def run_pipeline(
                                             "processed_done": processed,
                                             "processed_total": len(proc_tasks),
                                             "uploaded_done": current_uploaded,
+                                            "uploaded_total": parallel_s3_upload_total,
                                         },
                                         url=url,
                                         qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,
@@ -1781,6 +1835,8 @@ def run_pipeline(
                 upload_join_timeout = 3600  # 1 hour max for all uploads
                 upload_join_start = time.time()
                 
+                logger.info("All upload tasks queued, waiting for upload workers to complete...")
+                last_upload_ui = 0.0
                 try:
                     # Wait for queue to empty, but check periodically for timeout
                     while upload_queue.unfinished_tasks > 0:
@@ -1792,7 +1848,32 @@ def run_pipeline(
                         # Log progress every 30 seconds
                         if int(elapsed) % 30 == 0 and elapsed > 0:
                             logger.debug(f"Waiting for {upload_queue.unfinished_tasks} upload tasks to complete... ({int(elapsed)}s elapsed)")
-                        time.sleep(1)
+                        if status is not None and (time.time() - last_upload_ui) >= 0.9:
+                            last_upload_ui = time.time()
+                            with uploaded_count_lock:
+                                cu = uploaded_ok
+                            status.write(
+                                Status(
+                                    state="running",
+                                    step="process",
+                                    message="Finishing uploads to S3…",
+                                    session_id=session_id,
+                                    volume=str(volume_path),
+                                    counts={
+                                        "new": len(new_files_with_hashes),
+                                        "skipped": skipped,
+                                        "processed_done": processed,
+                                        "processed_total": len(proc_tasks),
+                                        "uploaded_done": cu,
+                                        "uploaded_total": parallel_s3_upload_total,
+                                    },
+                                    url=url,
+                                    qr_path=str(qr_png)
+                                    if qr_png and qr_png.exists() and qr_png.stat().st_size > 0
+                                    else None,
+                                )
+                            )
+                        time.sleep(0.35)
                     
                     # Final join call - if there are still tasks, something is wrong
                     if upload_queue.unfinished_tasks > 0:
@@ -1801,8 +1882,6 @@ def run_pipeline(
                         upload_queue.join()  # Wait for any remaining tasks
                 except Exception as e:
                     logger.warning(f"Exception waiting for upload queue: {e}")
-                
-                logger.info("All upload tasks queued, waiting for upload workers to complete...")
             finally:
                 # Always ensure upload workers are signaled to stop, even if processing fails
                 logger.debug("Signaling upload workers to stop...")
@@ -1824,6 +1903,27 @@ def run_pipeline(
                 upload_failures.extend(upload_errors)
             
             logger.info(f"Upload complete: {uploaded_ok} objects uploaded")
+
+            if cfg.face_tagging:
+                try:
+                    from ghostroll.face_tagging import write_and_upload_face_tags_for_session
+
+                    n_face_tags = write_and_upload_face_tags_for_session(
+                        cfg=cfg,
+                        session_dir=session_dir,
+                        derived_share_dir=derived_share_dir,
+                        prefix=prefix,
+                        upload_one=_upload_one,
+                        logger=logger,
+                    )
+                    if n_face_tags:
+                        with uploaded_keys_lock:
+                            for p in (session_dir / "tags").rglob("*.json"):
+                                if p.is_file():
+                                    rel = p.relative_to(session_dir / "tags").as_posix()
+                                    uploaded_keys.add(f"{prefix}/tags/{rel}")
+                except Exception as e:
+                    logger.warning(f"Face tagging step failed (continuing): {e}")
         
         # Build a downloadable zip of share images (after all processing/uploads complete)
         logger.info(f"Building share.zip from {derived_share_dir}...")
@@ -1850,6 +1950,7 @@ def run_pipeline(
             items=local_items,
             download_href="share.zip",
             out_path=index_html,
+            share_page_url=url,
         )
         logger.info(f"Generated gallery: {index_html}")
 
@@ -1934,6 +2035,7 @@ def run_pipeline(
                 items=presigned_ready,
                 download_href=download_href,
                 out_path=index_partial,
+                share_page_url=url,
             )
 
             # Upload the partial gallery (overwrites the loading page or previous partial)
@@ -2093,6 +2195,7 @@ def run_pipeline(
             items=presigned_ui,
             download_href=download_zip_url,
             out_path=index_for_s3,
+            share_page_url=url,
         )
         logger.info(f"Uploading final gallery to s3://{cfg.s3_bucket}/{s3_index_key}...")
         # Upload the final index.html (force content-based dedupe)
@@ -2387,6 +2490,9 @@ def run_pipeline(
             except Exception as e:
                 # Don't fail the finally block if log upload fails
                 logger.debug(f"Error uploading log in finally block: {e}")
-        conn.close()
+        try:
+            conn.close()
+        finally:
+            _ingest_pipeline_lock.release()
 
 

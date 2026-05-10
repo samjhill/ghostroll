@@ -56,6 +56,40 @@ def get_tags_key(original_key: str) -> str:
     return key + ".json"
 
 
+def _get_json_if_exists(bucket: str, key: str) -> dict[str, Any] | None:
+    try:
+        resp = s3_client.get_object(Bucket=bucket, Key=key)
+        body = resp.get("Body")
+        if body is None:
+            return None
+        raw = body.read()
+        if not raw:
+            return None
+        data = json.loads(raw.decode("utf-8"))
+        return data if isinstance(data, dict) else None
+    except ClientError as e:
+        if e.response["Error"]["Code"] in ("404", "403", "NoSuchKey"):
+            return None
+        raise
+
+
+def _merge_labels(existing: object, incoming: object) -> list[dict[str, Any]]:
+    """Union labels by case-insensitive name; prefer higher confidence when duplicate."""
+    best: dict[str, dict[str, Any]] = {}
+    for block in list(existing or []) + list(incoming or []):  # type: ignore[arg-type]
+        if not isinstance(block, dict):
+            continue
+        name = block.get("name")
+        if not name:
+            continue
+        key = str(name).lower()
+        conf = float(block.get("confidence") or 0.0)
+        prev = best.get(key)
+        if prev is None or conf > float(prev.get("confidence") or 0.0):
+            best[key] = dict(block)
+    return sorted(best.values(), key=lambda x: (-float(x.get("confidence") or 0.0), str(x.get("name", ""))))
+
+
 def _head_exists(bucket: str, key: str) -> bool:
     try:
         s3_client.head_object(Bucket=bucket, Key=key)
@@ -127,14 +161,9 @@ def process_image(bucket: str, key: str) -> dict[str, Any]:
 
     tags_key = get_tags_key(key)
 
+    existing: dict[str, Any] | None = None
     if _head_exists(bucket, tags_key):
-        return {
-            "status": "skipped",
-            "reason": "already_tagged",
-            "key": key,
-            "tags_key": tags_key,
-            "duration_ms": int((time.time() - start_time) * 1000),
-        }
+        existing = _get_json_if_exists(bucket, tags_key)
 
     try:
         tags = _detect_labels(bucket=bucket, key=key)
@@ -148,6 +177,14 @@ def process_image(bucket: str, key: str) -> dict[str, Any]:
                 "duration_ms": int((time.time() - start_time) * 1000),
             }
         raise
+
+    if existing:
+        merged_labels = _merge_labels(existing.get("labels") or [], tags.get("labels") or [])
+        tags = dict(tags)
+        tags["labels"] = merged_labels
+        for keep in ("faces", "model_faces", "generated_utc_faces", "source_relpath"):
+            if keep in existing:
+                tags[keep] = existing[keep]
 
     body = (json.dumps(tags, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
     s3_client.put_object(

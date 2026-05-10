@@ -82,12 +82,27 @@ def test_build_index_html_presigned(tmp_path: Path):
         items=items,
         download_href="https://example.com/share.zip",
         out_path=out_path,
+        share_page_url="https://example.com/gallery-index",
     )
 
     assert out_path.exists()
     content = out_path.read_text("utf-8")
     assert "https://example.com/thumbs/img1.jpg" in content
     assert "https://example.com/share/img1.jpg" in content
+    assert "Share this gallery" in content
+    assert "ghostrollShareUrl" in content
+    assert "https://example.com/gallery-index" in content
+    assert "Copy link" in content
+
+
+def test_build_index_html_from_items_reads_share_txt(tmp_path: Path):
+    out_path = tmp_path / "index.html"
+    (tmp_path / "share.txt").write_text("https://short.example/g\n", encoding="utf-8")
+    items = [("thumbs/a.jpg", "share/a.jpg", "a", "")]
+    build_index_html_from_items(session_id="s", items=items, download_href=None, out_path=out_path)
+    html = out_path.read_text("utf-8")
+    assert "Share this gallery" in html
+    assert "https://short.example/g" in html
 
 
 def test_build_index_html_from_thumbs_dir(tmp_path: Path):
@@ -146,6 +161,35 @@ def test_build_index_html_loading_creates_parent_dir(tmp_path: Path):
 
     assert out_path.exists()
     assert out_path.parent.exists()
+
+
+def test_build_index_html_presigned_includes_tag_filter_strip(tmp_path: Path):
+    """When any item has a tags sidecar URL, emit search filter + tag chip strip + JS."""
+    out_path = tmp_path / "index.html"
+    items = [
+        (
+            "https://example.com/thumb.jpg",
+            "https://example.com/share.jpg",
+            "a.jpg",
+            "",
+            None,
+            "https://example.com/tags/a.json",
+        ),
+    ]
+    build_index_html_presigned(
+        session_id="tag-session",
+        items=items,
+        download_href=None,
+        out_path=out_path,
+        share_page_url=None,
+    )
+    html = out_path.read_text("utf-8")
+    assert "tagFilter" in html
+    assert "tagStripInner" in html
+    assert "tagChipAll" in html
+    assert "rebuildTagChipsBar" in html
+    assert "tag-panel" in html
+    assert "tagPanel" in html
 
 
 def test_build_index_html_html_escaping(tmp_path: Path):

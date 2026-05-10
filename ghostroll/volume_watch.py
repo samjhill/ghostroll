@@ -178,6 +178,24 @@ def find_candidate_mounts(mount_roots: list[Path], *, label: str) -> list[Path]:
     return candidates
 
 
+def volume_has_accessible_dcim(vol: Path) -> bool:
+    """
+    True if the path is an accessible directory with a listable DCIM subdirectory.
+
+    Used by the watch web re-ingest path and pick_mount_with_dcim.
+    """
+    if not _is_volume_accessible(vol):
+        return False
+    dcim_path = vol / "DCIM"
+    try:
+        if not dcim_path.is_dir():
+            return False
+        list(dcim_path.iterdir())
+        return True
+    except (OSError, IOError):
+        return False
+
+
 def pick_mount_with_dcim(mount_roots: list[Path], *, label: str) -> Path | None:
     """
     Find a mounted volume with the given label that has an accessible DCIM directory.
@@ -198,27 +216,17 @@ def pick_mount_with_dcim(mount_roots: list[Path], *, label: str) -> Path | None:
     for vol in candidates:
         dcim_path = vol / "DCIM"
         logger.info(f"Checking {vol} for DCIM directory at {dcim_path}")
-        
         try:
             if not dcim_path.exists():
                 logger.debug(f"  DCIM directory does not exist at {dcim_path}")
                 continue
-            
-            if not dcim_path.is_dir():
-                logger.debug(f"  DCIM path exists but is not a directory: {dcim_path}")
+            if not volume_has_accessible_dcim(vol):
+                logger.warning(f"  ✗ DCIM exists but is not accessible on this volume: {dcim_path}")
                 continue
-            
-            # Try to access the DCIM directory to verify it's not a stale mount
-            # This matches 0.2.0 behavior - simple check, let the pipeline handle errors
-            try:
-                dcim_items = list(dcim_path.iterdir())
-                logger.info(f"  ✓ DCIM directory is accessible with {len(dcim_items)} items")
-                logger.info(f"Found valid camera volume: {vol}")
-                return vol
-            except (OSError, IOError) as e:
-                logger.warning(f"  ✗ DCIM directory exists but is not accessible: {e}")
-                continue
-                
+            dcim_items = list(dcim_path.iterdir())
+            logger.info(f"  ✓ DCIM directory is accessible with {len(dcim_items)} items")
+            logger.info(f"Found valid camera volume: {vol}")
+            return vol
         except Exception as e:
             logger.debug(f"  Error checking DCIM directory: {e}")
             continue

@@ -1,4 +1,6 @@
 import importlib.util
+import io
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,6 +21,7 @@ def _load_lambda_module():
 class FakeS3:
     def __init__(self):
         self.existing: set[tuple[str, str]] = set()
+        self.bodies: dict[tuple[str, str], bytes] = {}
         self.puts: list[dict] = []
         self.head_calls: list[tuple[str, str]] = []
 
@@ -31,9 +34,23 @@ class FakeS3:
             "HeadObject",
         )
 
+    def get_object(self, Bucket: str, Key: str):
+        bk = (Bucket, Key)
+        if bk not in self.bodies:
+            raise ClientError(
+                {"Error": {"Code": "404", "Message": "Not Found"}, "ResponseMetadata": {"HTTPStatusCode": 404}},
+                "GetObject",
+            )
+        return {"Body": io.BytesIO(self.bodies[bk])}
+
     def put_object(self, **kwargs):
         self.puts.append(kwargs)
-        self.existing.add((kwargs["Bucket"], kwargs["Key"]))
+        bk = (kwargs["Bucket"], kwargs["Key"])
+        body = kwargs["Body"]
+        if isinstance(body, str):
+            body = body.encode("utf-8")
+        self.bodies[bk] = body
+        self.existing.add(bk)
         return {"ResponseMetadata": {"HTTPStatusCode": 200}}
 
 
@@ -85,7 +102,7 @@ def test_process_image_skips_non_jpeg_and_non_share():
     assert rek.calls == []
 
 
-def test_process_image_idempotent_skips_if_tags_exist():
+def test_process_image_merges_rekognition_when_tags_sidecar_exists():
     mod = _load_lambda_module()
     s3 = FakeS3()
     rek = FakeRekognition()
@@ -93,13 +110,23 @@ def test_process_image_idempotent_skips_if_tags_exist():
 
     key = "sessions/s1/share/IMG_001.jpg"
     tags_key = "sessions/s1/tags/IMG_001.json"
+    existing = {
+        "faces": [{"person": "Person 1", "box": [0, 0, 1, 1], "confidence": 0.99}],
+        "model_faces": "ghostroll-test",
+        "labels": [],
+    }
+    s3.bodies[("b", tags_key)] = (json.dumps(existing) + "\n").encode("utf-8")
     s3.existing.add(("b", tags_key))
 
     out = mod.process_image("b", key)
-    assert out["status"] == "skipped"
-    assert out["reason"] == "already_tagged"
-    assert rek.calls == []
-    assert s3.puts == []
+    assert out["status"] == "success"
+    assert len(rek.calls) == 1
+    assert len(s3.puts) == 1
+    merged = json.loads(s3.puts[0]["Body"].decode("utf-8"))
+    assert merged.get("faces") == existing["faces"]
+    names = {lbl["name"] for lbl in merged.get("labels", [])}
+    assert "Cat" in names
+    assert "Indoor" in names
 
 
 def test_process_image_writes_sorted_labels_json():

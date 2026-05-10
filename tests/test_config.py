@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from ghostroll.config import Config, load_config, _parse_size, _split_paths
+from ghostroll.config import Config, load_config, _default_share_and_thumb_params, _parse_size, _split_paths
 
 
 def test_parse_size():
@@ -130,12 +130,27 @@ def test_mount_settle_seconds_clamped_high(tmp_path: Path, monkeypatch: pytest.M
     assert cfg.mount_settle_seconds == 60.0
 
 
+def test_face_tagging_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("GHOSTROLL_FACE_TAGGING", "true")
+    cfg = load_config()
+    assert cfg.face_tagging is True
+    monkeypatch.setenv("GHOSTROLL_FACE_TAGGING", "0")
+    cfg = load_config()
+    assert cfg.face_tagging is False
+
+
 def test_share_image_quality_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("GHOSTROLL_SHARE_MAX_LONG_EDGE", raising=False)
     monkeypatch.delenv("GHOSTROLL_SHARE_QUALITY", raising=False)
+    monkeypatch.delenv("GHOSTROLL_SHARE_HOST_PROFILE", raising=False)
+    monkeypatch.delenv("GHOSTROLL_THUMB_MAX_LONG_EDGE", raising=False)
+    monkeypatch.delenv("GHOSTROLL_THUMB_QUALITY", raising=False)
+    exp_share, exp_share_q, exp_thumb, exp_thumb_q = _default_share_and_thumb_params()
     cfg = load_config()
-    assert cfg.share_max_long_edge == 3840
-    assert cfg.share_quality == 93
+    assert cfg.share_max_long_edge == exp_share
+    assert cfg.share_quality == exp_share_q
+    assert cfg.thumb_max_long_edge == exp_thumb
+    assert cfg.thumb_quality == exp_thumb_q
 
 
 def test_hash_workers_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

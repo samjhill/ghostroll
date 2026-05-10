@@ -20,6 +20,9 @@ dependencies = [
 dev = [
   "pytest>=8.0.0",
 ]
+faces = [
+  "opencv-python-headless>=4.8,<5",
+]
 
 [project.scripts]
 ghostroll = "ghostroll.cli:main"

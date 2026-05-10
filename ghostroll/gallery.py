@@ -9,6 +9,22 @@ def _posix(p: Path) -> str:
     return "/".join(p.parts)
 
 
+def _effective_gallery_share_url(*, share_page_url: str | None, out_path: Path) -> str | None:
+    """Presigned gallery page URL from caller, else first line of sibling ``share.txt`` if it looks like HTTP(S)."""
+    u = (share_page_url or "").strip()
+    if u.startswith("https://") or u.startswith("http://"):
+        return u
+    try:
+        st = out_path.parent / "share.txt"
+        if st.exists():
+            line = st.read_text(encoding="utf-8", errors="replace").strip().splitlines()[0].strip()
+            if line.startswith("https://") or line.startswith("http://"):
+                return line
+    except Exception:
+        pass
+    return None
+
+
 def _write_gallery_html(
     *,
     session_id: str,
@@ -20,9 +36,11 @@ def _write_gallery_html(
     items: list[tuple],
     download_href: str | None = None,
     out_path: Path,
+    share_page_url: str | None = None,
 ) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     count = len(items)
+    share_link = _effective_gallery_share_url(share_page_url=share_page_url, out_path=out_path)
     with out_path.open("w", encoding="utf-8") as f:
         f.write("<!doctype html>\n")
         f.write(
@@ -117,11 +135,56 @@ def _write_gallery_html(
             "background:var(--card);color:var(--fg);padding:10px 12px;font-size:14px}"
             ".filter input:focus{outline:2px solid #3b82f6;outline-offset:2px}"
             ".filter .status{font-size:12px;color:var(--muted)}"
+            ".tag-panel{border:1px solid var(--border);border-radius:var(--radius);background:var(--card);"
+            "box-shadow:var(--shadow);margin:0 0 16px;overflow:hidden}"
+            ".tag-panel>summary{list-style:none;cursor:pointer;padding:12px 14px;font-size:14px;font-weight:600;"
+            "color:var(--fg);user-select:none;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}"
+            ".tag-panel>summary::-webkit-details-marker{display:none}"
+            ".tag-panel .tag-panel-hint{font-weight:400;color:var(--muted);font-size:12px}"
+            ".tag-panel[open]>summary{border-bottom:1px solid var(--border)}"
+            ".tag-panel-body{padding:12px 14px 14px}"
+            ".tag-panel-body .filter{margin-top:0}"
+            ".tag-strip{margin:0;display:flex;flex-direction:column;gap:10px}"
+            ".tag-strip-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}"
+            ".tag-strip-label{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;font-weight:700}"
+            ".tag-strip-inner{display:flex;flex-wrap:wrap;gap:8px;align-items:center}"
+            "button.filter-chip{font-size:13px;padding:7px 12px;border-radius:999px;cursor:pointer;font-family:inherit;line-height:1.2}"
+            "button.filter-chip.is-active{border-color:#3b82f6;background:rgba(59,130,246,.18);color:var(--fg)}"
+            "@media (prefers-color-scheme:light){"
+            "button.filter-chip.is-active{background:rgba(59,130,246,.12)}"
+            "}"
+            ".share-short{margin-bottom:14px;padding:12px 14px;border-radius:var(--radius);border:1px solid var(--border);"
+            "background:var(--card);box-shadow:var(--shadow)}"
+            ".share-short .share-label{display:block;font-size:11px;color:var(--muted);text-transform:uppercase;"
+            "letter-spacing:.5px;font-weight:700;margin-bottom:8px}"
+            ".share-short .share-row{display:flex;gap:8px;align-items:stretch;flex-wrap:wrap}"
+            ".share-short input#ghostrollShareUrl{flex:1;min-width:0;min-height:40px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;"
+            "font-size:12px;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg-secondary);color:var(--fg)}"
+            ".share-short .share-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}"
             "</style>\n"
         )
         f.write("</head><body>\n")
         f.write("<a href=\"#grid\" class=\"skip-link\">Skip to gallery</a>\n")
         f.write("<div class=\"wrap\">\n")
+        if share_link:
+            esc = html.escape(share_link, quote=True)
+            f.write('<div class="share-short" role="region" aria-label="Share link">\n')
+            f.write('<span class="share-label">Share this gallery</span>\n')
+            f.write('<div class="share-row">\n')
+            f.write(
+                f'<input id="ghostrollShareUrl" type="text" readonly value="{esc}" '
+                'aria-label="Gallery share URL" onclick="this.select()">\n'
+            )
+            f.write('<div class="share-actions">\n')
+            f.write(
+                f'<a class="btn" href="{html.escape(share_link)}" target="_blank" rel="noopener noreferrer">Open</a>\n'
+            )
+            f.write(
+                '<button class="btn" type="button" id="copyShareUrlBtn" '
+                'aria-label="Copy gallery link to clipboard">Copy link</button>\n'
+            )
+            f.write("</div>\n</div>\n</div>\n")
+
         f.write("<div class=\"top\">")
         f.write(f"<h1 class=\"title\">{html.escape(session_id)}</h1>")
         f.write("<div class=\"meta\">")
@@ -145,11 +208,24 @@ def _write_gallery_html(
 
         if has_tags:
             f.write(
+                "<details class=\"tag-panel\" id=\"tagPanel\">"
+                "<summary><span>Tags &amp; filter</span>"
+                "<span class=\"tag-panel-hint\">Show / hide</span></summary>"
+                "<div class=\"tag-panel-body\">"
                 "<div class=\"filter\">"
                 "<label for=\"tagFilter\">Filter</label>"
-                "<input id=\"tagFilter\" type=\"search\" placeholder=\"Filter gallery by AI tags\" autocomplete=\"off\">"
+                "<input id=\"tagFilter\" type=\"search\" placeholder=\"Filter by tags or people (e.g. Person 1)\" autocomplete=\"off\">"
                 "<div class=\"status\" id=\"tagFilterStatus\" aria-live=\"polite\"></div>"
-                "</div>\n"
+                "</div>"
+                "<div class=\"tag-strip\" id=\"tagStrip\" role=\"region\" aria-label=\"Filter by tag\">"
+                "<div class=\"tag-strip-head\">"
+                "<span class=\"tag-strip-label\">Tags</span>"
+                "<button type=\"button\" class=\"btn filter-chip is-active\" id=\"tagChipAll\" aria-pressed=\"true\">All</button>"
+                "</div>"
+                "<div class=\"tag-strip-inner\" id=\"tagStripInner\"></div>"
+                "</div>"
+                "</div>"
+                "</details>\n"
             )
         
         # Check if QR code exists in the same directory as the output file
@@ -251,6 +327,27 @@ def _write_gallery_html(
         f.write(
             "<script>"
             "(() => {"
+            "const copyShareUrlBtn=document.getElementById('copyShareUrlBtn');"
+            "const ghostrollShareUrlInput=document.getElementById('ghostrollShareUrl');"
+            "if(copyShareUrlBtn&&ghostrollShareUrlInput){"
+            "copyShareUrlBtn.addEventListener('click',async()=>{"
+            "const t=ghostrollShareUrlInput.value;"
+            "try{"
+            "await navigator.clipboard.writeText(t);"
+            "copyShareUrlBtn.textContent='Copied';"
+            "setTimeout(()=>{copyShareUrlBtn.textContent='Copy link';},1800);"
+            "}catch(e){"
+            "try{"
+            "ghostrollShareUrlInput.select();"
+            "document.execCommand('copy');"
+            "copyShareUrlBtn.textContent='Copied';"
+            "setTimeout(()=>{copyShareUrlBtn.textContent='Copy link';},1800);"
+            "}catch(_){"
+            "alert('Select the link and copy manually');"
+            "}"
+            "}"
+            "});"
+            "}"
             "const lb=document.getElementById('lb');"
             "const img=document.getElementById('lbImg');"
             "const cap=document.getElementById('lbCap');"
@@ -265,6 +362,9 @@ def _write_gallery_html(
             "const tiles=[...document.querySelectorAll('#grid .tile')];"
             "const filterInput=document.getElementById('tagFilter');"
             "const filterStatus=document.getElementById('tagFilterStatus');"
+            "const tagStrip=document.getElementById('tagStrip');"
+            "const tagStripInner=document.getElementById('tagStripInner');"
+            "const tagChipAll=document.getElementById('tagChipAll');"
             "let idx=-1;"
             "let lastFocusedElement=null;"
             "const enhanceToggle=document.getElementById('enhanceToggle');"
@@ -291,6 +391,14 @@ def _write_gallery_html(
             "const tagsJsonCache=new Map();"
             "const tileTags=new Map();"
             "let tagsLoadStarted=false;"
+            "function namesFromTagJson(j){"
+            "  if(!j||typeof j!=='object') return [];"
+            "  const labels=(j.labels&&Array.isArray(j.labels))?j.labels:[];"
+            "  let names=labels.map(x=>x&&x.name).filter(Boolean).map(s=>String(s));"
+            "  const faces=(j.faces&&Array.isArray(j.faces))?j.faces:[];"
+            "  for(const f of faces){ if(f&&f.person) names.push(String(f.person)); }"
+            "  return Array.from(new Set(names));"
+            "}"
             "function setTagsLoading(){if(tags) tags.textContent='Tags: loading…';}"
             "function setTagsUnavailable(){if(tags) tags.textContent='Tags: unavailable';}"
             "function setTagsNone(){if(tags) tags.textContent='Tags: (none)';}"
@@ -356,8 +464,7 @@ def _write_gallery_html(
             "      fetch(tagsUrl,{cache:'no-store'})"
             "        .then(r=>r.ok?r.json():null)"
             "        .then(j=>{"
-            "          const labels=(j&&j.labels&&Array.isArray(j.labels))?j.labels:[];"
-            "          const names=labels.map(x=>x&&x.name).filter(Boolean).map(s=>String(s));"
+            "          const names=namesFromTagJson(j||{});"
             "          tagsJsonCache.set(tagsUrl,{names});"
             "          if(idx>=0&&tiles[idx]===t){setTagsChips(names);}"
             "        })"
@@ -410,7 +517,7 @@ def _write_gallery_html(
             "  if(!terms.length) return true;"
             "  const tagsArr=tileTags.get(tile);"
             "  if(!tagsArr) return false;"
-            "  const hay=tagsArr.join(' ');"
+            "  const hay=tagsArr.map(s=>String(s).toLowerCase()).join(' ');"
             "  return terms.every(t=>hay.includes(t));"
             "}"
             "function applyFilter(){"
@@ -419,6 +526,7 @@ def _write_gallery_html(
             "  if(!terms.length){"
             "    tiles.forEach(t=>{t.style.display='';});"
             "    setFilterStatus('');"
+            "    updateTagChipActiveStates();"
             "    return;"
             "  }"
             "  let shown=0;"
@@ -428,6 +536,55 @@ def _write_gallery_html(
             "    if(ok) shown++;"
             "  });"
             "  setFilterStatus('Showing '+shown+' / '+tiles.length);"
+            "  updateTagChipActiveStates();"
+            "}"
+            "function updateTagChipActiveStates(){"
+            "  if(!tagStripInner) return;"
+            "  const terms=parseTerms(filterInput?filterInput.value:'');"
+            "  const joined=terms.join(' ');"
+            "  if(tagChipAll){"
+            "    const allActive=!terms.length;"
+            "    tagChipAll.classList.toggle('is-active',allActive);"
+            "    tagChipAll.setAttribute('aria-pressed',allActive?'true':'false');"
+            "  }"
+            "  tagStripInner.querySelectorAll('button.filter-chip[data-tag-lower]').forEach((b)=>{"
+            "    const low=b.dataset.tagLower||'';"
+            "    const active=terms.length>0&&joined===low;"
+            "    b.classList.toggle('is-active',active);"
+            "    b.setAttribute('aria-pressed',active?'true':'false');"
+            "  });"
+            "}"
+            "function rebuildTagChipsBar(){"
+            "  if(!tagStripInner) return;"
+            "  while(tagStripInner.firstChild) tagStripInner.removeChild(tagStripInner.firstChild);"
+            "  const byLower=new Map();"
+            "  tiles.forEach((tile)=>{"
+            "    const arr=tileTags.get(tile);"
+            "    if(!arr||!arr.length) return;"
+            "    arr.forEach((name)=>{"
+            "      const s=String(name);"
+            "      const low=s.toLowerCase();"
+            "      if(!byLower.has(low)) byLower.set(low,s);"
+            "    });"
+            "  });"
+            "  const sorted=Array.from(byLower.entries()).sort((a,b)=>a[1].localeCompare(b[1],undefined,{sensitivity:'base'}));"
+            "  sorted.forEach(([low,label])=>{"
+            "    const b=document.createElement('button');"
+            "    b.type='button';"
+            "    b.className='btn filter-chip';"
+            "    b.textContent=label;"
+            "    b.dataset.tagLower=low;"
+            "    b.setAttribute('aria-pressed','false');"
+            "    b.addEventListener('click',(e)=>{"
+            "      e.preventDefault();"
+            "      if(filterInput){"
+            "        filterInput.value=label;"
+            "        filterInput.dispatchEvent(new Event('input',{bubbles:true}));"
+            "      }"
+            "    });"
+            "    tagStripInner.appendChild(b);"
+            "  });"
+            "  updateTagChipActiveStates();"
             "}"
             "async function loadTagsForTile(tile){"
             "  if(tileTags.has(tile)) return;"
@@ -437,8 +594,7 @@ def _write_gallery_html(
             "    const r=await fetch(url,{cache:'no-store'});"
             "    if(!r.ok){tileTags.set(tile,[]);return;}"
             "    const j=await r.json();"
-            "    const labels=(j&&j.labels&&Array.isArray(j.labels))?j.labels:[];"
-            "    const names=labels.map(x=>x&&x.name).filter(Boolean).map(s=>String(s).toLowerCase());"
+            "    const names=namesFromTagJson(j);"
             "    tileTags.set(tile,names);"
             "  }catch(e){tileTags.set(tile,[]);}"
             "}"
@@ -446,7 +602,7 @@ def _write_gallery_html(
             "  if(tagsLoadStarted) return;"
             "  tagsLoadStarted=true;"
             "  const withUrls=tiles.filter(t=>t.dataset.tags);"
-            "  if(!withUrls.length){return;}"
+            "  if(!withUrls.length){setFilterStatus('');rebuildTagChipsBar();return;}"
             "  setFilterStatus('Loading tags…');"
             "  const concurrency=6;"
             "  let i=0;"
@@ -459,6 +615,14 @@ def _write_gallery_html(
             "  });"
             "  await Promise.all(workers);"
             "  applyFilter();"
+            "  rebuildTagChipsBar();"
+            "}"
+            "if(tagChipAll){"
+            "  tagChipAll.addEventListener('click',(e)=>{"
+            "    e.preventDefault();"
+            "    if(filterInput){filterInput.value='';}"
+            "    applyFilter();"
+            "  });"
             "}"
             "if(filterInput){"
             "  filterInput.addEventListener('input',()=>{"
@@ -466,6 +630,7 @@ def _write_gallery_html(
             "    if(terms.length){ensureAllTagsLoaded();}"
             "    applyFilter();"
             "  });"
+            "  void ensureAllTagsLoaded();"
             "}"
             "if(closeBtn) closeBtn.addEventListener('click', close);"
             "if(nextBtn) nextBtn.addEventListener('click', next);"
@@ -519,7 +684,7 @@ def build_index_html(*, session_id: str, thumbs_dir: Path, out_path: Path) -> No
         title = rel.as_posix()
         items.append((thumb_href, share_href, title, "", None, None))
 
-    _write_gallery_html(session_id=session_id, items=items, out_path=out_path)
+    _write_gallery_html(session_id=session_id, items=items, out_path=out_path, share_page_url=None)
 
 
 def build_index_html_from_items(
@@ -528,8 +693,15 @@ def build_index_html_from_items(
     items: list[tuple],
     download_href: str | None,
     out_path: Path,
+    share_page_url: str | None = None,
 ) -> None:
-    _write_gallery_html(session_id=session_id, items=items, download_href=download_href, out_path=out_path)
+    _write_gallery_html(
+        session_id=session_id,
+        items=items,
+        download_href=download_href,
+        out_path=out_path,
+        share_page_url=share_page_url,
+    )
 
 
 def build_index_html_presigned(
@@ -538,12 +710,20 @@ def build_index_html_presigned(
     items: list[tuple],
     download_href: str | None = None,
     out_path: Path,
+    share_page_url: str | None = None,
 ) -> None:
     """
     items: list of (thumb_url, share_url, title, subtitle, enhanced_url, tags_url) — URLs should be fully-qualified.
     enhanced_url/tags_url can be None if enhanced version doesn't exist.
+    share_page_url: presigned URL for this gallery page (index), shown as a copyable shortlink strip.
     """
-    _write_gallery_html(session_id=session_id, items=items, download_href=download_href, out_path=out_path)
+    _write_gallery_html(
+        session_id=session_id,
+        items=items,
+        download_href=download_href,
+        out_path=out_path,
+        share_page_url=share_page_url,
+    )
 
 
 def build_index_html_loading(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import platform
 import subprocess
@@ -9,12 +10,16 @@ import threading
 import time
 from pathlib import Path
 
-from .config import load_config
+from .config import Config, load_config
 from .doctor import format_results, run_doctor
 from .logging_utils import setup_logging, attach_logfile
 from .pipeline import PipelineError, run_pipeline, resume_incomplete_sessions
 from .status import Status, StatusWriter, get_hostname, get_ip_address
-from .volume_watch import find_candidate_mounts, pick_mount_with_dcim
+from .volume_watch import (
+    find_candidate_mounts,
+    pick_mount_with_dcim,
+    volume_has_accessible_dcim,
+)
 from .watchdog_watcher import WatchdogWatcher
 from .web import GhostRollWebServer
 from .log_uploader import ensure_log_upload, recover_session_logs
@@ -365,6 +370,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             status=status,
             always_create_session=args.always_create_session,
             session_id=args.session_id,
+            force_reingest=getattr(args, "force_reingest", False),
         )
         if sp is None:
             logger.info("No new files detected; nothing to do.")
@@ -408,6 +414,133 @@ def cmd_run(args: argparse.Namespace) -> int:
                 service_uploader.upload_now(force_flush=True)
         except Exception:
             pass
+
+
+def _volume_from_status_json(status_path: Path) -> Path | None:
+    """If status.json lists a volume path that still has usable DCIM, return it."""
+    try:
+        if not status_path.exists():
+            return None
+        data = json.loads(status_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        raw = data.get("volume")
+        if not raw or not isinstance(raw, str):
+            return None
+        candidate = Path(raw).expanduser()
+        if volume_has_accessible_dcim(candidate):
+            return candidate
+    except Exception:
+        return None
+    return None
+
+
+def _pick_volume_for_web_reingest(
+    cfg: Config,
+    *,
+    last_volume_path: dict[str, str | None],
+    logger,
+) -> Path | None:
+    """
+    Resolve SD volume for web-triggered re-ingest: normal label+DCIM pick, short retries
+    (macOS can lag after insert), then last path from watch, then status.json volume.
+    """
+    for attempt in range(4):
+        vol = pick_mount_with_dcim(cfg.mount_roots, label=cfg.sd_label)
+        if vol is not None:
+            return vol
+        if attempt < 3:
+            time.sleep(0.75)
+
+    last = last_volume_path.get("path")
+    if last:
+        p = Path(last)
+        if volume_has_accessible_dcim(p):
+            logger.info(f"Web re-ingest: using last-known volume from watch: {p}")
+            return p
+
+    from_status = _volume_from_status_json(cfg.status_path)
+    if from_status is not None:
+        logger.info(f"Web re-ingest: using volume from status.json: {from_status}")
+        return from_status
+
+    return None
+
+
+def _make_watch_rerun_callback(
+    cfg: Config,
+    logger,
+    status: StatusWriter,
+    last_volume_path: dict[str, str | None],
+):
+    """
+    Returns a dict for JSON responses. Queues ``run_pipeline`` on a background thread
+    when a matching SD volume is mounted (same label + DCIM as watch mode).
+    """
+    gate = threading.Semaphore(1)
+
+    def callback() -> dict:
+        if not gate.acquire(blocking=False):
+            return {"ok": False, "error": "already_running", "message": "An ingest is already running."}
+        try:
+            vol = _pick_volume_for_web_reingest(cfg, last_volume_path=last_volume_path, logger=logger)
+            if vol is None:
+                gate.release()
+                return {
+                    "ok": False,
+                    "error": "no_volume",
+                    "message": (
+                        f"No mounted volume labeled {cfg.sd_label!r} with a usable DCIM folder. "
+                        "Re-insert the card (GhostRoll may have ejected it after the last run) and wait "
+                        "a few seconds, or set GHOSTROLL_SD_LABEL to match the volume name shown in Finder."
+                    ),
+                }
+
+            def work() -> None:
+                try:
+                    try:
+                        resume_incomplete_sessions(cfg=cfg, logger=logger, status=status, max_sessions=1)
+                    except Exception as e:
+                        logger.debug(f"Web re-ingest resume skipped: {e}")
+                    sp, url = run_pipeline(
+                        cfg=cfg,
+                        volume_path=vol,
+                        logger=logger,
+                        status=status,
+                        always_create_session=True,
+                        force_reingest=True,
+                    )
+                    if sp is None:
+                        logger.info("Web re-ingest: no files to process.")
+                    else:
+                        logger.info(f"Web re-ingest complete: {sp.session_dir}")
+                        if url:
+                            logger.info(f"Share URL: {url}")
+                except PipelineError as e:
+                    logger.error(f"Web re-ingest failed: {e}")
+                    try:
+                        status.write(
+                            Status(
+                                state="error",
+                                step="error",
+                                message=str(e).split("\n")[0],
+                                volume=str(vol),
+                            )
+                        )
+                    except Exception:
+                        pass
+                except Exception:
+                    logger.exception("Web re-ingest crashed")
+                finally:
+                    gate.release()
+
+            threading.Thread(target=work, daemon=True).start()
+            return {"ok": True, "queued": True, "volume": str(vol)}
+        except Exception:
+            gate.release()
+            raise
+
+    return callback
 
 
 def cmd_watch(args: argparse.Namespace) -> int:
@@ -478,6 +611,9 @@ def cmd_watch(args: argparse.Namespace) -> int:
     logger.info(f"Polling interval: {cfg.poll_seconds}s")
     logger.info(f"Session directory: {cfg.sessions_dir}")
     logger.info(f"S3 bucket: {cfg.s3_bucket}")
+
+    # Updated whenever watch sees a DCIM volume (helps web re-ingest after slow remounts).
+    last_volume_for_reingest: dict[str, str | None] = {"path": None}
     
     # Start web server if enabled
     logger.info(f"Web interface configuration: enabled={cfg.web_enabled}, host={cfg.web_host}, port={cfg.web_port}")
@@ -489,6 +625,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
             sessions_dir=cfg.sessions_dir,
             host=cfg.web_host,
             port=cfg.web_port,
+            rerun_callback=_make_watch_rerun_callback(cfg, logger, status, last_volume_for_reingest),
         )
         if web_server.start():
             web_url = web_server.get_url()
@@ -588,6 +725,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
                 continue
 
             logger.info(f"Detected camera volume: {vol}")
+            last_volume_for_reingest["path"] = str(vol)
             logger.debug(f"Volume path: {vol}")
             logger.debug(f"DCIM directory: {vol / 'DCIM'}")
             status.write(Status(state="running", step="detected", message="SD card detected.", volume=str(vol)))
@@ -608,6 +746,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
                     volume=str(vol),
                     always_create_session=args.always_create_session,
                     session_id=None,
+                    force_reingest=False,
                 )
             )
             if rc != 0:
@@ -688,6 +827,48 @@ def cmd_watch(args: argparse.Namespace) -> int:
         # Clean up web server
         if web_server is not None:
             web_server.stop()
+
+def cmd_tag_faces(args: argparse.Namespace) -> int:
+    """Write local ``tags/*.json`` with Person N clusters from ``derived/share``."""
+    session = Path(args.session_dir).resolve()
+    if not session.is_dir():
+        print(f"Not a directory: {session}", file=sys.stderr)
+        return 2
+    logger = setup_logging(session_dir=str(session), verbose=not args.quiet)
+    from ghostroll.face_tagging import cmd_tag_faces_session
+
+    return cmd_tag_faces_session(session, logger=logger)
+
+
+def cmd_republish_gallery(args: argparse.Namespace) -> int:
+    """Rebuild ``sessions/<id>/index.html`` on S3 from listed thumb keys and fresh presigned URLs."""
+    cfg = load_config(
+        sd_label=args.sd_label,
+        base_output_dir=args.base_dir,
+        db_path=args.db_path,
+        s3_bucket=args.s3_bucket,
+        s3_prefix_root=args.s3_prefix_root,
+        presign_expiry_seconds=args.presign_expiry_seconds,
+        mount_roots=args.mount_roots,
+        status_path=args.status_path,
+        status_image_path=args.status_image_path,
+        status_image_size=args.status_image_size,
+    )
+    logger = setup_logging(session_dir=None, verbose=not args.quiet)
+    from .republish_gallery import republish_session_gallery_s3
+
+    session_id = str(args.session_id).strip()
+    try:
+        url = republish_session_gallery_s3(cfg=cfg, session_id=session_id)
+    except Exception as e:
+        logger.exception("republish-gallery failed: %s", e)
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    prefix = f"{cfg.s3_prefix_root}{session_id}".rstrip("/")
+    logger.info("Uploaded s3://%s/%s/index.html", cfg.s3_bucket, prefix)
+    print(url)
+    return 0
+
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     rc, results = run_doctor(
@@ -831,6 +1012,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Mounted volume path (e.g. /Volumes/auto-import) OR a volume label (e.g. auto-import)",
     )
     p_run.add_argument("--always-create-session", action="store_true", help="Create a session even if no new files")
+    p_run.add_argument(
+        "--force-reingest",
+        action="store_true",
+        help="Ignore dedupe DB for this run; re-copy and re-derive everything from the card (new session)",
+    )
     p_run.add_argument("--session-id", default=None, help="Override session id (default: shoot-YYYY-MM-DD_HHMMSS)")
     p_run.set_defaults(func=cmd_run)
 
@@ -843,6 +1029,29 @@ def build_parser() -> argparse.ArgumentParser:
     p_watch.add_argument("--web-host", default=None, help="Web interface host (default: 127.0.0.1, or GHOSTROLL_WEB_HOST)")
     p_watch.add_argument("--web-port", type=int, default=None, help="Web interface port (default: 8080, or GHOSTROLL_WEB_PORT)")
     p_watch.set_defaults(func=cmd_watch)
+
+    p_faces = sub.add_parser(
+        "tag-faces",
+        help="Detect faces in a session's share JPEGs and write tags/*.json (install: pip install 'ghostroll[faces]')",
+    )
+    p_faces.add_argument(
+        "session_dir",
+        type=str,
+        help="Session directory containing derived/share (e.g. ~/ghostroll/shoot-…)",
+    )
+    p_faces.add_argument("--quiet", action="store_true", help="Reduce log verbosity")
+    p_faces.set_defaults(func=cmd_tag_faces)
+
+    p_repub = sub.add_parser(
+        "republish-gallery",
+        help="Rebuild presigned S3 index.html for a session from existing thumbs (e.g. after gallery HTML changes)",
+    )
+    _add_common_args(p_repub)
+    p_repub.add_argument(
+        "session_id",
+        help="Session id (e.g. shoot-2026-05-10_084154_979366)",
+    )
+    p_repub.set_defaults(func=cmd_republish_gallery)
 
     return p
 

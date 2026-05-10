@@ -10,6 +10,7 @@ from __future__ import annotations
 import html as html_escape_module
 import json
 import os
+from collections.abc import Callable
 import subprocess
 import threading
 import time
@@ -17,6 +18,37 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+
+from .status import get_hostname, get_ip_address
+
+
+def _synthetic_status_when_missing(status_path: Path) -> dict:
+    """
+    Payload matching StatusWriter JSON when status.json does not exist yet.
+
+    Avoids 404 on /status.json and UNKNOWN in the UI when the web server starts
+    before ingest has written a file, or when paths are misaligned.
+    """
+    resolved = status_path.expanduser().resolve()
+    return {
+        "state": "idle",
+        "step": "web",
+        "message": (
+            f"No status file yet at {resolved}. "
+            "Start ghostroll watch (or ghostroll run) on this machine, or set GHOSTROLL_STATUS_PATH "
+            "to the same path the ingest process uses."
+        ),
+        "session_id": None,
+        "volume": None,
+        "counts": {},
+        "url": None,
+        "qr_path": None,
+        "hostname": get_hostname(),
+        "ip": get_ip_address(),
+        "updated_unix": time.time(),
+        "battery_percentage": None,
+        "battery_charging": None,
+    }
 
 
 def _get_git_info(repo_dir: Path | None = None) -> tuple[str | None, str | None]:
@@ -111,10 +143,19 @@ def _get_git_info(repo_dir: Path | None = None) -> tuple[str | None, str | None]
 class GhostRollWebHandler(BaseHTTPRequestHandler):
     """HTTP request handler for GhostRoll web interface."""
     
-    def __init__(self, *args, status_path: Path, sessions_dir: Path, git_info: tuple[str | None, str | None] = (None, None), **kwargs):
+    def __init__(
+        self,
+        *args,
+        status_path: Path,
+        sessions_dir: Path,
+        git_info: tuple[str | None, str | None] = (None, None),
+        rerun_callback: Callable[[], dict] | None = None,
+        **kwargs,
+    ):
         self.status_path = status_path
         self.sessions_dir = sessions_dir
         self.git_info = git_info
+        self.rerun_callback = rerun_callback
         super().__init__(*args, **kwargs)
     
     def log_message(self, format, *args):
@@ -125,6 +166,44 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
             if status_code and isinstance(status_code, int) and status_code >= 400:
                 super().log_message(format, *args)
     
+    def do_POST(self):
+        """Handle POST (re-ingest API)."""
+        parsed = urlparse(self.path)
+        path = parsed.path
+        try:
+            if path == "/api/rerun":
+                self._handle_api_rerun()
+            else:
+                self._send_error(404, "Not found")
+        except Exception as e:
+            self._send_error(500, f"Internal error: {e}")
+
+    def _handle_api_rerun(self) -> None:
+        if self.rerun_callback is None:
+            self._send_error(503, "Re-ingest is only available in ghostroll watch with the web UI enabled")
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            if length > 65536:
+                self._send_error(400, "Body too large")
+                return
+            _ = self.rfile.read(length) if length else b""
+            result = self.rerun_callback()
+            body = json.dumps(result, indent=2) + "\n"
+            code = 200 if result.get("ok") else 409
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body.encode("utf-8"))))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body.encode("utf-8"))
+        except Exception as e:
+            err = json.dumps({"ok": False, "error": "exception", "message": str(e)}) + "\n"
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(err.encode("utf-8"))
+
     def do_GET(self):
         """Handle GET requests."""
         parsed = urlparse(self.path)
@@ -422,6 +501,46 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
             background: var(--accent-hover);
             transform: translateY(-1px);
             box-shadow: 0 4px 8px var(--shadow);
+        }
+        
+        .rerun-actions {
+            margin-top: 1rem;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            align-items: center;
+        }
+        
+        .rerun-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.65rem 1.1rem;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            font-weight: 600;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: background 0.2s ease, border-color 0.2s ease;
+        }
+        
+        .rerun-btn:hover:not(:disabled) {
+            border-color: var(--accent);
+            background: var(--bg-secondary);
+        }
+        
+        .rerun-btn:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+        }
+        
+        .rerun-hint {
+            font-size: 0.8rem;
+            color: var(--text-tertiary);
+            max-width: 28rem;
+            line-height: 1.4;
         }
         
         .sessions-section {
@@ -983,8 +1102,15 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
             if counts:
                 html += '            <div class="status-counts">\n'
                 for key, value in sorted(counts.items()):
-                    # Skip internal RAW progress counts - they're shown in progress bars
-                    if key in ('raw_files_compressing', 'raw_zip_size_bytes', 'raw_upload_error'):
+                    # Skip internal / bar-only counts (shown in progress section or redundant)
+                    if key in (
+                        "raw_files_compressing",
+                        "raw_zip_size_bytes",
+                        "raw_upload_error",
+                        "ingest_done",
+                        "ingest_total",
+                        "uploaded_total",
+                    ):
                         continue
                     key_display = key.replace("_", " ").title()
                     # Format specific keys for better display
@@ -1006,6 +1132,17 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
             # Add progress bars section (will be populated by JavaScript)
             html += '            <div class="progress-section" id="progress-section" style="display: none;">\n'
             html += '            </div>\n'
+
+            if self.rerun_callback is not None:
+                html += (
+                    '            <div class="rerun-actions" id="rerun-actions">\n'
+                    '                <button type="button" class="rerun-btn" id="rerunIngestBtn" '
+                    'title="Force a new session from the mounted card">↻ Re-ingest SD card</button>\n'
+                    '                <span class="rerun-hint">Starts a new session, re-copies from the card, and '
+                    'rebuilds share images (dedupe is ignored for this run). The card must be mounted '
+                    '(re-plug if GhostRoll ejected it after the last run).</span>\n'
+                    "            </div>\n"
+                )
             
             # Only show gallery link if URL is a valid S3 presigned URL (not a local path)
             # CRITICAL: Only use S3 presigned URLs - never link to local HTML files
@@ -1047,17 +1184,6 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
                             html += '                <div class="qr-hint">Point your phone camera at the code</div>\n'
                             html += '            </div>\n'
             
-            html += '        </div>\n'
-        else:
-            html += '        <div class="status-card">\n'
-            html += '            <div class="status-header">\n'
-            html += '                <div class="status-indicator idle"></div>\n'
-            html += '                <div class="status-title">Unknown</div>\n'
-            html += '            </div>\n'
-            html += '            <div class="status-message">Status file not found. GhostRoll may not be running.</div>\n'
-            html += '            <div class="error-message" style="margin-top: 1rem;">'
-            html += '               If GhostRoll is running, check that the status file exists at the configured path.'
-            html += '            </div>\n'
             html += '        </div>\n'
         
         # List sessions
@@ -1379,7 +1505,12 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
                 if (statusCounts) {
                     if (Object.keys(counts).length > 0) {
                         let countsHTML = '';
+                        const skipCountKeys = new Set([
+                            'raw_files_compressing', 'raw_zip_size_bytes', 'raw_upload_error',
+                            'ingest_done', 'ingest_total', 'uploaded_total'
+                        ]);
                         for (const [key, value] of Object.entries(counts).sort()) {
+                            if (skipCountKeys.has(key)) continue;
                             const keyDisplay = key.replace(/_/g, ' ').replace(/\\b\\w/g, l => l.toUpperCase());
                             countsHTML += '<div class="count-badge">\\n';
                             countsHTML += '    <div class="count-label">' + escapeHtml(keyDisplay) + '</div>\\n';
@@ -1516,6 +1647,21 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
                 
                 const progressItems = [];
                 
+                // Copy-from-card progress (originals → session disk)
+                if (counts.ingest_done !== undefined && counts.ingest_total !== undefined && counts.ingest_total > 0) {
+                    const done = parseInt(counts.ingest_done) || 0;
+                    const total = parseInt(counts.ingest_total) || 0;
+                    const percent = Math.min(100, Math.round((done / total) * 100));
+                    const isComplete = done >= total;
+                    progressItems.push({
+                        label: 'Copying card',
+                        done: done,
+                        total: total,
+                        percent: percent,
+                        complete: isComplete
+                    });
+                }
+                
                 // Processing progress
                 if (counts.processed_done !== undefined && counts.processed_total !== undefined && counts.processed_total > 0) {
                     const done = parseInt(counts.processed_done) || 0;
@@ -1531,14 +1677,14 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
                     });
                 }
                 
-                // Upload progress
+                // S3 upload progress (thumb + share per image, plus bootstrap objects)
                 if (counts.uploaded_done !== undefined && counts.uploaded_total !== undefined && counts.uploaded_total > 0) {
                     const done = parseInt(counts.uploaded_done) || 0;
                     const total = parseInt(counts.uploaded_total) || 0;
                     const percent = Math.min(100, Math.round((done / total) * 100));
                     const isComplete = done >= total;
                     progressItems.push({
-                        label: 'Uploading',
+                        label: 'Uploading to S3',
                         done: done,
                         total: total,
                         percent: percent,
@@ -1660,6 +1806,29 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
                     setTimeout(startPolling, 500);
                     return;
                 }
+
+                const rerunBtn = document.getElementById('rerunIngestBtn');
+                if (rerunBtn) {
+                    rerunBtn.addEventListener('click', async () => {
+                        if (!confirm('Re-ingest from the SD card now? This creates a new session and re-uploads.')) {
+                            return;
+                        }
+                        rerunBtn.disabled = true;
+                        try {
+                            const res = await fetch('/api/rerun', { method: 'POST', body: '{}' });
+                            const data = await res.json().catch(() => ({}));
+                            if (data.ok) {
+                                pollStatus();
+                            } else {
+                                alert(data.message || data.error || 'Re-ingest could not start');
+                            }
+                        } catch (e) {
+                            alert('Request failed: ' + e);
+                        } finally {
+                            rerunBtn.disabled = false;
+                        }
+                    });
+                }
                 
                 // Poll immediately, then on interval
                 pollStatus();
@@ -1700,9 +1869,10 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
     def _serve_status_json(self):
         """Serve status.json directly."""
         if not self.status_path.exists():
-            self._send_error(404, "Status file not found")
+            payload = _synthetic_status_when_missing(self.status_path)
+            self._send_json(json.dumps(payload, indent=2, sort_keys=True) + os.linesep)
             return
-        
+
         try:
             content = self.status_path.read_text(encoding="utf-8")
             self._send_json(content)
@@ -1783,15 +1953,18 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
         self.send_header("Location", f"/sessions/{session_id}/index.html")
         self.end_headers()
     
-    def _read_status_json(self) -> dict | None:
-        """Read and parse status.json."""
+    def _read_status_json(self) -> dict:
+        """Read and parse status.json, or a synthetic idle payload if missing/unreadable."""
         if not self.status_path.exists():
-            return None
+            return _synthetic_status_when_missing(self.status_path)
         try:
             content = self.status_path.read_text(encoding="utf-8")
-            return json.loads(content)
+            data = json.loads(content)
+            if isinstance(data, dict) and data:
+                return data
         except Exception:
-            return None
+            pass
+        return _synthetic_status_when_missing(self.status_path)
     
     def _list_sessions(self) -> list[str]:
         """List available session directories."""
@@ -1843,11 +2016,13 @@ class GhostRollWebServer:
         sessions_dir: Path,
         host: str = "127.0.0.1",
         port: int = 8080,
+        rerun_callback: Callable[[], dict] | None = None,
     ):
         self.status_path = status_path
         self.sessions_dir = sessions_dir
         self.host = host
         self.port = port
+        self.rerun_callback = rerun_callback
         self.server: HTTPServer | None = None
         self.thread: threading.Thread | None = None
         self._running = False
@@ -1877,6 +2052,7 @@ class GhostRollWebServer:
                 status_path=self.status_path,
                 sessions_dir=self.sessions_dir,
                 git_info=self._cached_git_info,
+                rerun_callback=self.rerun_callback,
                 **kwargs,
             )
         
