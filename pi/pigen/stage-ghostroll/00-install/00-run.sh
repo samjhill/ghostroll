@@ -82,11 +82,6 @@ install -m 0644 /usr/local/src/ghostroll/pi/systemd/mnt-auto\\x2dimport.automoun
 # Default env baked into the image (can be overridden by boot-partition ghostroll.env)
 install -m 0644 /usr/local/src/ghostroll/pi/ghostroll.env.default /etc/ghostroll.env
 
-systemctl enable ghostroll-firstboot.service
-systemctl enable ghostroll-watch.service
-systemctl enable ghostroll-update.timer
-systemctl enable ghostroll-eink.service
-systemctl enable ghostroll-wifi-setup.service
-systemctl enable mnt-auto\\x2dimport.automount
-
+# Services are installed but not enabled at boot. Enable manually if needed:
+#   sudo /usr/local/src/ghostroll/pi/scripts/install-services.sh --enable-boot
 

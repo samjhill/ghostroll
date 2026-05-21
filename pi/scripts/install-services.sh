@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ENABLE_BOOT=false
+for arg in "$@"; do
+  case "$arg" in
+    --enable-boot) ENABLE_BOOT=true ;;
+    -h|--help)
+      echo "Usage: sudo $0 [--enable-boot]"
+      echo "  Installs systemd units. Without --enable-boot, units are not started or enabled at boot."
+      echo "  To disable boot autostart: sudo ./pi/scripts/disable-boot-services.sh"
+      exit 0
+      ;;
+  esac
+done
+
 if [[ "${EUID}" -ne 0 ]]; then
   echo "This script must be run as root. Try: sudo $0" >&2
   exit 2
@@ -78,19 +91,27 @@ echo "Configuring ExecStart to use: ${GHOSTROLL_BIN}"
 sed -i "s|^ExecStart=.*|ExecStart=${GHOSTROLL_BIN} watch|" "${WATCH_UNIT_DST}"
 
 systemctl daemon-reload
-systemctl enable --now ghostroll-watch.service
 
-# Enable e-ink service if configured (it will exit cleanly if GHOSTROLL_EINK_ENABLE is not set)
-systemctl enable ghostroll-eink.service || true
-if systemctl is-enabled ghostroll-eink.service >/dev/null 2>&1; then
-  systemctl start ghostroll-eink.service || true
+if $ENABLE_BOOT; then
+  systemctl enable --now ghostroll-watch.service
+  systemctl enable ghostroll-eink.service || true
+  if systemctl is-enabled ghostroll-eink.service >/dev/null 2>&1; then
+    systemctl start ghostroll-eink.service || true
+  fi
+else
+  echo "Skipping enable/start (pass --enable-boot to start at boot)."
 fi
 
 echo ""
 echo "Done."
 echo "Services installed:"
-echo "  - ghostroll-watch.service (enabled and started)"
-echo "  - ghostroll-eink.service (enabled, starts if GHOSTROLL_EINK_ENABLE=1)"
+if $ENABLE_BOOT; then
+  echo "  - ghostroll-watch.service (enabled and started)"
+  echo "  - ghostroll-eink.service (enabled, starts if GHOSTROLL_EINK_ENABLE=1)"
+else
+  echo "  - ghostroll-watch.service (installed, not enabled)"
+  echo "  - ghostroll-eink.service (installed, not enabled)"
+fi
 echo ""
 if [[ -f "${ENV_DST}" ]] && grep -q "^GHOSTROLL_WEB_ENABLED=1" "${ENV_DST}" 2>/dev/null; then
     WEB_HOST=$(grep "^GHOSTROLL_WEB_HOST=" "${ENV_DST}" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "127.0.0.1")

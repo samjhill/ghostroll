@@ -3,7 +3,7 @@
 This guide gets you to a **flash-and-go** Raspberry Pi image:
 
 - GhostRoll is already installed
-- `ghostroll watch` starts automatically on boot (systemd)
+- Boot autostart is **off by default**; enable with `install-services.sh --enable-boot` if you want `ghostroll watch` at boot
 - You configure it by dropping **one text file** onto the boot partition: `ghostroll.env`
 - The Pi continuously writes `status.json` + `status.png` (great for an e‑ink display loop)
 
@@ -20,8 +20,8 @@ We ship a pi-gen stage in this repo:
 
 On first boot, the image will:
 
-- copy `/boot/firmware/ghostroll.env` (or `/boot/ghostroll.env`) → `/etc/ghostroll.env`
-- start `ghostroll watch` using that env file
+- copy `/boot/firmware/ghostroll.env` (or `/boot/ghostroll.env`) → `/etc/ghostroll.env` (via `ghostroll-firstboot.service` when enabled)
+- start `ghostroll watch` only if you enabled `ghostroll-watch.service` (see below)
 
 ## Build the image (recommended path)
 
@@ -185,7 +185,7 @@ Private repos:
 Installed services:
 
 - `ghostroll-firstboot.service`: imports `ghostroll.env` (and optional AWS files) from the boot partition once
-- `ghostroll-watch.service`: runs `ghostroll watch` at boot
+- `ghostroll-watch.service`: runs `ghostroll watch` (enable at boot with `install-services.sh --enable-boot`)
 - `ghostroll-wifi-setup.service`: AP fallback + Wi‑Fi setup portal (NetworkManager)
 
 Status outputs (for e‑ink):
@@ -277,7 +277,7 @@ cd /home/pi/ghostroll
 sudo ./pi/scripts/install-automount.sh
 ```
 
-### 5) Start GhostRoll at boot (systemd)
+### 5) Start GhostRoll at boot (systemd, optional)
 
 Use the helper so `ExecStart` points at the right binary:
 
@@ -286,8 +286,15 @@ Use the helper so `ExecStart` points at the right binary:
 
 ```bash
 cd /home/pi/ghostroll
-sudo ./pi/scripts/install-services.sh
+sudo ./pi/scripts/install-services.sh --enable-boot
 sudo journalctl -u ghostroll-watch.service -f
+```
+
+To **stop GhostRoll from starting on boot** (e.g. another app uses port 8080):
+
+```bash
+cd /home/pi/ghostroll   # or /usr/local/src/ghostroll on pi-gen images
+sudo ./pi/scripts/disable-boot-services.sh
 ```
 
 ### 6) Check progress
