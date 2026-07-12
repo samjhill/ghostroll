@@ -132,6 +132,14 @@ def s3_upload_file(local_path: Path, *, bucket: str, key: str, retries: int = 3,
             content_type = "image/png"
         elif suffix in (".jpg", ".jpeg"):
             content_type = "image/jpeg"
+        elif suffix == ".mp4":
+            content_type = "video/mp4"
+        elif suffix == ".mov":
+            content_type = "video/quicktime"
+        elif suffix == ".webm":
+            content_type = "video/webm"
+        elif suffix == ".m4v":
+            content_type = "video/x-m4v"
         elif suffix == ".txt":
             content_type = "text/plain; charset=utf-8"
         elif suffix == ".log":

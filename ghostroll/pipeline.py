@@ -110,6 +110,53 @@ def _auto_tune_process_workers(
         return requested
 
 
+def _volume_media_roots(volume_path: Path, dcim_dir: Path) -> list[Path]:
+    """DCIM plus common camera video folders (e.g. Sony PRIVATE/M4ROOT/CLIP)."""
+    roots = [dcim_dir]
+    for rel in ("PRIVATE/M4ROOT/CLIP", "PRIVATE/AVCHD/BDMV/STREAM"):
+        extra = volume_path / rel
+        if extra.is_dir():
+            roots.append(extra)
+    return roots
+
+
+def _discover_volume_media(volume_path: Path, dcim_dir: Path, *, logger=None) -> list[Path]:
+    seen: set[str] = set()
+    out: list[Path] = []
+    for root in _volume_media_roots(volume_path, dcim_dir):
+        logger.debug(f"Scanning media directory: {root}")
+        for p in _iter_media_files(root, logger=logger):
+            key = str(p.resolve())
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(p)
+    return sorted(out)
+
+
+def _originals_relpath(volume_path: Path, src: Path) -> Path:
+    rel = src.relative_to(volume_path)
+    if ".." in rel.parts:
+        raise PipelineError(f"Refusing to use unsafe relative path: {rel}")
+    return rel
+
+
+def _media_work_relpath(volume_path: Path, src: Path, dcim_dir: Path) -> Path:
+    """Relative path for derivatives/S3 keys (DCIM files omit the DCIM/ prefix)."""
+    try:
+        return _safe_rel_under(dcim_dir, src)
+    except ValueError:
+        return _originals_relpath(volume_path, src)
+
+
+def _originals_dst(volume_path: Path, src: Path, dcim_dir: Path, originals_dir: Path) -> Path:
+    try:
+        rel = _safe_rel_under(dcim_dir, src)
+        return originals_dir / "DCIM" / rel
+    except ValueError:
+        return originals_dir / _originals_relpath(volume_path, src)
+
+
 def _safe_rel_under(root: Path, path: Path) -> Path:
     rel = path.relative_to(root)
     # avoid sneaky paths (shouldn't happen with relative_to, but belt+suspenders)
@@ -400,6 +447,27 @@ def _finalize_session_from_local_originals(
             )
         )
 
+    if cfg.face_tagging:
+        try:
+            from ghostroll.face_tagging import write_and_upload_face_tags_for_session
+
+            def _upload_one_pair(pair: tuple[Path, str]) -> tuple[bool, str | None]:
+                lp, ky = pair
+                return _upload_one(lp, ky)
+
+            n_face_tags = write_and_upload_face_tags_for_session(
+                cfg=cfg,
+                session_dir=session_dir,
+                derived_share_dir=derived_share_dir,
+                prefix=prefix,
+                upload_one=_upload_one_pair,
+                logger=logger,
+            )
+            if n_face_tags:
+                logger.info(f"[resume] Face tagging: uploaded {n_face_tags} tag sidecar(s)")
+        except Exception as e:
+            logger.warning(f"[resume] Face tagging step failed (continuing): {e}")
+
     # Build and upload share.zip.
     share_zip = session_dir / "share.zip"
     try:
@@ -417,14 +485,31 @@ def _finalize_session_from_local_originals(
 
     presigned_items: list[tuple[str, str, str, str, float, str | None, str | None]] = []
     for (thumb_href, share_href, title, subtitle, sort_ts, _enh, _tags) in presign_items:
-        thumb_key = f"{prefix}/thumbs/{thumb_href.replace('derived/thumbs/', '')}"
+        rel_piece = thumb_href.replace("derived/thumbs/", "")
+        thumb_key = f"{prefix}/thumbs/{rel_piece}"
         share_key = f"{prefix}/share/{share_href.replace('derived/share/', '')}"
+        enhanced_key = f"{prefix}/enhanced/{Path(rel_piece).with_suffix('.jpg').as_posix()}"
+        tags_key = f"{prefix}/tags/{Path(rel_piece).with_suffix('.json').as_posix()}"
         try:
             thumb_url = s3_presign_url(bucket=cfg.s3_bucket, key=thumb_key, expires_in_seconds=cfg.presign_expiry_seconds)
             share_url = s3_presign_url(bucket=cfg.s3_bucket, key=share_key, expires_in_seconds=cfg.presign_expiry_seconds)
+            enhanced_url = None
+            if s3_object_exists(bucket=cfg.s3_bucket, key=enhanced_key):
+                enhanced_url = s3_presign_url(
+                    bucket=cfg.s3_bucket,
+                    key=enhanced_key,
+                    expires_in_seconds=cfg.presign_expiry_seconds,
+                )
+            tags_url = None
+            if s3_object_exists(bucket=cfg.s3_bucket, key=tags_key):
+                tags_url = s3_presign_url(
+                    bucket=cfg.s3_bucket,
+                    key=tags_key,
+                    expires_in_seconds=cfg.presign_expiry_seconds,
+                )
         except Exception as e:
             raise PipelineError(f"[resume] Failed to presign image for {session_id}: {e}") from e
-        presigned_items.append((thumb_url, share_url, title, subtitle, sort_ts, None, None))
+        presigned_items.append((thumb_url, share_url, title, subtitle, sort_ts, enhanced_url, tags_url))
 
     presigned_items.sort(key=lambda x: (x[4], x[2]))
     presigned_ui = [(a, b, c, d, e, f) for (a, b, c, d, _ts, e, f) in presigned_items]
@@ -896,17 +981,20 @@ def run_pipeline(
             )
             time.sleep(cfg.mount_settle_seconds)
 
-        logger.debug(f"Scanning DCIM directory: {dcim_dir}")
-        all_media = _iter_media_files(dcim_dir, logger=logger)
-        logger.info(f"Discovered {len(all_media)} media files in {dcim_dir}")
+        logger.debug(f"Scanning volume media under: {volume_path}")
+        all_media = _discover_volume_media(volume_path, dcim_dir, logger=logger)
+        logger.info(f"Discovered {len(all_media)} media files on volume")
         if len(all_media) == 0:
-            logger.warning(f"No media files found in {dcim_dir} - is the directory accessible?")
+            logger.warning(f"No media files found under {volume_path} - is the card accessible?")
         elif len(all_media) > 0:
-            # Show a sample of discovered files for debugging
-            sample_files = [str(p.relative_to(dcim_dir)) for p in all_media[:5]]
+            sample_files = [str(_originals_relpath(volume_path, p)) for p in all_media[:5]]
             logger.debug(f"Sample files found: {', '.join(sample_files)}")
-        jpeg_sources, raw_sources = _pair_prefer_jpeg(all_media)
-        logger.info(f"File breakdown: {len(jpeg_sources)} JPEG candidates, {len(raw_sources)} RAW files")
+        jpeg_sources, raw_sources = _pair_prefer_jpeg([p for p in all_media if not media.is_video(p)])
+        video_sources = sorted([p for p in all_media if media.is_video(p)])
+        logger.info(
+            f"File breakdown: {len(jpeg_sources)} JPEG candidates, {len(raw_sources)} RAW files, "
+            f"{len(video_sources)} videos"
+        )
 
         # Get file sizes and check database first to avoid unnecessary hashing
         files_with_sizes: list[tuple[Path, int]] = []
@@ -1028,6 +1116,7 @@ def run_pipeline(
         
         # Track which files need duplicate checking
         files_to_check_set = {(p, size) for p, size in files_to_check}
+        last_hash_ui = 0.0
         
         with ThreadPoolExecutor(max_workers=hash_workers) as ex:
             futures = {ex.submit(_hash_one, item): item for item in all_files_to_hash}
@@ -1054,6 +1143,24 @@ def run_pipeline(
                     logger.debug(f"  Skipped (error hashing): {item[0].name}: {e}")
                     failed_files.append((item[0], item[1]))
                     continue
+                if status is not None and all_files_to_hash and (
+                    (time.time() - last_hash_ui) >= 0.65 or i == len(all_files_to_hash)
+                ):
+                    last_hash_ui = time.time()
+                    status.write(
+                        Status(
+                            state="running",
+                            step="scan",
+                            message=f"Scanning DCIM for media… ({i}/{len(all_files_to_hash)})",
+                            session_id=session_id,
+                            volume=str(volume_path),
+                            counts={
+                                "discovered": len(all_media),
+                                "hash_done": i,
+                                "hash_total": len(all_files_to_hash),
+                            },
+                        )
+                    )
         
         # Mark failed files in database (in main thread, not in worker threads)
         # SQLite connections are not thread-safe and must be used in the thread where created
@@ -1190,6 +1297,10 @@ def run_pipeline(
         originals_dir.mkdir(parents=True, exist_ok=True)
         derived_share_dir.mkdir(parents=True, exist_ok=True)
         derived_thumbs_dir.mkdir(parents=True, exist_ok=True)
+        derived_video_dir = session_dir / "derived" / "video"
+        derived_video_posters_dir = session_dir / "derived" / "video-posters"
+        derived_video_dir.mkdir(parents=True, exist_ok=True)
+        derived_video_posters_dir.mkdir(parents=True, exist_ok=True)
         
         # Early QR code generation: publish the gallery link (loading page) immediately after session creation,
         # before processing files, so the QR code is available as soon as possible.
@@ -1385,8 +1496,8 @@ def run_pipeline(
         # Parallelize file copying (I/O bound operation)
         def _copy_one(item: tuple[Path, str, int]) -> tuple[bool, int, Path, str]:
             src, sha, size = item
-            rel = _safe_rel_under(dcim_dir, src)
-            dst = originals_dir / "DCIM" / rel
+            rel = _originals_relpath(volume_path, src)
+            dst = _originals_dst(volume_path, src, dcim_dir, originals_dir)
             
             try:
                 # Hash is already computed (size-based pre-filtering disabled)
@@ -1443,7 +1554,7 @@ def run_pipeline(
                         if was_copied:
                             copied += 1
                             copied_size += file_size
-                            logger.info(f"  Copied [{i}/{len(new_files)}]: {src.name} -> {originals_dir / 'DCIM' / _safe_rel_under(dcim_dir, src)} ({file_size:,} bytes)")
+                            logger.info(f"  Copied [{i}/{len(new_files)}]: {src.name} -> {_originals_dst(volume_path, src, dcim_dir, originals_dir)} ({file_size:,} bytes)")
                         else:
                             logger.debug(f"  Skipped (already exists at destination): {src.name}")
                         # Always mark as ingested in database (even if already exists at destination,
@@ -1539,7 +1650,7 @@ def run_pipeline(
             sha = src_sha.get(src)
             if sha is None or sha not in new_sha_set:
                 continue
-            rel = _safe_rel_under(dcim_dir, src).with_suffix(".jpg")
+            rel = _media_work_relpath(volume_path, src, dcim_dir).with_suffix(".jpg")
             proc_tasks.append((src, rel, derived_share_dir / rel, derived_thumbs_dir / rel))
 
         # PARALLEL PROCESSING + UPLOADING: Process and upload images in parallel
@@ -1644,6 +1755,7 @@ def run_pipeline(
             return (rel_posix, sort_ts, title, subtitle)
 
         gallery_items_local: list[tuple[str, str, str, str, float]] = []
+        parallel_s3_upload_total = uploaded_ok
         
         if proc_tasks:
             # S3 objects for this wave: status.json + loading index (2) + thumb + share per processed JPEG.
@@ -1908,6 +2020,66 @@ def run_pipeline(
                 try:
                     from ghostroll.face_tagging import write_and_upload_face_tags_for_session
 
+                    share_jpegs = [
+                        p
+                        for p in derived_share_dir.rglob("*")
+                        if p.is_file() and p.suffix.lower() in (".jpg", ".jpeg")
+                    ]
+                    face_tag_total = len(share_jpegs)
+                    post_upload_counts = {
+                        "new": len(new_files_with_hashes),
+                        "skipped": skipped,
+                        "processed_done": processed,
+                        "processed_total": len(proc_tasks),
+                        "uploaded_done": uploaded_ok,
+                        "uploaded_total": parallel_s3_upload_total,
+                        "face_tag_done": 0,
+                        "face_tag_total": face_tag_total,
+                    }
+                    last_face_ui = 0.0
+
+                    if status is not None:
+                        status.write(
+                            Status(
+                                state="running",
+                                step="face_tag",
+                                message="Detecting faces…",
+                                session_id=session_id,
+                                volume=str(volume_path),
+                                counts=post_upload_counts,
+                                url=url,
+                                qr_path=str(qr_png)
+                                if qr_png and qr_png.exists() and qr_png.stat().st_size > 0
+                                else None,
+                            )
+                        )
+
+                    def _face_tag_progress(done: int, total: int) -> None:
+                        nonlocal last_face_ui
+                        if status is None or total <= 0:
+                            return
+                        if (time.time() - last_face_ui) < 0.5 and done < total:
+                            return
+                        last_face_ui = time.time()
+                        status.write(
+                            Status(
+                                state="running",
+                                step="face_tag",
+                                message=f"Detecting faces… ({done}/{total})",
+                                session_id=session_id,
+                                volume=str(volume_path),
+                                counts={
+                                    **post_upload_counts,
+                                    "face_tag_done": done,
+                                    "face_tag_total": total,
+                                },
+                                url=url,
+                                qr_path=str(qr_png)
+                                if qr_png and qr_png.exists() and qr_png.stat().st_size > 0
+                                else None,
+                            )
+                        )
+
                     n_face_tags = write_and_upload_face_tags_for_session(
                         cfg=cfg,
                         session_dir=session_dir,
@@ -1915,6 +2087,7 @@ def run_pipeline(
                         prefix=prefix,
                         upload_one=_upload_one,
                         logger=logger,
+                        progress_callback=_face_tag_progress,
                     )
                     if n_face_tags:
                         with uploaded_keys_lock:
@@ -1925,11 +2098,115 @@ def run_pipeline(
                 except Exception as e:
                     logger.warning(f"Face tagging step failed (continuing): {e}")
         
+        # Process new videos: transcode to MP4, extract poster, upload to S3.
+        video_tasks: list[tuple[Path, Path, Path, Path]] = []
+        for src in video_sources:
+            sha = src_sha.get(src)
+            if sha is None or sha not in new_sha_set:
+                continue
+            rel_mp4 = _media_work_relpath(volume_path, src, dcim_dir).with_suffix(".mp4")
+            poster_rel = rel_mp4.with_suffix(".jpg")
+            video_tasks.append(
+                (
+                    src,
+                    rel_mp4,
+                    derived_video_dir / rel_mp4,
+                    derived_video_posters_dir / poster_rel,
+                )
+            )
+
+        if video_tasks:
+            from ghostroll.video_processing import VideoProcessingError, render_video_derivatives
+
+            logger.info(f"Processing {len(video_tasks)} new video(s)...")
+            for src, rel_mp4, video_out, poster_out in video_tasks:
+                try:
+                    render_video_derivatives(
+                        src=src,
+                        video_out=video_out,
+                        poster_out=poster_out,
+                        logger=logger,
+                    )
+                except VideoProcessingError as e:
+                    logger.error(f"Video processing failed for {src.name}: {e}")
+                    continue
+
+                rel_posix = rel_mp4.as_posix()
+                poster_rel = rel_mp4.with_suffix(".jpg")
+                poster_key = f"{prefix}/video-posters/{poster_rel.as_posix()}"
+                video_key = f"{prefix}/video/{rel_posix}"
+                for path, key in ((poster_out, poster_key), (video_out, video_key)):
+                    uploaded, err = _upload_one((path, key))
+                    if uploaded:
+                        uploaded_ok += 1
+                        uploaded_keys.add(key)
+                    if err:
+                        upload_failures.append(err)
+
+                try:
+                    sort_ts = src.stat().st_mtime
+                except OSError:
+                    sort_ts = 9e18
+                parts = [p for p in [rel_posix] if p]
+                subtitle = " · ".join(parts) if parts else ""
+                gallery_items_local.append(
+                    (
+                        f"derived/video-posters/{poster_rel.as_posix()}",
+                        f"derived/video/{rel_posix}",
+                        rel_posix,
+                        subtitle,
+                        sort_ts,
+                        "video",
+                    )
+                )
+                logger.info(f"  Processed video: {src.name} -> {rel_posix}")
+        
         # Build a downloadable zip of share images (after all processing/uploads complete)
+        finalize_counts_base = {
+            "new": len(new_files_with_hashes),
+            "skipped": skipped,
+            "processed_done": processed if proc_tasks else 0,
+            "processed_total": len(proc_tasks) if proc_tasks else 0,
+            "uploaded_done": uploaded_ok,
+            "uploaded_total": parallel_s3_upload_total if proc_tasks else uploaded_ok,
+            "finalize_done": 0,
+            "finalize_total": 3,
+        }
+        if status is not None:
+            status.write(
+                Status(
+                    state="running",
+                    step="finalize",
+                    message="Building share archive…",
+                    session_id=session_id,
+                    volume=str(volume_path),
+                    counts=finalize_counts_base,
+                    url=url,
+                    qr_path=str(qr_png)
+                    if qr_png and qr_png.exists() and qr_png.stat().st_size > 0
+                    else None,
+                )
+            )
         logger.info(f"Building share.zip from {derived_share_dir}...")
         _build_share_zip(share_dir=derived_share_dir, out_zip=share_zip)
         zip_size = share_zip.stat().st_size if share_zip.exists() else 0
         logger.info(f"Created share.zip: {share_zip} ({zip_size:,} bytes)")
+        
+        if status is not None:
+            status.write(
+                Status(
+                    state="running",
+                    step="finalize",
+                    message="Uploading share archive…",
+                    session_id=session_id,
+                    volume=str(volume_path),
+                    counts={**finalize_counts_base, "finalize_done": 1},
+                    url=url,
+                    qr_path=str(qr_png)
+                    if qr_png and qr_png.exists() and qr_png.stat().st_size > 0
+                    else None,
+                )
+            )
         
         # Upload the share.zip
         share_zip_key = f"{prefix}/share.zip"
@@ -1942,9 +2219,35 @@ def run_pipeline(
             upload_failures.append(err)
             logger.error(f"Failed to upload share.zip: {err}")
 
-        # Gallery (local): sort by capture time (if available) then filename.
+        # Gallery (local): include all derivatives on disk (supports incremental video adds).
         gallery_items_local.sort(key=lambda x: (x[4], x[2]))
-        local_items = [(a, b, c, d) for (a, b, c, d, _ts) in gallery_items_local]
+        merged_local: dict[str, tuple] = {}
+        for p in sorted(derived_thumbs_dir.rglob("*")):
+            if not p.is_file():
+                continue
+            rel = p.relative_to(derived_thumbs_dir).as_posix()
+            share_rel = Path(rel).with_suffix(".jpg").as_posix()
+            merged_local[f"image:{rel}"] = (
+                f"derived/thumbs/{rel}",
+                f"derived/share/{share_rel}",
+                rel,
+                "",
+            )
+        for p in sorted(derived_video_posters_dir.rglob("*")):
+            if not p.is_file():
+                continue
+            rel = p.relative_to(derived_video_posters_dir).as_posix()
+            video_rel = Path(rel).with_suffix(".mp4").as_posix()
+            merged_local[f"video:{video_rel}"] = (
+                f"derived/video-posters/{rel}",
+                f"derived/video/{video_rel}",
+                video_rel,
+                "",
+                None,
+                None,
+                "video",
+            )
+        local_items = list(merged_local.values())
         build_index_html_from_items(
             session_id=session_id,
             items=local_items,
@@ -1953,6 +2256,22 @@ def run_pipeline(
             share_page_url=url,
         )
         logger.info(f"Generated gallery: {index_html}")
+
+        if status is not None:
+            status.write(
+                Status(
+                    state="running",
+                    step="finalize",
+                    message="Updating gallery…",
+                    session_id=session_id,
+                    volume=str(volume_path),
+                    counts={**finalize_counts_base, "finalize_done": 2},
+                    url=url,
+                    qr_path=str(qr_png)
+                    if qr_png and qr_png.exists() and qr_png.stat().st_size > 0
+                    else None,
+                )
+            )
 
         # Progressive gallery refresh function (uses uploaded_keys from parallel upload)
         def _refresh_gallery_progressively(keys: set[str]) -> None:
@@ -2080,9 +2399,14 @@ def run_pipeline(
 
         # Build an S3-shareable gallery that embeds presigned URLs for assets (bucket remains private).
         # We keep the local index.html (relative paths) for offline/local browsing.
-        presigned_items: list[tuple[str, str, str, str, float, str | None, str | None]] = []
+        presigned_items: list[tuple] = []
         thumb_files = sorted([p for p in derived_thumbs_dir.rglob("*") if p.is_file()])
-        logger.info(f"Generating presigned asset URLs for {len(thumb_files)} images with {cfg.presign_workers} workers...")
+        video_poster_files = sorted([p for p in derived_video_posters_dir.rglob("*") if p.is_file()])
+        presign_total = len(thumb_files) + len(video_poster_files) + 1
+        logger.info(
+            f"Generating presigned asset URLs for {len(thumb_files)} images and "
+            f"{len(video_poster_files)} videos with {cfg.presign_workers} workers..."
+        )
         if status is not None:
             status.write(
                 Status(
@@ -2091,9 +2415,9 @@ def run_pipeline(
                     message="Generating share link…",
                     session_id=session_id,
                     volume=str(volume_path),
-                    counts={"presigned_done": 0, "presigned_total": len(thumb_files) + 1},  # +1 for share.zip
-                    url=url,  # Include URL so QR code remains visible
-                    qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,  # Include QR path so QR code remains visible
+                    counts={"presigned_done": 0, "presigned_total": presign_total},
+                    url=url,
+                    qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,
                 )
             )
 
@@ -2135,18 +2459,48 @@ def run_pipeline(
                 expires_in_seconds=cfg.presign_expiry_seconds,
             )
             title = rel.as_posix()
-            return (thumb_url, share_url, title, "", 9e18, enhanced_url, tags_url)
+            return (thumb_url, share_url, title, "", 9e18, enhanced_url, tags_url, "image")
 
-        if thumb_files:
+        def _presign_video(poster_path: Path) -> tuple:
+            rel = poster_path.relative_to(derived_video_posters_dir)
+            video_rel = rel.with_suffix(".mp4")
+            poster_key = f"{prefix}/video-posters/{rel.as_posix()}"
+            video_key = f"{prefix}/video/{video_rel.as_posix()}"
+            poster_url = s3_presign_url(
+                bucket=cfg.s3_bucket,
+                key=poster_key,
+                expires_in_seconds=cfg.presign_expiry_seconds,
+            )
+            video_url = s3_presign_url(
+                bucket=cfg.s3_bucket,
+                key=video_key,
+                expires_in_seconds=cfg.presign_expiry_seconds,
+            )
+            title = video_rel.as_posix()
+            try:
+                sort_ts = (derived_video_dir / video_rel).stat().st_mtime
+            except OSError:
+                sort_ts = 9e18
+            return (poster_url, video_url, title, "", sort_ts, None, None, "video")
+
+        presign_jobs: list[tuple[str, Path]] = [("image", t) for t in thumb_files] + [
+            ("video", p) for p in video_poster_files
+        ]
+        if presign_jobs:
             with ThreadPoolExecutor(max_workers=max(1, cfg.presign_workers)) as ex:
-                futures = [ex.submit(_presign_one, t) for t in thumb_files]
+                futures = []
+                for kind, path in presign_jobs:
+                    if kind == "image":
+                        futures.append(ex.submit(_presign_one, path))
+                    else:
+                        futures.append(ex.submit(_presign_video, path))
                 done = 0
                 last_ui = time.time()
                 for fut in as_completed(futures):
                     result = fut.result()
                     presigned_items.append(result)
                     done += 1
-                    logger.debug(f"Presigned [{done}/{len(thumb_files)}]: {result[2]}")
+                    logger.debug(f"Presigned [{done}/{len(presign_jobs)}]: {result[2]}")
                     if status is not None and (time.time() - last_ui) > 0.75:
                         last_ui = time.time()
                         status.write(
@@ -2156,9 +2510,11 @@ def run_pipeline(
                                 message="Generating share link…",
                                 session_id=session_id,
                                 volume=str(volume_path),
-                                counts={"presigned_done": done, "presigned_total": len(thumb_files) + 1},
-                                url=url,  # Include URL so QR code remains visible
-                                qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,  # Include QR path so QR code remains visible
+                                counts={"presigned_done": done, "presigned_total": presign_total},
+                                url=url,
+                                qr_path=str(qr_png)
+                                if qr_png and qr_png.exists() and qr_png.stat().st_size > 0
+                                else None,
                             )
                         )
 
@@ -2178,18 +2534,23 @@ def run_pipeline(
                     message="Generating share link…",
                     session_id=session_id,
                     volume=str(volume_path),
-                    counts={"presigned_done": len(thumb_files) + 1, "presigned_total": len(thumb_files) + 1},
+                    counts={"presigned_done": presign_total, "presigned_total": presign_total},
                     url=url,  # Include URL so QR code remains visible
                     qr_path=str(qr_png) if qr_png and qr_png.exists() and qr_png.stat().st_size > 0 else None,  # Include QR path so QR code remains visible
                 )
             )
 
         presigned_items.sort(key=lambda x: (x[4], x[2]))
-        # Convert to UI format: (thumb_url, share_url, title, subtitle, enhanced_url, tags_url)
-        presigned_ui = [(a, b, c, d, e, f) for (a, b, c, d, _ts, e, f) in presigned_items]
+        presigned_ui: list[tuple] = []
+        for item in presigned_items:
+            media_type = item[7] if len(item) > 7 else "image"
+            if media_type == "video":
+                presigned_ui.append((item[0], item[1], item[2], item[3], item[5], item[6], "video"))
+            else:
+                presigned_ui.append((item[0], item[1], item[2], item[3], item[5], item[6]))
 
         index_for_s3 = session_dir / "index.s3.html"
-        logger.info(f"Building final presigned gallery with {len(presigned_ui)} images...")
+        logger.info(f"Building final presigned gallery with {len(presigned_ui)} item(s)...")
         build_index_html_presigned(
             session_id=session_id,
             items=presigned_ui,

@@ -858,6 +858,11 @@ def cmd_republish_gallery(args: argparse.Namespace) -> int:
     from .republish_gallery import republish_session_gallery_s3, watch_session_and_republish
 
     session_id = str(args.session_id).strip()
+    if getattr(args, "face_tags", False):
+        from .face_tagging import upload_face_tags_for_session_to_s3
+
+        n_tags = upload_face_tags_for_session_to_s3(cfg=cfg, session_id=session_id, logger=logger)
+        logger.info("Face tags backfill: uploaded %s tag JSON file(s)", n_tags)
     if getattr(args, "watch", False):
         watch_session_and_republish(
             cfg=cfg,
@@ -1070,6 +1075,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=2.0,
         metavar="SEC",
         help="Seconds with no further .py writes before republish when using --watch (default: 2)",
+    )
+    p_repub.add_argument(
+        "--face-tags",
+        action="store_true",
+        help="Run face tagging from local derived/share and upload tags/*.json to S3 before republishing",
     )
     p_repub.set_defaults(func=cmd_republish_gallery)
 

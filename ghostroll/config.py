@@ -327,7 +327,13 @@ def load_config(
     elif face_tagging_env.strip():
         face_tagging = str(face_tagging_env).strip().lower() in ("true", "1", "yes", "on", "enabled")
     else:
-        face_tagging = False
+        # Default: on when OpenCV is importable (``pip install 'ghostroll[faces]'``); off otherwise.
+        try:
+            import importlib.util
+
+            face_tagging = importlib.util.find_spec("cv2") is not None
+        except Exception:
+            face_tagging = False
 
     cfg = Config(
         sd_label=sd_label,

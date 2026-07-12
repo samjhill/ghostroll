@@ -139,6 +139,20 @@ def test_face_tagging_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     assert cfg.face_tagging is False
 
 
+def test_face_tagging_default_follows_cv2_importability(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("GHOSTROLL_FACE_TAGGING", raising=False)
+    import importlib.util
+
+    def _spec(name: str):
+        return object() if name == "cv2" else None
+
+    monkeypatch.setattr(importlib.util, "find_spec", _spec)
+    assert load_config().face_tagging is True
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda _name: None)
+    assert load_config().face_tagging is False
+
+
 def test_share_image_quality_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("GHOSTROLL_SHARE_MAX_LONG_EDGE", raising=False)
     monkeypatch.delenv("GHOSTROLL_SHARE_QUALITY", raising=False)

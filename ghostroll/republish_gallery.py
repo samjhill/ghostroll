@@ -42,6 +42,48 @@ def _thumb_keys_for_session(*, bucket: str, prefix: str) -> list[str]:
     return keys
 
 
+def _video_poster_keys_for_session(*, bucket: str, prefix: str) -> list[str]:
+    """S3 keys under ``{prefix}/video-posters/`` ending in .jpg / .jpeg."""
+    client = boto3.client("s3")
+    poster_prefix = f"{prefix}/video-posters/"
+    keys: list[str] = []
+    paginator = client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=poster_prefix):
+        for obj in page.get("Contents") or []:
+            k = obj.get("Key")
+            if not k or not isinstance(k, str):
+                continue
+            lk = k.lower()
+            if lk.endswith(".jpg") or lk.endswith(".jpeg"):
+                keys.append(k)
+    keys.sort()
+    return keys
+
+
+def _presign_video_row(
+    cfg: Config,
+    prefix: str,
+    poster_key: str,
+) -> tuple[str, str, str, str, float, None, None, str]:
+    poster_prefix = f"{prefix}/video-posters/"
+    if not poster_key.startswith(poster_prefix):
+        raise ValueError(f"unexpected video poster key: {poster_key}")
+    rel_posix = poster_key[len(poster_prefix) :]
+    video_key = f"{prefix}/video/{Path(rel_posix).with_suffix('.mp4').as_posix()}"
+    poster_url = s3_presign_url(
+        bucket=cfg.s3_bucket,
+        key=poster_key,
+        expires_in_seconds=cfg.presign_expiry_seconds,
+    )
+    video_url = s3_presign_url(
+        bucket=cfg.s3_bucket,
+        key=video_key,
+        expires_in_seconds=cfg.presign_expiry_seconds,
+    )
+    title = Path(rel_posix).with_suffix(".mp4").as_posix()
+    return (poster_url, video_url, title, "", 9e18, None, None, "video")
+
+
 def _presign_row(
     cfg: Config,
     prefix: str,
@@ -80,7 +122,7 @@ def _presign_row(
         expires_in_seconds=cfg.presign_expiry_seconds,
     )
     title = rel_posix
-    return (thumb_url, share_url, title, "", 9e18, enhanced_url, tags_url)
+    return (thumb_url, share_url, title, "", 9e18, enhanced_url, tags_url, "image")
 
 
 def republish_session_gallery_s3(*, cfg: Config, session_id: str) -> str:
@@ -94,18 +136,31 @@ def republish_session_gallery_s3(*, cfg: Config, session_id: str) -> str:
     bucket = cfg.s3_bucket
 
     thumb_keys = _thumb_keys_for_session(bucket=bucket, prefix=prefix)
-    if not thumb_keys:
-        raise ValueError(f"No JPEG thumbs found under s3://{bucket}/{prefix}/thumbs/")
+    video_poster_keys = _video_poster_keys_for_session(bucket=bucket, prefix=prefix)
+    if not thumb_keys and not video_poster_keys:
+        raise ValueError(
+            f"No gallery media found under s3://{bucket}/{prefix}/ (thumbs/ or video-posters/)"
+        )
 
-    presigned_items: list[tuple[str, str, str, str, float, str | None, str | None]] = []
+    presigned_items: list[tuple] = []
     workers = max(1, min(cfg.presign_workers, 16))
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        futs = {ex.submit(_presign_row, cfg, prefix, k): k for k in thumb_keys}
+        futs = {}
+        for k in thumb_keys:
+            futs[ex.submit(_presign_row, cfg, prefix, k)] = ("image", k)
+        for k in video_poster_keys:
+            futs[ex.submit(_presign_video_row, cfg, prefix, k)] = ("video", k)
         for fut in as_completed(futs):
             presigned_items.append(fut.result())
 
     presigned_items.sort(key=lambda x: (x[4], x[2]))
-    presigned_ui = [(a, b, c, d, e, f) for (a, b, c, d, _ts, e, f) in presigned_items]
+    presigned_ui: list[tuple] = []
+    for item in presigned_items:
+        media_type = item[7] if len(item) > 7 else "image"
+        if media_type == "video":
+            presigned_ui.append((item[0], item[1], item[2], item[3], item[5], item[6], "video"))
+        else:
+            presigned_ui.append((item[0], item[1], item[2], item[3], item[5], item[6]))
 
     download_zip_url = s3_presign_url(
         bucket=bucket,

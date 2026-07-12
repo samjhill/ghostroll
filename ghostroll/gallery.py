@@ -25,6 +25,15 @@ def _effective_gallery_share_url(*, share_page_url: str | None, out_path: Path) 
     return None
 
 
+def _item_media_type(item: tuple) -> str:
+    """Return ``image`` or ``video`` from a gallery item tuple."""
+    if len(item) >= 8 and item[7] in ("image", "video"):
+        return str(item[7])
+    if len(item) >= 7 and item[6] in ("image", "video"):
+        return str(item[6])
+    return "image"
+
+
 def _write_gallery_html(
     *,
     session_id: str,
@@ -39,6 +48,8 @@ def _write_gallery_html(
     share_page_url: str | None = None,
 ) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    photo_count = sum(1 for item in items if _item_media_type(item) != "video")
+    video_count = sum(1 for item in items if _item_media_type(item) == "video")
     count = len(items)
     share_link = _effective_gallery_share_url(share_page_url=share_page_url, out_path=out_path)
     with out_path.open("w", encoding="utf-8") as f:
@@ -167,6 +178,20 @@ def _write_gallery_html(
             ".share-short input#ghostrollShareUrl{flex:1;min-width:0;min-height:40px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;"
             "font-size:12px;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg-secondary);color:var(--fg)}"
             ".share-short .share-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}"
+            ".media-tabs{display:flex;gap:8px;margin:0 0 14px;flex-wrap:wrap}"
+            ".media-tab{appearance:none;border:1px solid var(--border);background:var(--card);color:var(--fg);"
+            "padding:8px 14px;border-radius:999px;cursor:pointer;font-size:13px;font-weight:600;font-family:inherit}"
+            ".media-tab.is-active{border-color:#3b82f6;background:rgba(59,130,246,.15)}"
+            ".media-tab:focus-visible{outline:2px solid #3b82f6;outline-offset:2px}"
+            ".tile-video .tile-video-inner{position:relative;width:100%;background:#000}"
+            ".tile-video video{display:block;width:100%;height:auto;background:#000;border-radius:0}"
+            ".tile-video .video-play-badge{position:absolute;left:12px;bottom:12px;padding:6px 10px;border-radius:999px;"
+            "background:rgba(0,0,0,.55);color:#fff;font-size:12px;font-weight:600;pointer-events:none}"
+            ".tile-video .video-expand-btn{position:absolute;right:12px;bottom:12px;appearance:none;border:1px solid rgba(255,255,255,.35);"
+            "background:rgba(0,0,0,.55);color:#fff;padding:6px 10px;border-radius:999px;cursor:pointer;font-size:12px;font-weight:600}"
+            ".tile[data-hidden='1']{display:none!important}"
+            ".lb-video-wrap{width:100%;height:100%;display:flex;align-items:center;justify-content:center}"
+            ".lb-video-wrap video{max-width:100%;max-height:100%;border-radius:14px;background:#000;width:100%}"
             "</style>\n"
         )
         f.write("</head><body>\n")
@@ -194,15 +219,22 @@ def _write_gallery_html(
         f.write("<div class=\"top\">")
         f.write(f"<h1 class=\"title\">{html.escape(session_id)}</h1>")
         f.write("<div class=\"meta\">")
-        f.write(f"{count} image{'s' if count != 1 else ''}")
+        parts: list[str] = []
+        if photo_count:
+            parts.append(f"{photo_count} photo{'s' if photo_count != 1 else ''}")
+        if video_count:
+            parts.append(f"{video_count} video{'s' if video_count != 1 else ''}")
+        if not parts:
+            parts.append("0 items")
+        f.write(" · ".join(parts))
         if download_href:
             f.write(
                 f" · <a class=\"btn\" href=\"{html.escape(download_href)}\">Download all</a>"
             )
         # Check if any images have enhanced versions
-        has_enhanced = any(item[4] for item in items if len(item) > 4)
+        has_enhanced = any(len(item) > 4 and item[4] for item in items if _item_media_type(item) != "video")
         # Check if any images have tags sidecars
-        has_tags = any(item[5] for item in items if len(item) > 5)
+        has_tags = any(len(item) > 5 and item[5] for item in items if _item_media_type(item) != "video")
         if has_enhanced:
             f.write(
                 ' · <button class="btn" id="enhanceToggle" type="button" aria-label="Toggle enhanced images">'
@@ -212,6 +244,16 @@ def _write_gallery_html(
         f.write("</div>")
         f.write("</div>\n")
 
+        if photo_count and video_count:
+            f.write(
+                '<div class="media-tabs" role="tablist" aria-label="Gallery media type">'
+                f'<button type="button" class="media-tab is-active" id="tabPhotos" role="tab" '
+                f'aria-selected="true" aria-controls="grid" data-tab="photos">Photos ({photo_count})</button>'
+                f'<button type="button" class="media-tab" id="tabVideos" role="tab" '
+                f'aria-selected="false" aria-controls="grid" data-tab="videos">Videos ({video_count})</button>'
+                "</div>\n"
+            )
+        
         if has_tags:
             f.write(
                 "<details class=\"tag-panel\" id=\"tagPanel\">"
@@ -250,40 +292,70 @@ def _write_gallery_html(
             qr_code_url = "share-qr.png"
 
         if not items:
-            f.write("<div class=\"empty\">No shareable images found.</div>\n")
+            f.write("<div class=\"empty\">No shareable media found.</div>\n")
         else:
             f.write("<div class=\"grid\" id=\"grid\">\n")
             for i, item in enumerate(items):
-                # Back-compat: accept 4/5/6-tuples
+                media_type = _item_media_type(item)
                 thumb_src, full_href, title, subtitle = item[:4]
                 enhanced_href = item[4] if len(item) >= 5 else None
-                tags_href = item[5] if len(item) >= 6 else None
+                tags_href = item[5] if len(item) >= 6 and _item_media_type(item) != "video" else None
+                if media_type == "video" and len(item) >= 6 and item[5] not in (None, "video", "image"):
+                    tags_href = None
                 
-                # Generate better alt text: use subtitle if available, otherwise descriptive text
-                alt_text = subtitle if subtitle else (f"Gallery image {i + 1}" if not title or "/" in title or "\\" in title else title)
+                alt_text = subtitle if subtitle else (
+                    f"Gallery {'video' if media_type == 'video' else 'image'} {i + 1}"
+                    if not title or "/" in title or "\\" in title
+                    else title
+                )
                 
-                # Build data attributes - include both normal and enhanced URLs
-                data_attrs = f'data-full="{html.escape(full_href)}"'
+                data_attrs = (
+                    f'data-media-type="{html.escape(media_type)}" '
+                    f'data-full="{html.escape(full_href)}"'
+                )
                 if enhanced_href:
                     data_attrs += f' data-enhanced="{html.escape(enhanced_href)}"'
                 if tags_href:
                     data_attrs += f' data-tags="{html.escape(tags_href)}"'
                 
-                f.write(
-                    "<a class=\"tile\" href=\"{full}\" {data_attrs} data-cap=\"{cap}\" data-sub=\"{sub}\" "
-                    "data-idx=\"{idx}\" aria-label=\"Open image {num}\">"
-                    "<img src=\"{thumb}\" loading=\"lazy\" decoding=\"async\" alt=\"{alt}\">"
-                    "</a>\n".format(
-                        full=html.escape(full_href),
-                        data_attrs=data_attrs,
-                        thumb=html.escape(thumb_src),
-                        cap=html.escape(title),
-                        sub=html.escape(subtitle),
-                        alt=html.escape(alt_text),
-                        idx=i,
-                        num=i + 1,
+                if media_type == "video":
+                    f.write(
+                        "<div class=\"tile tile-video\" {data_attrs} data-cap=\"{cap}\" data-sub=\"{sub}\" "
+                        "data-idx=\"{idx}\" tabindex=\"0\" role=\"button\" "
+                        "aria-label=\"Play video {num}\">"
+                        "<div class=\"tile-video-inner\">"
+                        "<video controls playsinline preload=\"metadata\" poster=\"{poster}\">"
+                        "<source src=\"{full}\" type=\"video/mp4\">"
+                        "</video>"
+                        "<span class=\"video-play-badge\">Video</span>"
+                        "<button type=\"button\" class=\"video-expand-btn\" aria-label=\"Open fullscreen player\">⛶</button>"
+                        "</div>"
+                        "</div>\n".format(
+                            data_attrs=data_attrs,
+                            poster=html.escape(thumb_src),
+                            full=html.escape(full_href),
+                            cap=html.escape(title),
+                            sub=html.escape(subtitle),
+                            idx=i,
+                            num=i + 1,
+                        )
                     )
-                )
+                else:
+                    f.write(
+                        "<a class=\"tile\" href=\"{full}\" {data_attrs} data-cap=\"{cap}\" data-sub=\"{sub}\" "
+                        "data-idx=\"{idx}\" aria-label=\"Open image {num}\">"
+                        "<img src=\"{thumb}\" loading=\"lazy\" decoding=\"async\" alt=\"{alt}\">"
+                        "</a>\n".format(
+                            full=html.escape(full_href),
+                            data_attrs=data_attrs,
+                            thumb=html.escape(thumb_src),
+                            cap=html.escape(title),
+                            sub=html.escape(subtitle),
+                            alt=html.escape(alt_text),
+                            idx=i,
+                            num=i + 1,
+                        )
+                    )
             f.write("</div>\n")
         
         # Add QR code section if available
@@ -318,7 +390,7 @@ def _write_gallery_html(
 
         # Lightbox shell + JS
         f.write(
-            "<div class=\"lb\" id=\"lb\" role=\"dialog\" aria-modal=\"true\" aria-label=\"Image viewer\">"
+            "<div class=\"lb\" id=\"lb\" role=\"dialog\" aria-modal=\"true\" aria-label=\"Media viewer\">"
             "<div class=\"lb-inner\">"
             "<div class=\"lb-bar\">"
             "<div class=\"lb-info\">"
@@ -328,14 +400,18 @@ def _write_gallery_html(
             "<div class=\"lb-counter\" id=\"lbCounter\"></div>"
             "</div>"
             "<div class=\"lb-controls\">"
-            "<button class=\"lb-btn\" id=\"prevBtn\" type=\"button\" aria-label=\"Previous image\">← Prev</button>"
-            "<button class=\"lb-btn\" id=\"nextBtn\" type=\"button\" aria-label=\"Next image\">Next →</button>"
-            "<a class=\"lb-btn\" id=\"downloadBtn\" href=\"#\" aria-label=\"Download image\" style=\"display:none;text-decoration:none\">↓ Download</a>"
+            "<button class=\"lb-btn\" id=\"prevBtn\" type=\"button\" aria-label=\"Previous item\">← Prev</button>"
+            "<button class=\"lb-btn\" id=\"nextBtn\" type=\"button\" aria-label=\"Next item\">Next →</button>"
+            "<button class=\"lb-btn\" id=\"fullscreenBtn\" type=\"button\" aria-label=\"Fullscreen\" style=\"display:none\">⛶ Fullscreen</button>"
+            "<a class=\"lb-btn\" id=\"downloadBtn\" href=\"#\" aria-label=\"Download\" style=\"display:none;text-decoration:none\">↓ Download</a>"
             "<button class=\"lb-btn\" id=\"closeBtn\" type=\"button\" aria-label=\"Close lightbox\">Esc ✕</button>"
             "</div></div>"
             "<div class=\"lb-img\">"
             "<div class=\"lb-loading\" id=\"lbLoading\"></div>"
             "<img id=\"lbImg\" alt=\"\">"
+            "<div class=\"lb-video-wrap\" id=\"lbVideoWrap\" hidden>"
+            "<video id=\"lbVideo\" controls playsinline></video>"
+            "</div>"
             "</div>"
             "</div></div>\n"
         )
@@ -365,6 +441,9 @@ def _write_gallery_html(
             "}"
             "const lb=document.getElementById('lb');"
             "const img=document.getElementById('lbImg');"
+            "const lbVideo=document.getElementById('lbVideo');"
+            "const lbVideoWrap=document.getElementById('lbVideoWrap');"
+            "const fullscreenBtn=document.getElementById('fullscreenBtn');"
             "const cap=document.getElementById('lbCap');"
             "const sub=document.getElementById('lbSub');"
             "const tags=document.getElementById('lbTags');"
@@ -375,6 +454,26 @@ def _write_gallery_html(
             "const prevBtn=document.getElementById('prevBtn');"
             "const nextBtn=document.getElementById('nextBtn');"
             "const tiles=[...document.querySelectorAll('#grid .tile')];"
+            "const tabPhotos=document.getElementById('tabPhotos');"
+            "const tabVideos=document.getElementById('tabVideos');"
+            "let activeMediaTab='photos';"
+            "function tileMediaType(t){return (t.dataset.mediaType||'image').toLowerCase();}"
+            "function setMediaTab(tab){"
+            "  activeMediaTab=tab;"
+            "  if(tabPhotos){tabPhotos.classList.toggle('is-active',tab==='photos');tabPhotos.setAttribute('aria-selected',tab==='photos'?'true':'false');}"
+            "  if(tabVideos){tabVideos.classList.toggle('is-active',tab==='videos');tabVideos.setAttribute('aria-selected',tab==='videos'?'true':'false');}"
+            "  tiles.forEach((t)=>{"
+            "    const mt=tileMediaType(t);"
+            "    const show=(tab==='photos'&&mt!=='video')||(tab==='videos'&&mt==='video');"
+            "    t.dataset.hidden=show?'0':'1';"
+            "  });"
+            "  applyFilter();"
+            "}"
+            "if(tabPhotos&&tabVideos){"
+            "  tabPhotos.addEventListener('click',()=>setMediaTab('photos'));"
+            "  tabVideos.addEventListener('click',()=>setMediaTab('videos'));"
+            "  setMediaTab('photos');"
+            "}else if(tabVideos&&!tabPhotos){setMediaTab('videos');}"
             "const filterInput=document.getElementById('tagFilter');"
             "const filterStatus=document.getElementById('tagFilterStatus');"
             "const tagStripInnerFaces=document.getElementById('tagStripInnerFaces');"
@@ -517,52 +616,82 @@ def _write_gallery_html(
             "    tags.appendChild(g);"
             "  }"
             "}"
-            "function getImageUrl(tile){"
+            "function getMediaUrl(tile){"
+            "  if(tileMediaType(tile)==='video') return tile.dataset.full;"
             "  if(useEnhanced&&tile.dataset.enhanced){return tile.dataset.enhanced;}"
             "  return tile.dataset.full;"
             "}"
+            "function getImageUrl(tile){return getMediaUrl(tile);}"
+            "function pauseLbVideo(){if(lbVideo){try{lbVideo.pause();lbVideo.removeAttribute('src');while(lbVideo.firstChild) lbVideo.removeChild(lbVideo.firstChild);}catch(_){}}}"
+            "function showImageViewer(){if(img){img.hidden=false;}if(lbVideoWrap){lbVideoWrap.hidden=true;}if(fullscreenBtn){fullscreenBtn.style.display='none';}pauseLbVideo();}"
+            "function showVideoViewer(){if(img){img.hidden=true;img.src='';}if(lbVideoWrap){lbVideoWrap.hidden=false;}if(fullscreenBtn){fullscreenBtn.style.display='inline-flex';}}"
             "function preloadAdjacent(){"
-            "if(idx+1<tiles.length){const nextImg=new Image();nextImg.src=tiles[idx+1].dataset.full;}"
-            "if(idx-1>=0){const prevImg=new Image();prevImg.src=tiles[idx-1].dataset.full;}"
+            "const visible=tiles.filter(t=>t.dataset.hidden!=='1');"
+            "const pos=visible.indexOf(tiles[idx]);"
+            "if(pos<0) return;"
+            "if(pos+1<visible.length){const n=visible[pos+1];if(tileMediaType(n)!=='video'){const nextImg=new Image();nextImg.src=getMediaUrl(n);}}"
+            "if(pos-1>=0){const p=visible[pos-1];if(tileMediaType(p)!=='video'){const prevImg=new Image();prevImg.src=getMediaUrl(p);}}"
             "}"
             "function updateCounter(){"
-            "if(tiles.length>0){counter.textContent=(idx+1)+' / '+tiles.length;}else{counter.textContent='';}"
+            "const visible=tiles.filter(t=>t.dataset.hidden!=='1');"
+            "const pos=visible.indexOf(tiles[idx]);"
+            "if(visible.length>0&&pos>=0){counter.textContent=(pos+1)+' / '+visible.length;}else{counter.textContent='';}"
             "}"
             "function showLoading(){if(loading) loading.classList.add('active');}"
             "function hideLoading(){if(loading) loading.classList.remove('active');}"
             "function openAt(i){"
-            "if(!tiles.length) return;"
+            "const visible=tiles.filter(t=>t.dataset.hidden!=='1');"
+            "if(!visible.length) return;"
             "lastFocusedElement=document.activeElement;"
-            "idx=(i+tiles.length)%tiles.length;"
-            "const t=tiles[idx];"
-            "showLoading();"
-            "img.onload=function(){hideLoading();img.classList.remove('error');};"
-            "img.onerror=function(){hideLoading();img.classList.add('error');img.alt='Failed to load image';};"
-            "img.src=getImageUrl(t);"
-            "img.alt=t.dataset.cap||'';"
+            "const target=visible[(i+visible.length)%visible.length];"
+            "idx=tiles.indexOf(target);"
+            "const t=target;"
             "cap.textContent=t.dataset.cap||'';"
             "sub.textContent=t.dataset.sub||'';"
-            "if(tags){"
-            "  tags.textContent='';"
-            "  const tagsUrl=t.dataset.tags;"
-            "  if(tagsUrl){"
-            "    const cached=tagsJsonCache.get(tagsUrl);"
-            "    if(cached&&('faces' in cached)&&('labels' in cached)){setTagsChips(cached.faces||[],cached.labels||[]);}"
-            "    else{"
-            "      setTagsLoading();"
-            "      fetch(tagsUrl,{cache:'no-store'})"
-            "        .then(r=>r.ok?r.json():null)"
-            "        .then(j=>{"
-            "          const parts=splitTagJson(j||{});"
-            "          tagsJsonCache.set(tagsUrl,{faces:parts.faces,labels:parts.labels});"
-            "          if(idx>=0&&tiles[idx]===t){setTagsChips(parts.faces,parts.labels);}"
-            "        })"
-            "        .catch(()=>{ if(idx>=0&&tiles[idx]===t){setTagsUnavailable();} });"
+            "if(tileMediaType(t)==='video'){"
+            "  showVideoViewer();"
+            "  showLoading();"
+            "  if(lbVideo){"
+            "    lbVideo.onloadeddata=function(){hideLoading();};"
+            "    lbVideo.onerror=function(){hideLoading();};"
+            "    while(lbVideo.firstChild) lbVideo.removeChild(lbVideo.firstChild);"
+            "    const src=document.createElement('source');"
+            "    src.src=getMediaUrl(t);"
+            "    src.type='video/mp4';"
+            "    lbVideo.appendChild(src);"
+            "    lbVideo.load();"
+            "  }"
+            "  if(tags) tags.textContent='';"
+            "  if(downloadBtn){downloadBtn.style.display='inline-flex';downloadBtn.href=getMediaUrl(t);downloadBtn.download='';}"
+            "}else{"
+            "  showImageViewer();"
+            "  showLoading();"
+            "  img.onload=function(){hideLoading();img.classList.remove('error');};"
+            "  img.onerror=function(){hideLoading();img.classList.add('error');img.alt='Failed to load image';};"
+            "  img.src=getMediaUrl(t);"
+            "  img.alt=t.dataset.cap||'';"
+            "  if(tags){"
+            "    tags.textContent='';"
+            "    const tagsUrl=t.dataset.tags;"
+            "    if(tagsUrl){"
+            "      const cached=tagsJsonCache.get(tagsUrl);"
+            "      if(cached&&('faces' in cached)&&('labels' in cached)){setTagsChips(cached.faces||[],cached.labels||[]);}"
+            "      else{"
+            "        setTagsLoading();"
+            "        fetch(tagsUrl,{cache:'no-store'})"
+            "          .then(r=>r.ok?r.json():null)"
+            "          .then(j=>{"
+            "            const parts=splitTagJson(j||{});"
+            "            tagsJsonCache.set(tagsUrl,{faces:parts.faces,labels:parts.labels});"
+            "            if(idx>=0&&tiles[idx]===t){setTagsChips(parts.faces,parts.labels);}"
+            "          })"
+            "          .catch(()=>{ if(idx>=0&&tiles[idx]===t){setTagsUnavailable();} });"
+            "      }"
             "    }"
             "  }"
+            "  if(downloadBtn){downloadBtn.style.display='inline-flex';downloadBtn.href=getMediaUrl(t);downloadBtn.download='';}"
             "}"
             "updateCounter();"
-            "if(downloadBtn){downloadBtn.style.display='inline-flex';downloadBtn.href=getImageUrl(t);downloadBtn.download='';}"
             "lb.classList.add('open');"
             "document.body.style.overflow='hidden';"
             "preloadAdjacent();"
@@ -572,6 +701,7 @@ def _write_gallery_html(
             "lb.classList.remove('open');"
             "document.body.style.overflow='';"
             "idx=-1;"
+            "showImageViewer();"
             "img.src='';"
             "hideLoading();"
             "if(lastFocusedElement){lastFocusedElement.focus();lastFocusedElement=null;}"
@@ -596,10 +726,25 @@ def _write_gallery_html(
             "}"
             "},{passive:true});"
             "tiles.forEach((t,idx) => {"
+            "if(tileMediaType(t)==='video'){"
+            "const expandBtn=t.querySelector('.video-expand-btn');"
+            "if(expandBtn){expandBtn.addEventListener('click',(e)=>{e.preventDefault();e.stopPropagation();openAt(idx);});}"
+            "t.addEventListener('dblclick',(e)=>{e.preventDefault();openAt(idx);});"
+            "t.addEventListener('keydown',(e)=>{if(e.key==='Enter'||e.key===' '){if(e.target.tagName==='VIDEO'||e.target.classList.contains('video-expand-btn')) return;e.preventDefault();openAt(idx);}});"
+            "}else{"
             "t.addEventListener('click',(e)=>{e.preventDefault();openAt(idx);});"
             "t.setAttribute('tabindex','0');"
             "t.addEventListener('keydown',(e)=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openAt(idx);}});"
+            "}"
             "});"
+            "if(fullscreenBtn&&lbVideo){"
+            "fullscreenBtn.addEventListener('click',()=>{"
+            "const el=lbVideo;"
+            "if(!el) return;"
+            "if(el.requestFullscreen) el.requestFullscreen();"
+            "else if(el.webkitEnterFullscreen) el.webkitEnterFullscreen();"
+            "});"
+            "}"
             "function setFilterStatus(txt){if(filterStatus) filterStatus.textContent=txt||'';}"
             "function parseTerms(q){return (q||'').toLowerCase().split(/\\s+/).map(s=>s.trim()).filter(Boolean);}"
             "function tileMatchesTerms(tile, terms){"
@@ -613,15 +758,24 @@ def _write_gallery_html(
             "  if(!filterInput) return;"
             "  const terms=parseTerms(filterInput.value);"
             "  if(!terms.length){"
-            "    tiles.forEach(t=>{t.style.display='';});"
+            "    tiles.forEach(t=>{"
+            "      const mt=tileMediaType(t);"
+            "      const tabOk=(activeMediaTab==='photos'&&mt!=='video')||(activeMediaTab==='videos'&&mt==='video')||(!tabPhotos&&!tabVideos);"
+            "      t.style.display=tabOk?'':'none';"
+            "      if(!tabOk) return;"
+            "      t.dataset.hidden='0';"
+            "    });"
             "    setFilterStatus('');"
             "    updateTagChipActiveStates();"
             "    return;"
             "  }"
             "  let shown=0;"
             "  tiles.forEach(t=>{"
-            "    const ok=tileMatchesTerms(t,terms);"
+            "    const mt=tileMediaType(t);"
+            "    const tabOk=(activeMediaTab==='photos'&&mt!=='video')||(activeMediaTab==='videos'&&mt==='video')||(!tabPhotos&&!tabVideos);"
+            "    const ok=tabOk&&tileMatchesTerms(t,terms);"
             "    t.style.display=ok?'':'none';"
+            "    t.dataset.hidden=ok?'0':'1';"
             "    if(ok) shown++;"
             "  });"
             "  setFilterStatus('Showing '+shown+' / '+tiles.length);"
@@ -656,7 +810,12 @@ def _write_gallery_html(
             "      if(!byLower.has(low)) byLower.set(low,s);"
             "    });"
             "  });"
-            "  const sorted=Array.from(byLower.entries()).sort((a,b)=>a[1].localeCompare(b[1],undefined,{sensitivity:'base'}));"
+            "  const sorted=Array.from(byLower.entries()).sort((a,b)=>{"
+"    const pa=String(a[1]).trim().match(/^person\\s+(\\d+)\\s*$/i);"
+"    const pb=String(b[1]).trim().match(/^person\\s+(\\d+)\\s*$/i);"
+"    if(pa&&pb){return parseInt(pa[1],10)-parseInt(pb[1],10);}"
+"    return String(a[1]).localeCompare(String(b[1]),undefined,{sensitivity:'base'});"
+"  });"
             "  sorted.forEach(([low,label])=>{"
             "    const b=document.createElement('button');"
             "    b.type='button';"

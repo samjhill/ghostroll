@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from ghostroll.media import is_jpeg, is_media, is_raw
+from ghostroll.media import is_jpeg, is_media, is_raw, is_video
 
 
 def test_is_jpeg():
@@ -34,6 +34,8 @@ def test_is_media():
     assert is_media(Path("test.arw"))
     assert is_media(Path("test.cr2"))
     assert is_media(Path("test.dng"))
+    assert is_media(Path("test.mp4"))
+    assert is_media(Path("test.mov"))
     assert not is_media(Path("test.png"))
     assert not is_media(Path("test.txt"))
     assert not is_media(Path("test"))
@@ -44,4 +46,11 @@ def test_case_insensitive():
     assert is_raw(Path("TEST.ARW"))
     assert is_media(Path("TEST.JPG"))
     assert is_media(Path("TEST.ARW"))
+
+
+def test_is_video():
+    assert is_video(Path("clip.mp4"))
+    assert is_video(Path("clip.MOV"))
+    assert is_video(Path("clip.mts"))
+    assert not is_video(Path("clip.jpg"))
 

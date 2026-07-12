@@ -914,8 +914,12 @@ class StatusWriter:
             if state == "RUNNING":
                 step_lower = step.lower()
                 prog_pairs = [
+                    ("scan", "hash_done", "hash_total", "Scanning"),
+                    ("ingest", "ingest_done", "ingest_total", "Copying"),
                     ("process", "processed_done", "processed_total", "Processing"),
                     ("upload", "uploaded_done", "uploaded_total", "Uploading"),
+                    ("face_tag", "face_tag_done", "face_tag_total", "Faces"),
+                    ("finalize", "finalize_done", "finalize_total", "Gallery"),
                     ("presign", "presigned_done", "presigned_total", "Generating link"),
                     ("raw_upload", "raw_files_compressing", "raw_files_total", "RAW Files"),
                 ]

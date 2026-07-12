@@ -838,6 +838,101 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
             border-top: 1px solid var(--border);
         }
         
+        .pipeline-overall {
+            margin-bottom: 1.25rem;
+        }
+        
+        .pipeline-overall-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+        
+        .pipeline-overall-label {
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .pipeline-overall-value {
+            font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, monospace;
+            color: var(--accent);
+            font-weight: 600;
+        }
+        
+        .pipeline-steps {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.35rem 0.5rem;
+            margin-bottom: 1rem;
+        }
+        
+        .pipeline-step {
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+            padding: 0.35rem 0.55rem;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            background: var(--bg-tertiary);
+            font-size: 0.78rem;
+            color: var(--text-tertiary);
+            transition: border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
+        }
+        
+        .pipeline-step.pending {
+            opacity: 0.55;
+        }
+        
+        .pipeline-step.active {
+            border-color: var(--accent);
+            background: rgba(59, 130, 246, 0.12);
+            color: var(--text-primary);
+            box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.15);
+        }
+        
+        .pipeline-step.complete {
+            border-color: var(--status-done);
+            color: var(--text-secondary);
+        }
+        
+        .pipeline-step-marker {
+            width: 0.55rem;
+            height: 0.55rem;
+            border-radius: 50%;
+            background: currentColor;
+            flex-shrink: 0;
+        }
+        
+        .pipeline-step.active .pipeline-step-marker {
+            background: var(--accent);
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
+            animation: pulse-step 1.4s ease-in-out infinite;
+        }
+        
+        .pipeline-step.complete .pipeline-step-marker {
+            background: var(--status-done);
+        }
+        
+        @keyframes pulse-step {
+            0%, 100% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.15); opacity: 0.85; }
+        }
+        
+        .pipeline-step-label {
+            font-weight: 600;
+            letter-spacing: 0.2px;
+        }
+        
+        .pipeline-step-detail {
+            font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, monospace;
+            font-size: 0.72rem;
+            opacity: 0.9;
+        }
+        
         .progress-item {
             margin-bottom: 1rem;
         }
@@ -1110,6 +1205,14 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
                         "ingest_done",
                         "ingest_total",
                         "uploaded_total",
+                        "hash_done",
+                        "hash_total",
+                        "face_tag_done",
+                        "face_tag_total",
+                        "finalize_done",
+                        "finalize_total",
+                        "presigned_done",
+                        "presigned_total",
                     ):
                         continue
                     key_display = key.replace("_", " ").title()
@@ -1507,7 +1610,9 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
                         let countsHTML = '';
                         const skipCountKeys = new Set([
                             'raw_files_compressing', 'raw_zip_size_bytes', 'raw_upload_error',
-                            'ingest_done', 'ingest_total', 'uploaded_total'
+                            'ingest_done', 'ingest_total', 'uploaded_total',
+                            'hash_done', 'hash_total', 'face_tag_done', 'face_tag_total',
+                            'finalize_done', 'finalize_total', 'presigned_done', 'presigned_total'
                         ]);
                         for (const [key, value] of Object.entries(counts).sort()) {
                             if (skipCountKeys.has(key)) continue;
@@ -1525,7 +1630,7 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
                 }
                 
                 // Update progress bars
-                updateProgressBars(counts, state);
+                updateProgressBars(counts, state, step, message);
                 
                 // Update gallery links (button and QR code)
                 updateGalleryLinks(url, sessionId, data.qr_path || null);
@@ -1627,16 +1732,14 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
                 return div.innerHTML;
             }
             
-            function updateProgressBars(counts, state) {
+            function updateProgressBars(counts, state, step, message) {
                 if (!statusCard) return;
                 
                 let progressSection = statusCard.querySelector('#progress-section');
                 if (!progressSection) {
-                    // Create progress section if it doesn't exist
                     progressSection = document.createElement('div');
                     progressSection.id = 'progress-section';
                     progressSection.className = 'progress-section';
-                    // Insert before QR section or at end of status card
                     const qrSection = statusCard.querySelector('.qr-section');
                     if (qrSection) {
                         statusCard.insertBefore(progressSection, qrSection);
@@ -1645,120 +1748,145 @@ class GhostRollWebHandler(BaseHTTPRequestHandler):
                     }
                 }
                 
-                const progressItems = [];
+                const stepKey = (step || '').toLowerCase();
+                const PIPELINE_STEPS = [
+                    { id: 'scan', label: 'Scan', doneKey: 'hash_done', totalKey: 'hash_total' },
+                    { id: 'ingest', label: 'Copy', doneKey: 'ingest_done', totalKey: 'ingest_total' },
+                    { id: 'process', label: 'Process', doneKey: 'processed_done', totalKey: 'processed_total' },
+                    { id: 'upload', label: 'Upload', doneKey: 'uploaded_done', totalKey: 'uploaded_total' },
+                    { id: 'face_tag', label: 'Faces', doneKey: 'face_tag_done', totalKey: 'face_tag_total', optional: true },
+                    { id: 'finalize', label: 'Gallery', doneKey: 'finalize_done', totalKey: 'finalize_total' },
+                    { id: 'presign', label: 'Links', doneKey: 'presigned_done', totalKey: 'presigned_total' },
+                    { id: 'raw_upload', label: 'RAW', doneKey: 'raw_files_compressing', totalKey: 'raw_files_total', optional: true },
+                ];
                 
-                // Copy-from-card progress (originals → session disk)
-                if (counts.ingest_done !== undefined && counts.ingest_total !== undefined && counts.ingest_total > 0) {
-                    const done = parseInt(counts.ingest_done) || 0;
-                    const total = parseInt(counts.ingest_total) || 0;
-                    const percent = Math.min(100, Math.round((done / total) * 100));
-                    const isComplete = done >= total;
-                    progressItems.push({
-                        label: 'Copying card',
-                        done: done,
-                        total: total,
-                        percent: percent,
-                        complete: isComplete
-                    });
-                }
+                const STEP_RANK = {
+                    start: 0, detected: 0, scan: 0,
+                    ingest: 1,
+                    process: 2,
+                    upload: 3,
+                    face_tag: 4,
+                    finalize: 5,
+                    presign: 6,
+                    raw_upload: 7,
+                    done: 8,
+                    resume: 3,
+                    noop: 8,
+                };
                 
-                // Processing progress
-                if (counts.processed_done !== undefined && counts.processed_total !== undefined && counts.processed_total > 0) {
-                    const done = parseInt(counts.processed_done) || 0;
-                    const total = parseInt(counts.processed_total) || 0;
-                    const percent = Math.min(100, Math.round((done / total) * 100));
-                    const isComplete = done >= total;
-                    progressItems.push({
-                        label: 'Processing',
-                        done: done,
-                        total: total,
-                        percent: percent,
-                        complete: isComplete
-                    });
-                }
+                const STEP_TO_PIPELINE = {
+                    start: 'scan', detected: 'scan', scan: 'scan',
+                    ingest: 'ingest', process: 'process', upload: 'upload',
+                    face_tag: 'face_tag', finalize: 'finalize', presign: 'presign',
+                    raw_upload: 'raw_upload', done: 'done', resume: 'upload', noop: 'done',
+                };
                 
-                // S3 upload progress (thumb + share per image, plus bootstrap objects)
-                if (counts.uploaded_done !== undefined && counts.uploaded_total !== undefined && counts.uploaded_total > 0) {
-                    const done = parseInt(counts.uploaded_done) || 0;
-                    const total = parseInt(counts.uploaded_total) || 0;
-                    const percent = Math.min(100, Math.round((done / total) * 100));
-                    const isComplete = done >= total;
-                    progressItems.push({
-                        label: 'Uploading to S3',
-                        done: done,
-                        total: total,
-                        percent: percent,
-                        complete: isComplete
-                    });
-                }
-                
-                // Presigning progress (if available)
-                if (counts.presigned_done !== undefined && counts.presigned_total !== undefined && counts.presigned_total > 0) {
-                    const done = parseInt(counts.presigned_done) || 0;
-                    const total = parseInt(counts.presigned_total) || 0;
-                    const percent = Math.min(100, Math.round((done / total) * 100));
-                    const isComplete = done >= total;
-                    progressItems.push({
-                        label: 'Generating Links',
-                        done: done,
-                        total: total,
-                        percent: percent,
-                        complete: isComplete
-                    });
-                }
-                
-                // RAW upload progress (compression + upload)
-                if (counts.raw_files_compressing !== undefined && counts.raw_files_total !== undefined && counts.raw_files_total > 0) {
-                    // Compression in progress
-                    const compressing = parseInt(counts.raw_files_compressing) || 0;
-                    const total = parseInt(counts.raw_files_total) || 0;
-                    const percent = Math.min(100, Math.round((compressing / total) * 100));
-                    const isComplete = compressing >= total && (counts.raw_uploaded !== undefined && counts.raw_uploaded > 0);
-                    // Show upload status if compression is complete
-                    if (compressing >= total && counts.raw_uploaded !== undefined) {
-                        const uploaded = parseInt(counts.raw_uploaded) || 0;
-                        progressItems.push({
-                            label: 'RAW Files',
-                            done: uploaded,
-                            total: 1,
-                            percent: uploaded > 0 ? 100 : 0,
-                            complete: uploaded > 0
-                        });
-                    } else {
-                        progressItems.push({
-                            label: 'RAW Files (Compressing)',
-                            done: compressing,
-                            total: total,
-                            percent: percent,
-                            complete: false
-                        });
+                function stepProgress(def) {
+                    const done = parseInt(counts[def.doneKey]) || 0;
+                    const total = parseInt(counts[def.totalKey]) || 0;
+                    if (total > 0) {
+                        return { done, total, percent: Math.min(100, Math.round((done / total) * 100)) };
                     }
-                } else if (counts.raw_files_total !== undefined && counts.raw_files_total > 0 && counts.raw_uploaded !== undefined) {
-                    // Compression complete, show upload status
-                    const uploaded = parseInt(counts.raw_uploaded) || 0;
-                    progressItems.push({
-                        label: 'RAW Files',
-                        done: uploaded,
-                        total: 1,
-                        percent: uploaded > 0 ? 100 : 0,
-                        complete: uploaded > 0
-                    });
+                    return null;
                 }
                 
-                // Render progress bars
-                if (progressItems.length > 0 && state === 'running') {
+                function shouldShowStep(def) {
+                    if (!def.optional) return true;
+                    const prog = stepProgress(def);
+                    if (prog && prog.total > 0) return true;
+                    const activeId = STEP_TO_PIPELINE[stepKey] || stepKey;
+                    if (activeId === def.id) return true;
+                    const activeRank = STEP_RANK[stepKey] ?? -1;
+                    const defRank = STEP_RANK[def.id] ?? 99;
+                    return activeRank > defRank && prog !== null;
+                }
+                
+                const activePipelineId = STEP_TO_PIPELINE[stepKey] || (state === 'done' ? 'done' : stepKey);
+                const activeRank = STEP_RANK[stepKey] ?? (state === 'done' ? 8 : -1);
+                const visibleSteps = PIPELINE_STEPS.filter(shouldShowStep);
+                
+                let overallDone = 0;
+                let overallTotal = 0;
+                for (const def of visibleSteps) {
+                    const prog = stepProgress(def);
+                    if (prog && prog.total > 0) {
+                        overallDone += prog.done;
+                        overallTotal += prog.total;
+                    } else {
+                        const defRank = STEP_RANK[def.id] ?? 99;
+                        if (state === 'done' || activeRank > defRank) {
+                            overallDone += 1;
+                            overallTotal += 1;
+                        } else if (activePipelineId === def.id) {
+                            overallTotal += 1;
+                        } else if (activeRank < defRank) {
+                            overallTotal += 1;
+                        }
+                    }
+                }
+                const overallPercent = overallTotal > 0
+                    ? Math.min(100, Math.round((overallDone / overallTotal) * 100))
+                    : (state === 'done' ? 100 : 0);
+                
+                let stepsHTML = '';
+                for (const def of visibleSteps) {
+                    const prog = stepProgress(def);
+                    const defRank = STEP_RANK[def.id] ?? 99;
+                    let statusClass = 'pending';
+                    if (state === 'done' || activeRank > defRank || (prog && prog.total > 0 && prog.done >= prog.total)) {
+                        statusClass = 'complete';
+                    } else if (activePipelineId === def.id || (stepKey === 'process' && def.id === 'upload' && prog && prog.done < prog.total)) {
+                        statusClass = 'active';
+                    }
+                    let detail = '';
+                    if (prog && prog.total > 0) {
+                        detail = '<span class="pipeline-step-detail">' + prog.done + '/' + prog.total + '</span>';
+                    }
+                    stepsHTML += '<div class="pipeline-step ' + statusClass + '">';
+                    stepsHTML += '<span class="pipeline-step-marker" aria-hidden="true"></span>';
+                    stepsHTML += '<span class="pipeline-step-label">' + escapeHtml(def.label) + '</span>';
+                    stepsHTML += detail;
+                    stepsHTML += '</div>';
+                }
+                
+                const activeDef = visibleSteps.find(d => d.id === activePipelineId)
+                    || visibleSteps.find(d => d.id === 'upload' && stepKey === 'process');
+                const activeProg = activeDef ? stepProgress(activeDef) : null;
+                let currentLabel = message || 'Working…';
+                let currentPercent = overallPercent;
+                let currentComplete = state === 'done';
+                if (activeProg && activeProg.total > 0) {
+                    currentPercent = activeProg.percent;
+                    currentComplete = activeProg.done >= activeProg.total;
+                    currentLabel = message || (activeDef.label + '… (' + activeProg.done + '/' + activeProg.total + ')');
+                }
+                
+                if (visibleSteps.length > 0 && (state === 'running' || state === 'done')) {
                     let progressHTML = '';
-                    for (const item of progressItems) {
-                        progressHTML += '<div class="progress-item">\\n';
-                        progressHTML += '    <div class="progress-label">\\n';
-                        progressHTML += '        <span class="progress-label-text">' + escapeHtml(item.label) + '</span>\\n';
-                        progressHTML += '        <span class="progress-label-value">' + item.done + ' / ' + item.total + ' (' + item.percent + '%)</span>\\n';
-                        progressHTML += '    </div>\\n';
-                        progressHTML += '    <div class="progress-bar-container">\\n';
-                        const fillClass = item.complete ? 'progress-bar-fill complete' : 'progress-bar-fill';
-                        progressHTML += '        <div class="' + fillClass + '" style="width: ' + item.percent + '%;"></div>\\n';
-                        progressHTML += '    </div>\\n';
-                        progressHTML += '</div>\\n';
+                    progressHTML += '<div class="pipeline-overall">';
+                    progressHTML += '  <div class="pipeline-overall-header">';
+                    progressHTML += '    <span class="pipeline-overall-label">Overall progress</span>';
+                    progressHTML += '    <span class="pipeline-overall-value">' + overallPercent + '%</span>';
+                    progressHTML += '  </div>';
+                    progressHTML += '  <div class="progress-bar-container">';
+                    const overallFillClass = overallPercent >= 100 ? 'progress-bar-fill complete' : 'progress-bar-fill';
+                    progressHTML += '    <div class="' + overallFillClass + '" style="width: ' + overallPercent + '%;"></div>';
+                    progressHTML += '  </div>';
+                    progressHTML += '</div>';
+                    progressHTML += '<div class="pipeline-steps">' + stepsHTML + '</div>';
+                    if (state === 'running' && activeDef) {
+                        progressHTML += '<div class="progress-item">';
+                        progressHTML += '  <div class="progress-label">';
+                        progressHTML += '    <span class="progress-label-text">' + escapeHtml(currentLabel) + '</span>';
+                        if (activeProg && activeProg.total > 0) {
+                            progressHTML += '    <span class="progress-label-value">' + activeProg.done + ' / ' + activeProg.total + ' (' + activeProg.percent + '%)</span>';
+                        }
+                        progressHTML += '  </div>';
+                        progressHTML += '  <div class="progress-bar-container">';
+                        const fillClass = currentComplete ? 'progress-bar-fill complete' : 'progress-bar-fill';
+                        progressHTML += '    <div class="' + fillClass + '" style="width: ' + currentPercent + '%;"></div>';
+                        progressHTML += '  </div>';
+                        progressHTML += '</div>';
                     }
                     progressSection.innerHTML = progressHTML;
                     progressSection.style.display = '';

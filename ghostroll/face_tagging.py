@@ -4,9 +4,11 @@ Optional face detection + coarse per-session clustering for gallery filters.
 Requires the optional ``ghostroll[faces]`` extra (OpenCV). When OpenCV is not
 installed, helpers no-op with a log line.
 
-Clustering uses a 64-bit difference hash of each face crop; faces with Hamming
-distance below a threshold in the same session are grouped as ``Person 1``,
-``Person 2``, … This is a lightweight heuristic (not identity-grade recognition).
+Clustering uses 64-bit **difference** and **average** hashes of each face crop.
+Two detections are linked if **either** hash is within the Hamming threshold
+(union–find over those edges), which merges more same-person views than d-hash
+alone. Overlapping Haar rectangles are merged with NMS to cut duplicate boxes.
+This remains a lightweight heuristic (not identity-grade recognition).
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from typing import Any, Callable
 
 from PIL import Image, ImageOps
 
-MODEL_ID = "ghostroll-opencv-dhash-v1"
+MODEL_ID = "ghostroll-opencv-dahash-v2"
 
 
 def _utc_now_iso() -> str:
@@ -48,15 +50,67 @@ def dhash64(gray: Image.Image) -> int:
     return bits & ((1 << 64) - 1)
 
 
+def ahash64(gray: Image.Image) -> int:
+    """8×8 average hash as a 64-bit int (Pillow grayscale image)."""
+    g = gray.resize((8, 8), Image.Resampling.BILINEAR)
+    px = list(g.getdata())
+    mean = sum(px) / len(px) if px else 0.0
+    bits = 0
+    for p in px:
+        bits = (bits << 1) | (1 if p >= mean else 0)
+    return bits & ((1 << 64) - 1)
+
+
 def hamming64(a: int, b: int) -> int:
     return (a ^ b).bit_count()
+
+
+def default_face_cluster_hamming_max() -> int:
+    """Clamp for ``GHOSTROLL_FACE_HAMMING_MAX`` (Hamming on d-hash and a-hash OR-link)."""
+    try:
+        mh = int(os.environ.get("GHOSTROLL_FACE_HAMMING_MAX", "26"))
+    except Exception:
+        mh = 26
+    return max(4, min(32, mh))
+
+
+def _iou_xywh(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    xa1, ya1, xa2, ya2 = ax, ay, ax + aw, ay + ah
+    xb1, yb1, xb2, yb2 = bx, by, bx + bw, by + bh
+    inter_w = max(0, min(xa2, xb2) - max(xa1, xb1))
+    inter_h = max(0, min(ya2, yb2) - max(ya1, yb1))
+    inter = inter_w * inter_h
+    union = aw * ah + bw * bh - inter
+    if union <= 0:
+        return 0.0
+    return inter / union
+
+
+def _nms_face_boxes(
+    boxes: list[tuple[int, int, int, int]],
+    *,
+    iou_threshold: float = 0.35,
+) -> list[tuple[int, int, int, int]]:
+    """Drop overlapping Haar boxes (keeps larger box first)."""
+    if not boxes:
+        return []
+    sorted_boxes = sorted(boxes, key=lambda b: -(b[2] * b[3]))
+    kept: list[tuple[int, int, int, int]] = []
+    for b in sorted_boxes:
+        if any(_iou_xywh(b, k) > iou_threshold for k in kept):
+            continue
+        kept.append(b)
+    return kept
 
 
 @dataclass
 class FaceSample:
     rel: Path  # relative to share root
     box: tuple[int, int, int, int]  # x, y, w, h in pixels
-    h: int
+    h: int  # d-hash
+    ha: int  # average hash (used with ``h`` for clustering)
 
 
 def _detect_faces_cv2(cv2, rgb_path: Path) -> list[tuple[int, int, int, int]]:
@@ -68,11 +122,12 @@ def _detect_faces_cv2(cv2, rgb_path: Path) -> list[tuple[int, int, int, int]]:
     if bgr is None:
         return []
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(48, 48))
-    return [(int(x), int(y), int(w), int(h)) for (x, y, w, h) in faces]
+    raw = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(56, 56))
+    boxes = [(int(x), int(y), int(w), int(h)) for (x, y, w, h) in raw]
+    return _nms_face_boxes(boxes, iou_threshold=0.35)
 
 
-def _face_hash_from_crop(rgb_path: Path, box: tuple[int, int, int, int]) -> int | None:
+def _face_hashes_from_crop(rgb_path: Path, box: tuple[int, int, int, int]) -> tuple[int, int] | None:
     try:
         with Image.open(rgb_path) as im:
             im = ImageOps.exif_transpose(im)
@@ -81,47 +136,79 @@ def _face_hash_from_crop(rgb_path: Path, box: tuple[int, int, int, int]) -> int 
             x, y, w, h = box
             crop = im.crop((x, y, x + w, y + h)).convert("L")
             crop = crop.resize((64, 64), Image.Resampling.BILINEAR)
-            return dhash64(crop)
+            return (dhash64(crop), ahash64(crop))
     except Exception:
         return None
 
 
-def collect_face_samples(share_dir: Path, *, cv2) -> list[FaceSample]:
+def collect_face_samples(
+    share_dir: Path,
+    *,
+    cv2,
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> list[FaceSample]:
     samples: list[FaceSample] = []
-    for p in sorted(share_dir.rglob("*")):
-        if not p.is_file():
-            continue
-        if p.suffix.lower() not in (".jpg", ".jpeg"):
-            continue
+    image_paths = sorted(
+        p
+        for p in share_dir.rglob("*")
+        if p.is_file() and p.suffix.lower() in (".jpg", ".jpeg")
+    )
+    total = len(image_paths)
+    for i, p in enumerate(image_paths, 1):
         boxes = _detect_faces_cv2(cv2, p)
         rel = p.relative_to(share_dir)
         for box in boxes:
-            h = _face_hash_from_crop(p, box)
-            if h is None:
+            pair = _face_hashes_from_crop(p, box)
+            if pair is None:
                 continue
-            samples.append(FaceSample(rel=rel, box=box, h=h))
+            h, ha = pair
+            samples.append(FaceSample(rel=rel, box=box, h=h, ha=ha))
+        if progress_callback is not None:
+            progress_callback(i, total)
     return samples
 
 
 def cluster_face_samples(samples: list[FaceSample], *, max_hamming: int) -> list[int]:
-    """Returns cluster index per sample (greedy, order-dependent)."""
-    clusters: list[list[FaceSample]] = []
+    """
+    Return cluster index per sample using single-linkage (union–find).
+
+    An edge exists between two samples when **either** the d-hash or the average-hash
+    Hamming distance is ≤ ``max_hamming``. That OR-link merges more same-person crops
+    than d-hash alone while staying cheap.
+    """
+    n = len(samples)
+    if n == 0:
+        return []
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        pi, pj = find(i), find(j)
+        if pi != pj:
+            parent[pi] = pj
+
+    hashes_d = [s.h for s in samples]
+    hashes_a = [s.ha for s in samples]
+    for i in range(n):
+        di, ai = hashes_d[i], hashes_a[i]
+        for j in range(i + 1, n):
+            if hamming64(di, hashes_d[j]) <= max_hamming or hamming64(ai, hashes_a[j]) <= max_hamming:
+                union(i, j)
+
+    root_to_ci: dict[int, int] = {}
     out: list[int] = []
-    for s in samples:
-        best_ci: int | None = None
-        best_d = max_hamming + 1
-        for ci, members in enumerate(clusters):
-            for m in members:
-                d = hamming64(s.h, m.h)
-                if d < best_d:
-                    best_d = d
-                    best_ci = ci
-        if best_ci is None or best_d > max_hamming:
-            clusters.append([s])
-            out.append(len(clusters) - 1)
-        else:
-            clusters[best_ci].append(s)
-            out.append(best_ci)
+    next_ci = 0
+    for i in range(n):
+        r = find(i)
+        if r not in root_to_ci:
+            root_to_ci[r] = next_ci
+            next_ci += 1
+        out.append(root_to_ci[r])
     return out
 
 
@@ -204,6 +291,7 @@ def write_and_upload_face_tags_for_session(
     upload_one: Callable[[tuple[Path, str]], tuple[bool, str | None]],
     logger: Any,
     max_hamming: int | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> int:
     """
     Detect faces in all share JPEGs, cluster within the session, write merged
@@ -219,20 +307,25 @@ def write_and_upload_face_tags_for_session(
         )
         return 0
 
-    mh = max_hamming
-    if mh is None:
-        try:
-            mh = int(os.environ.get("GHOSTROLL_FACE_HAMMING_MAX", "12"))
-        except Exception:
-            mh = 12
-    mh = max(4, min(32, mh))
+    mh = default_face_cluster_hamming_max() if max_hamming is None else max(4, min(32, int(max_hamming)))
 
-    samples = collect_face_samples(derived_share_dir, cv2=cv2)
+    samples = collect_face_samples(
+        derived_share_dir,
+        cv2=cv2,
+        progress_callback=progress_callback,
+    )
     if not samples:
         logger.info("Face tagging: no faces detected in session share images.")
         return 0
 
     cluster_of = cluster_face_samples(samples, max_hamming=mh)
+    n_clusters = max(cluster_of, default=-1) + 1 if cluster_of else 0
+    logger.info(
+        "Face tagging: %s face crop(s) -> %s person cluster(s) (Hamming≤%s on d-hash or avg-hash; NMS on detector boxes)",
+        len(samples),
+        n_clusters,
+        mh,
+    )
     by_rel: dict[Path, list[tuple[tuple[int, int, int, int], str, float]]] = {}
     for s, ci in zip(samples, cluster_of, strict=True):
         person = person_label(ci)
@@ -266,6 +359,40 @@ def write_and_upload_face_tags_for_session(
     return uploaded
 
 
+def upload_face_tags_for_session_to_s3(*, cfg: Any, session_id: str, logger: Any) -> int:
+    """
+    Detect faces in local ``derived/share`` JPEGs and upload merged ``tags/*.json`` to S3.
+
+    Used for backfill (e.g. ``republish-gallery SESSION --face-tags``) when share images
+    exist under ``{base_output_dir}/{session_id}`` but tags were never uploaded.
+    """
+    session_dir = Path(cfg.base_output_dir) / session_id
+    derived_share_dir = session_dir / "derived" / "share"
+    prefix = f"{cfg.s3_prefix_root}{session_id}".rstrip("/")
+    if not derived_share_dir.is_dir():
+        logger.warning("Face tags: missing local directory %s (skipping)", derived_share_dir)
+        return 0
+
+    from ghostroll.aws_boto3 import AwsBoto3Error, s3_upload_file
+
+    def upload_one(pair: tuple[Path, str]) -> tuple[bool, str | None]:
+        local_path, key = pair
+        try:
+            s3_upload_file(local_path, bucket=cfg.s3_bucket, key=key)
+            return True, None
+        except AwsBoto3Error as e:
+            return False, str(e).split("\n")[0]
+
+    return write_and_upload_face_tags_for_session(
+        cfg=cfg,
+        session_dir=session_dir,
+        derived_share_dir=derived_share_dir,
+        prefix=prefix,
+        upload_one=upload_one,
+        logger=logger,
+    )
+
+
 def cmd_tag_faces_session(session_dir: Path, *, logger: Any) -> int:
     """CLI helper: write merged tag JSON locally (no S3)."""
     cv2 = _try_import_cv2()
@@ -280,7 +407,7 @@ def cmd_tag_faces_session(session_dir: Path, *, logger: Any) -> int:
     if not samples:
         logger.info("No faces detected.")
         return 0
-    cluster_of = cluster_face_samples(samples, max_hamming=12)
+    cluster_of = cluster_face_samples(samples, max_hamming=default_face_cluster_hamming_max())
     by_rel: dict[Path, list[tuple[tuple[int, int, int, int], str, float]]] = {}
     for s, ci in zip(samples, cluster_of, strict=True):
         by_rel.setdefault(s.rel, []).append((s.box, person_label(ci), 0.99))

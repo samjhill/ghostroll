@@ -48,7 +48,36 @@ def test_build_index_html_from_items_empty(tmp_path: Path):
 
     assert out_path.exists()
     content = out_path.read_text("utf-8")
-    assert "No shareable images found" in content
+    assert "No shareable media found" in content
+
+
+def test_build_index_html_from_items_with_video_tabs(tmp_path: Path):
+    out_path = tmp_path / "index.html"
+    items = [
+        ("thumbs/img1.jpg", "share/img1.jpg", "img1.jpg", ""),
+        (
+            "video-posters/clip.jpg",
+            "video/clip.mp4",
+            "clip.mp4",
+            "100MSDCF/clip.mp4",
+            None,
+            None,
+            "video",
+        ),
+    ]
+    build_index_html_from_items(
+        session_id="mixed-session",
+        items=items,
+        download_href=None,
+        out_path=out_path,
+    )
+    html = out_path.read_text("utf-8")
+    assert "tabPhotos" in html
+    assert "tabVideos" in html
+    assert 'data-media-type="video"' in html
+    assert "<video controls playsinline" in html
+    assert "video-expand-btn" in html
+    assert "lbVideo" in html
 
 
 def test_build_index_html_from_items_no_download(tmp_path: Path):
